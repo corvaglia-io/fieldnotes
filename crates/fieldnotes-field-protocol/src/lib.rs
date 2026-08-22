@@ -65,7 +65,10 @@ pub mod session;
 pub mod value;
 pub mod version;
 
-pub use artifact::{ArtifactDigestIndex, ArtifactHandle, ResolvedArtifact, resolve_artifact};
+pub use artifact::{
+    ArtifactDigestIndex, ArtifactHandle, ArtifactOutcome, DeclinedArtifact, ResolvedArtifact,
+    resolve_artifact,
+};
 pub use codes::{DiagnosticCode, ExitCode, RejectionCode, RunOutcome};
 pub use conformance::{
     CollectPlan, CollectRun, CoreObservation, DescribeRun, DriverError, DurabilityPolicy,

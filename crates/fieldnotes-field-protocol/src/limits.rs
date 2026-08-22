@@ -1,12 +1,30 @@
 //! The frozen v1 bound ceilings, the per-run effective limits, and the run
 //! deadline.
 //!
-//! Field process output is untrusted input. Protocol v1 freezes a ceiling for
-//! every bound; a notebook may configure a value lower, and raising one above
-//! its ceiling requires a protocol revision. The effective limits are echoed to
-//! the Field in the request so a well-behaved connector can self-police rather
-//! than discovering a limit by being killed — but core enforces every one of
-//! them regardless of what the Field does.
+//! Field process output is untrusted input. Protocol v1 freezes a **ceiling**
+//! for every bound: an absolute technical bound that protects core against a
+//! hostile or buggy child, which no configuration may exceed and which only a
+//! protocol revision can raise. The effective limits are echoed to the Field
+//! in the request so a well-behaved connector can self-police rather than
+//! discovering a limit by being killed — but core enforces every one of them
+//! regardless of what the Field does.
+//!
+//! # A ceiling is not the same thing as a default
+//!
+//! Most bounds have no reason to differ from their ceiling: there is no
+//! product reason a notebook would want fewer than 256 property candidates
+//! per record, say. Two bounds are different: [`Limits::max_artifact_bytes`]
+//! and the run wall clock (expressed as [`Deadline::not_after`], an absolute
+//! instant rather than a duration field). For both, [`Limits::defaults()`]
+//! states the value core requests absent configuration, which is well below
+//! the frozen ceiling, and a configured value may move anywhere from the
+//! product's own minimum up to that ceiling — never above it, because the
+//! ceiling is what bounds an untrusted process, not what bounds a user's
+//! preference. Configuring **up** toward the ceiling is exactly as legal as
+//! configuring down from it; only crossing the ceiling itself requires a
+//! protocol revision. Reading and applying that configuration is a `sync`
+//! concern for `0.1.1` and later; this crate only states the default and the
+//! ceiling a configured value is checked against.
 
 use core::fmt;
 
@@ -173,7 +191,24 @@ const CEILINGS: [Ceiling; 13] = [
 ];
 
 impl Limits {
-    /// The frozen v1 ceilings, which are also the defaults.
+    /// The default single-artifact retention threshold: 25 MiB, spelled out
+    /// as an exact byte count so there is no decimal-versus-binary ambiguity:
+    /// 25 × 1024 × 1024 = 26,214,400 bytes.
+    ///
+    /// A notebook is disposable working material, not a system of record:
+    /// the default keeps what is useful for work and context, and larger
+    /// original material stays at its source rather than being copied by
+    /// default. This is a default, not the ceiling — see
+    /// [`Limits::max_artifact_bytes`]'s ceiling of 536,870,912 bytes (512
+    /// MiB), which a notebook may configure this value up to.
+    pub const DEFAULT_ARTIFACT_BYTES: u64 = 26_214_400;
+
+    /// The frozen v1 ceilings: the absolute technical bound for every member,
+    /// which no configuration may exceed.
+    ///
+    /// For most members the ceiling is also the sensible default, so
+    /// [`Limits::defaults()`] reuses this constructor's values apart from
+    /// [`Limits::max_artifact_bytes`], where it does not.
     #[must_use]
     pub fn ceilings() -> Self {
         Limits {
@@ -190,6 +225,23 @@ impl Limits {
             max_run_diagnostics: 10_000,
             max_stderr_bytes: 262_144,
             max_cursor_bytes: 4096,
+        }
+    }
+
+    /// The limits core requests absent any configuration.
+    ///
+    /// Identical to [`Limits::ceilings()`] except
+    /// [`Limits::max_artifact_bytes`], which defaults to
+    /// [`Limits::DEFAULT_ARTIFACT_BYTES`] rather than the frozen ceiling.
+    /// Settings may raise `max_artifact_bytes` from this default up to the
+    /// ceiling — never above it — because the ceiling protects core against a
+    /// hostile or buggy child and the default merely reflects what is useful
+    /// to keep.
+    #[must_use]
+    pub fn defaults() -> Self {
+        Limits {
+            max_artifact_bytes: Self::DEFAULT_ARTIFACT_BYTES,
+            ..Self::ceilings()
         }
     }
 
@@ -247,12 +299,27 @@ impl Deadline {
     pub const MAX_IDLE_SECONDS: u32 = 3600;
     /// The frozen v1 ceiling for the cancellation grace period.
     pub const MAX_CANCEL_GRACE_SECONDS: u32 = 120;
-    /// The A2 default idle bound.
+    /// The A2 default idle bound. Stays sensibly proportioned to
+    /// [`Deadline::DEFAULT_RUN_SECONDS`] regardless of the run-length default.
     pub const DEFAULT_IDLE_SECONDS: u32 = 120;
     /// The A2 default cancellation grace period.
     pub const DEFAULT_CANCEL_GRACE_SECONDS: u32 = 10;
-    /// The A2 run wall-clock ceiling, in seconds.
+    /// The absolute run wall-clock ceiling, in seconds: the technical bound
+    /// past which no configuration may push the run, because it protects
+    /// core against a hostile or buggy child that never stops.
     pub const MAX_RUN_SECONDS: u64 = 3600;
+    /// The run wall-clock default, in seconds: 10 minutes, not the 3600-second
+    /// ceiling.
+    ///
+    /// A first full sync that would need longer than this is expected to be
+    /// handled by windowed, resumable runs — the cursor and checkpoint
+    /// machinery already exists for exactly that — rather than by one long
+    /// running process, because a crash late in a long run discards far more
+    /// durable-but-uncommitted work than a crash late in a short one. This is
+    /// a default core computes `not_after` from absent configuration; a
+    /// configured value may lengthen the run up to
+    /// [`Deadline::MAX_RUN_SECONDS`], never past it.
+    pub const DEFAULT_RUN_SECONDS: u64 = 600;
 
     /// Checks the two duration members against their ceilings.
     pub fn validate(&self) -> Result<(), LimitError> {
@@ -287,6 +354,57 @@ mod tests {
     #[test]
     fn the_frozen_ceilings_validate() -> Result<(), LimitError> {
         Limits::ceilings().validate()
+    }
+
+    #[test]
+    fn the_default_artifact_bytes_is_25_mib_below_the_512_mib_ceiling() -> Result<(), LimitError> {
+        assert_eq!(Limits::DEFAULT_ARTIFACT_BYTES, 25 * 1024 * 1024);
+        let defaults = Limits::defaults();
+        assert_eq!(defaults.max_artifact_bytes, 26_214_400);
+        assert!(defaults.max_artifact_bytes < Limits::ceilings().max_artifact_bytes);
+        // A default must itself be a legal configuration.
+        defaults.validate()?;
+        // Every other member is unaffected: only the artifact retention
+        // threshold has a default distinct from its ceiling.
+        assert_eq!(defaults.max_frame_bytes, Limits::ceilings().max_frame_bytes);
+        assert_eq!(defaults.max_run_records, Limits::ceilings().max_run_records);
+        Ok(())
+    }
+
+    #[test]
+    fn a_configured_artifact_ceiling_may_rise_from_the_default_toward_the_ceiling_but_not_past_it()
+    {
+        let raised = Limits {
+            max_artifact_bytes: 100 * 1024 * 1024,
+            ..Limits::defaults()
+        };
+        assert!(
+            raised.validate().is_ok(),
+            "settings may increase the retention threshold up to the frozen ceiling"
+        );
+        let past_ceiling = Limits {
+            max_artifact_bytes: Limits::ceilings().max_artifact_bytes + 1,
+            ..Limits::defaults()
+        };
+        assert!(
+            past_ceiling.validate().is_err(),
+            "the ceiling protects core against a hostile or buggy child; no configuration may \
+             cross it"
+        );
+    }
+
+    #[test]
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "the invariant is between two named constants on purpose: a future edit that \
+                  breaks it should fail this test, not just look odd in a diff"
+    )]
+    fn the_default_run_seconds_is_ten_minutes_well_under_the_hour_ceiling() {
+        assert_eq!(Deadline::DEFAULT_RUN_SECONDS, 600);
+        assert!(Deadline::DEFAULT_RUN_SECONDS < Deadline::MAX_RUN_SECONDS);
+        // The idle and grace defaults stay proportioned to the shorter run
+        // default rather than to the ceiling.
+        assert!(u64::from(Deadline::DEFAULT_IDLE_SECONDS) < Deadline::DEFAULT_RUN_SECONDS);
     }
 
     #[test]

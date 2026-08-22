@@ -147,6 +147,13 @@ fn every_ruling_four_rejection_case_is_enforced_with_its_own_code() {
         // A core-owned property a Field must never supply: structurally
         // impossible, so it fails at the schema rather than being overruled.
         ("property-core-owned", RejectionCode::ProtocolSchemaInvalid),
+        // A malformed `date` value: distinct from an invalid datetime.
+        ("property-invalid-date", RejectionCode::RecordInvalidDate),
+        // A name registered only for a derived record, never for a Note.
+        (
+            "property-derived-record-only",
+            RejectionCode::RecordUnknownProperty,
+        ),
     ];
     for (scenario, expected) in expectations {
         let run = Case::new(scenario).incremental(LOCAL_FIELD);
@@ -174,6 +181,20 @@ fn a_note_type_outside_the_a1_registry_and_an_undeclared_capability_are_rejected
         Some(RejectionCode::ManifestUndeclaredCapability),
         "capability must be declared before it can be exercised"
     );
+}
+
+#[test]
+fn a_note_type_disagreeing_with_its_capability_slices_declared_one_is_rejected() {
+    // "document" is one of A1's eleven approved types, so it clears the
+    // registry check; it simply is not what the "file" capability slice
+    // declares. Declaration before exercise: a slice's note_type is a bound
+    // the Field must honour, not decoration.
+    let run = Case::new("note-type-not-declared").incremental(LOCAL_FIELD);
+    assert_eq!(
+        run.rejection_code(),
+        Some(RejectionCode::RecordNoteTypeNotDeclared)
+    );
+    assert_eq!(run.report.outcome, RunOutcome::Failed);
 }
 
 #[test]

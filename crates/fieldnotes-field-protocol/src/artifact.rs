@@ -10,12 +10,22 @@
 //!
 //! A handle is a single path segment from a closed character set. It admits no
 //! dot, no separator, and no traversal sequence, and it excludes the reserved
-//! Windows device names, so a handle **cannot be a path however it is spelled**
-//! and traversal is a grammar error rather than something to sanitize. Core
-//! joins the handle to the staging directory with
+//! Windows device names — including `com0` and `lpt0`, which are reserved
+//! alongside `com1`-`com9` and `lpt1`-`lpt9` even though the numbered range
+//! conventionally starts at 1 — so a handle **cannot be a path however it is
+//! spelled** and traversal is a grammar error rather than something to
+//! sanitize. Core joins the handle to the staging directory with
 //! [`std::path::Path::join`] — never by string concatenation — opens it without
 //! following symlinks, requires a regular file whose identity is unchanged
 //! between check and use, and bounds the read by the declared length.
+//!
+//! A grammar failure and a filesystem-shape failure are distinguishable
+//! rejection codes: [`RejectionCode::ArtifactInvalidHandle`] is a malformed
+//! handle string, checked before any filesystem call, while
+//! [`RejectionCode::ArtifactNotRegularFile`] is a grammatically valid handle
+//! whose staged entry turned out to be a symlink, a directory, or some other
+//! non-regular file. Logs, metrics, and tests can then tell "the Field sent a
+//! hostile string" apart from "the Field staged the wrong kind of thing".
 //!
 //! Core **always** computes its own SHA-256 over the staged bytes. A
 //! Field-declared digest is a detection aid: a disagreement rejects the record.
@@ -39,9 +49,9 @@ use crate::message::{ArtifactKind, ArtifactRef};
 ///
 /// Excluded on **every** platform, so a notebook does not become non-portable
 /// by being written on one.
-pub const RESERVED_DEVICE_NAMES: [&str; 22] = [
-    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+pub const RESERVED_DEVICE_NAMES: [&str; 24] = [
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
 ];
 
 /// Why an artifact handle was refused.
@@ -192,7 +202,7 @@ impl ArtifactDigestIndex for NoStoredArtifacts {
     }
 }
 
-/// An accepted artifact reference.
+/// An accepted artifact reference whose bytes are, or already were, durable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedArtifact {
     /// **Core's own** digest, which is what the A1 artifact identity and the
@@ -204,6 +214,35 @@ pub struct ResolvedArtifact {
     /// Whether core reused bytes it already stored rather than reading staged
     /// bytes.
     pub reused: bool,
+}
+
+/// An artifact the Field chose not to retain, per the retention threshold
+/// [`Limits::max_artifact_bytes`] communicates in the collection request.
+///
+/// "Stays at source" is the product's own boundary: a notebook is disposable
+/// working material, not a system of record, and copying every large blob by
+/// default contradicts that. A declined artifact carries no bytes and no
+/// digest — core neither stages nor stores anything for it — but the record
+/// it belongs to is still accepted and the Note it becomes is still created,
+/// simply without those bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclinedArtifact {
+    /// The artifact's role in its record.
+    pub role: crate::message::ArtifactRole,
+    /// The Field's advisory account of how large the declined bytes are, when
+    /// it knows one. Never verified, because core never reads them.
+    pub byte_length: Option<u64>,
+    /// Display metadata only, exactly as for a resolved reference.
+    pub source_filename: Option<String>,
+}
+
+/// What resolving one artifact reference produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArtifactOutcome {
+    /// Bytes are, or already were, durable.
+    Resolved(ResolvedArtifact),
+    /// The Field declined to retain this artifact's bytes.
+    Declined(DeclinedArtifact),
 }
 
 /// Why an artifact reference was refused.
@@ -289,13 +328,15 @@ fn open_without_following(path: &Path) -> io::Result<File> {
 /// bytes.
 ///
 /// `staging_dir` must be the directory core named in the collection request.
-/// The reference's handle is joined to it and nowhere else.
+/// The reference's handle is joined to it and nowhere else. A `not_retained`
+/// reference touches neither the filesystem nor the digest index: declining
+/// to retain something is not a rejection, so it never fails the run.
 pub fn resolve_artifact(
     staging_dir: &Path,
     reference: &ArtifactRef,
     limits: &Limits,
     index: &dyn ArtifactDigestIndex,
-) -> Result<ResolvedArtifact, ArtifactRejection> {
+) -> Result<ArtifactOutcome, ArtifactRejection> {
     match reference.kind {
         ArtifactKind::DigestOnly => {
             let Some(declared) = &reference.sha256 else {
@@ -305,11 +346,11 @@ pub fn resolve_artifact(
                 ));
             };
             if index.contains_digest(declared.as_str()) {
-                Ok(ResolvedArtifact {
+                Ok(ArtifactOutcome::Resolved(ResolvedArtifact {
                     digest: declared.as_str().to_owned(),
                     byte_length: 0,
                     reused: true,
-                })
+                }))
             } else {
                 Err(ArtifactRejection::new(
                     RejectionCode::ArtifactUnknownDigest,
@@ -320,7 +361,14 @@ pub fn resolve_artifact(
                 ))
             }
         }
-        ArtifactKind::Staged => resolve_staged(staging_dir, reference, limits),
+        ArtifactKind::Staged => {
+            resolve_staged(staging_dir, reference, limits).map(ArtifactOutcome::Resolved)
+        }
+        ArtifactKind::NotRetained => Ok(ArtifactOutcome::Declined(DeclinedArtifact {
+            role: reference.role,
+            byte_length: reference.byte_length,
+            source_filename: reference.source_filename.clone(),
+        })),
     }
 }
 
@@ -367,10 +415,12 @@ fn resolve_staged(
         }
     };
     if !before.file_type().is_file() {
-        // A symlink, a directory, a socket, or a device. v1's closed vocabulary
-        // pins this to `artifact.invalid_handle`, per transcript 11.
+        // A symlink, a directory, a socket, or a device. The handle's grammar
+        // was fine; what is on the filesystem is not, so this is
+        // `artifact.not_regular_file` rather than `artifact.invalid_handle`,
+        // per transcript 11.
         return Err(ArtifactRejection::new(
-            RejectionCode::ArtifactInvalidHandle,
+            RejectionCode::ArtifactNotRegularFile,
             format!(
                 "the staged entry for handle {handle} is not a regular file, so core reads \
                  nothing: it refuses symlinks and non-regular files rather than following them \
@@ -388,13 +438,13 @@ fn resolve_staged(
     })?;
     let after = file.metadata().map_err(|error| {
         ArtifactRejection::new(
-            RejectionCode::ArtifactInvalidHandle,
+            RejectionCode::ArtifactNotRegularFile,
             format!("the opened staged file for handle {handle} could not be examined: {error}"),
         )
     })?;
     if !after.file_type().is_file() || FileIdentity::of(&after) != identity_before {
         return Err(ArtifactRejection::new(
-            RejectionCode::ArtifactInvalidHandle,
+            RejectionCode::ArtifactNotRegularFile,
             format!(
                 "the staged entry for handle {handle} changed identity between check and use, so \
                  core reads nothing"
@@ -506,7 +556,7 @@ mod tests {
     #[test]
     fn reserved_windows_device_names_are_refused_on_every_platform() {
         for reserved in [
-            "con", "prn", "aux", "nul", "com1", "com3", "com9", "lpt1", "lpt9",
+            "con", "prn", "aux", "nul", "com0", "com1", "com3", "com9", "lpt0", "lpt1", "lpt9",
         ] {
             assert_eq!(
                 ArtifactHandle::parse(reserved),
@@ -516,7 +566,7 @@ mod tests {
         }
         // A reserved name with a suffix is an ordinary handle.
         assert!(ArtifactHandle::parse("nul1").is_ok());
-        assert!(ArtifactHandle::parse("com0").is_ok());
+        assert!(ArtifactHandle::parse("com10").is_ok());
     }
 
     #[test]

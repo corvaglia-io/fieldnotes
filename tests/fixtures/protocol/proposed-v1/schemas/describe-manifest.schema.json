@@ -31,10 +31,8 @@
     },
     "field_stem": { "$ref": "common.schema.json#/$defs/fieldStem" },
     "property_prefix": {
-      "oneOf": [
-        { "$ref": "common.schema.json#/$defs/propertyPrefix" },
-        { "type": "null" }
-      ]
+      "description": "The registered property prefix. Absent for a Field contributing none; never null, so an omitted member and an explicit null are not two spellings of the same thing. Before this revision the member was required-but-nullable, which meant an omitted member and 'null' were indistinguishable failure modes at best and, at worst, an omitted key silently meant 'contributes no prefix' while null was read some other way.",
+      "$ref": "common.schema.json#/$defs/propertyPrefix"
     },
     "declared_properties": {
       "description": "Exhaustive declaration of the connector-prefixed properties this Field may emit. Core rejects any prefixed property a record carries that is absent here, and rejects a value whose JSON shape contradicts the declared scalar type or cardinality. This replaces spelling-based type inference for declared properties. Unprefixed shared properties are never declared here: they belong to the closed A1 shared registry and take their type from it.",
@@ -83,7 +81,6 @@
     "driver",
     "driver_version",
     "field_stem",
-    "property_prefix",
     "declared_properties",
     "capabilities",
     "source_key",

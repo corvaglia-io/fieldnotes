@@ -138,6 +138,57 @@ pub const SEMANTIC_EXCLUSIONS: [&str; 9] = [
     "source_version",
 ];
 
+/// Shared registry names that exist only for a **derived record** — a Note
+/// generated from other Notes rather than collected from a source, such as a
+/// summary, an entity, or a conflict bundle.
+///
+/// A Field collects a Note. It maps a source object onto A1 vocabulary; it
+/// never derives one Note from others, and it has no evidence span, no
+/// confidence score, and no binding status to report. These names are
+/// registered A1 property types — [`PropertyRegistry::lookup`] resolves them —
+/// but they are not part of the subset a Field's record may use. Listed in
+/// ascending ASCII order.
+pub const DERIVED_RECORD_ONLY: [&str; 26] = [
+    "binding_status",
+    "candidate_fingerprints",
+    "channels",
+    "confidence",
+    "detected_at",
+    "entity_id",
+    "evidence",
+    "evidence_count",
+    "evidence_spans",
+    "first_seen",
+    "from_entity_id",
+    "generated_at",
+    "generator_version",
+    "involved_note_ids",
+    "last_seen",
+    "producer_references",
+    "source_identities",
+    "source_note_id",
+    "source_scopes",
+    "status",
+    "subject_entity_id",
+    "subject_identity",
+    "supported_by",
+    "target_field_id",
+    "target_source_id",
+    "to_entity_id",
+];
+
+/// Whether `name` is in the Note-applicable subset of the shared registry.
+///
+/// A name outside the registry entirely is not covered by this check at all;
+/// callers first look the name up with [`PropertyRegistry::lookup`] and then
+/// ask this question only for a name that lookup found. `false` means the name
+/// is a registered shared property, but one that exists only for a derived
+/// record, never for a Field's collected Note.
+#[must_use]
+pub fn is_note_applicable(name: &str) -> bool {
+    !DERIVED_RECORD_ONLY.contains(&name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +209,45 @@ mod tests {
             Some(PropertyType::List(ScalarKind::Text, ListSemantics::Set))
         );
         assert_eq!(registry.lookup("chat_id"), None);
+    }
+
+    #[test]
+    fn derived_record_only_names_are_all_registered_and_sorted() {
+        // Every excluded name must actually be in the registry: this list
+        // narrows what a Field may use, it does not add new vocabulary.
+        let registry = PropertyRegistry::v1();
+        for name in DERIVED_RECORD_ONLY {
+            assert!(
+                registry.lookup(name).is_some(),
+                "{name} is listed as derived-record-only but is not a registered property"
+            );
+            assert!(
+                !is_note_applicable(name),
+                "{name} must not be Note-applicable"
+            );
+        }
+        let mut sorted = DERIVED_RECORD_ONLY;
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted, DERIVED_RECORD_ONLY,
+            "the list is documented as ascending ASCII order"
+        );
+    }
+
+    #[test]
+    fn ordinary_note_properties_remain_note_applicable() {
+        for name in [
+            "title",
+            "subject",
+            "to",
+            "cc",
+            "participants",
+            "occurred_at",
+        ] {
+            assert!(
+                is_note_applicable(name),
+                "{name} must remain Note-applicable"
+            );
+        }
     }
 }

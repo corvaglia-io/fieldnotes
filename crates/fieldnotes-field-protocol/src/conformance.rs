@@ -207,6 +207,9 @@ pub enum CoreAction {
     InstallArtifact,
     /// Core reused bytes it already stored.
     ReuseArtifact,
+    /// The Field declined to retain an artifact; core stored no bytes and
+    /// computed no digest for it.
+    DeclineArtifact,
     /// Core installed a new Note.
     WriteNote,
     /// Core updated a Note in place under the same Note ID.
@@ -540,6 +543,12 @@ pub enum CoreObservation {
     ReusedArtifact {
         /// The digest it matched.
         digest: String,
+    },
+    /// The Field declined to retain an artifact; core stored no bytes and
+    /// computed no digest for it, and the record was accepted anyway.
+    DeclinedArtifact {
+        /// The declined artifact's role.
+        role: crate::message::ArtifactRole,
     },
     /// Core installed or updated the current Note for a source key.
     WroteNote {
@@ -955,7 +964,7 @@ impl FieldUnderTest {
                 ),
                 None => None,
             },
-            limits: self.limits,
+            limits: Some(self.limits),
             deadline: self.deadline()?,
         };
         let mut rejection = None;
@@ -1204,15 +1213,23 @@ impl FieldUnderTest {
         // Stage, verify, and install or reuse original artifacts, and make them
         // durable, before the Note that references them.
         let resolved = session.resolve_artifacts(record, &plan.staging_dir, index)?;
-        for artifact in resolved {
-            if artifact.reused {
-                actions.push(CoreObservation::ReusedArtifact {
-                    digest: artifact.digest,
-                });
-            } else {
-                actions.push(CoreObservation::InstalledArtifact {
-                    digest: artifact.digest,
-                });
+        for outcome in resolved {
+            match outcome {
+                crate::artifact::ArtifactOutcome::Resolved(artifact) if artifact.reused => {
+                    actions.push(CoreObservation::ReusedArtifact {
+                        digest: artifact.digest,
+                    });
+                }
+                crate::artifact::ArtifactOutcome::Resolved(artifact) => {
+                    actions.push(CoreObservation::InstalledArtifact {
+                        digest: artifact.digest,
+                    });
+                }
+                crate::artifact::ArtifactOutcome::Declined(declined) => {
+                    actions.push(CoreObservation::DeclinedArtifact {
+                        role: declined.role,
+                    });
+                }
             }
         }
         if plan.durability.succeeds(accepted.seq) {
@@ -1276,5 +1293,8 @@ pub fn manifest_snapshot(manifest: &Manifest) -> crate::declared::ManifestSnapsh
 /// that contributes none.
 #[must_use]
 pub fn manifest_prefix(manifest: &Manifest) -> Option<&str> {
-    manifest.property_prefix.value().map(PropertyPrefix::as_str)
+    manifest
+        .property_prefix
+        .as_ref()
+        .map(PropertyPrefix::as_str)
 }

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/record-event.schema.json",
   "title": "Field protocol v1 record event (Field to core)",
-  "description": "One collected source object as a normalized source envelope: post-mapping and pre-serialization. The Field has already mapped vendor structures onto A1 vocabulary; core still owns record IDs, producer provenance, canonical bytes, key ordering, filenames, hashes, capture time, projections, and every durable write. A record is never a rendered Note and never carries a notebook path. 'change' selects an upsert of current state or an explicit authoritative deletion.",
+  "description": "One collected source object as a normalized source envelope: post-mapping and pre-serialization. The Field has already mapped vendor structures onto A1 vocabulary; core still owns record IDs, producer provenance, canonical bytes, key ordering, filenames, hashes, capture time, projections, and every durable write. A record is never a rendered Note and never carries a notebook path. 'change' selects an upsert of current state or an explicit authoritative deletion. Two-layer validity, illustrated by 'artifacts[].handle': this JSON Schema's pattern on 'handle' is a wire-schema well-formedness guard, and a validator run against this document alone correctly reports a traversal or absolute-path handle as not matching it. An implementation must not collapse that guard into its own DTO's field type, though: a Rust (or other language) type that enforces the same grammar during deserialization would report a hostile handle as a generic decode failure -- 'protocol.schema_invalid' -- when the pipeline stage that actually owns this rejection, and the code the transcripts pin, is the artifact-validation step that runs before any filesystem call and reports 'artifact.invalid_handle'. The reference implementation therefore carries 'handle' as an unvalidated string in its DTO and applies the grammar itself, by hand, at that later step.",
   "type": "object",
   "properties": {
     "v": { "$ref": "common.schema.json#/$defs/protocolVersion" },
@@ -18,10 +18,13 @@
       "maxLength": 63,
       "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
     },
-    "note_type": { "$ref": "common.schema.json#/$defs/noteType" },
+    "note_type": {
+      "description": "The primary Note type candidate. Must also equal the note_type the manifest's capability slice for this record's object_kind declares; a value that clears the A1 registry check but disagrees with the declared slice is rejected as 'record.note_type_not_declared', because 'declare before exercise' makes a slice's declared note_type a bound the Field must honour, not decoration.",
+      "$ref": "common.schema.json#/$defs/noteType"
+    },
     "occurred_at": { "$ref": "common.schema.json#/$defs/offsetDatetime" },
     "properties": {
-      "description": "Flat property candidates keyed by A1 property names: unprefixed properties from the closed A1 shared registry, plus connector-prefixed properties this Field's manifest declared. Core-owned and hoisted names are structurally excluded here. Core still validates every name, type, prefix ownership, and list semantics against the A1 registry and the declaring manifest.",
+      "description": "Flat property candidates keyed by A1 property names: unprefixed properties from the Note-applicable subset of the closed A1 shared registry, plus connector-prefixed properties this Field's manifest declared. A Field collects a Note, never a derived record, so registry names that exist only for a derived record -- 'confidence', 'generated_at', 'evidence_spans', 'binding_status', and the rest of that subset -- are not part of the vocabulary a record may use, even though they are registered A1 property types; core rejects one as 'record.unknown_property'. Core-owned and hoisted names are structurally excluded here. Core still validates every name, type, prefix ownership, and list semantics against the A1 registry and the declaring manifest.",
       "type": "object",
       "propertyNames": {
         "type": "string",
@@ -114,15 +117,19 @@
       "type": "object",
       "properties": {
         "kind": {
-          "description": "'staged' means the Field wrote the exact original bytes into the run's staging directory under 'handle'. 'digest_only' means the Field knows the artifact by digest and did not transfer bytes; core accepts it only when it already stores that digest, and otherwise rejects the record so the Field retries with bytes.",
-          "enum": ["staged", "digest_only"]
+          "description": "'staged' means the Field wrote the exact original bytes into the run's staging directory under 'handle'. 'digest_only' means the Field knows the artifact by digest and did not transfer bytes; core accepts it only when it already stores that digest, and otherwise rejects the record so the Field retries with bytes. 'not_retained' means the Field saw this artifact at the source and, per the retention threshold 'max_artifact_bytes' states in the collection request, declined to retain it: core stores no bytes and computes no digest, and the record is still accepted -- 'stays at source' is a policy decision, never a protocol violation.",
+          "enum": ["staged", "digest_only", "not_retained"]
         },
         "handle": { "$ref": "common.schema.json#/$defs/artifactHandle" },
         "sha256": {
           "description": "The Field's declared SHA-256 over the exact original bytes. Core always computes its own digest over staged bytes and derives the A1 artifact ID from that; a disagreement rejects the record. Required for 'digest_only', where it is the only thing core has to match against bytes it already stores.",
           "$ref": "common.schema.json#/$defs/sha256Hex"
         },
-        "byte_length": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "byte_length": {
+          "description": "For 'staged', the exact byte length core bounds the read by, at most the 536870912-byte (512 MiB) single-artifact transfer ceiling. For 'not_retained', the Field's advisory account of how large the declined bytes are, when it knows one -- deliberately unbounded here, since being over the transfer ceiling is the whole reason the Field declined to stage them, and core never reads them to check.",
+          "type": "integer",
+          "minimum": 0
+        },
         "media_type": { "$ref": "common.schema.json#/$defs/mediaType" },
         "role": {
           "description": "'attachment' maps into the A1 role-ordered attachments list. 'original' is the source object's own bytes. Every role also appears in the set-like artifacts list.",
@@ -140,13 +147,22 @@
       "allOf": [
         {
           "if": { "properties": { "kind": { "const": "staged" } }, "required": ["kind"] },
-          "then": { "required": ["handle", "byte_length"] }
+          "then": {
+            "required": ["handle", "byte_length"],
+            "properties": { "byte_length": { "maximum": 536870912 } }
+          }
         },
         {
           "if": { "properties": { "kind": { "const": "digest_only" } }, "required": ["kind"] },
           "then": {
             "required": ["sha256"],
             "not": { "anyOf": [{ "required": ["handle"] }, { "required": ["byte_length"] }] }
+          }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "not_retained" } }, "required": ["kind"] },
+          "then": {
+            "not": { "anyOf": [{ "required": ["handle"] }, { "required": ["sha256"] }] }
           }
         }
       ]

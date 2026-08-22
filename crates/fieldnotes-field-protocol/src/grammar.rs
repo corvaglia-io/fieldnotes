@@ -217,7 +217,13 @@ guarded_string! {
 guarded_string! {
     /// An opaque, non-secret, bounded, Field-owned resume token that core never
     /// parses, orders, or interprets.
-    Cursor, min = 1, max = 4096, check = |text: &str| !text.contains('\0')
+    ///
+    /// Excludes every C0 control character, not just NUL, matching the
+    /// treatment [`SourceScope`] already gets: a cursor containing an
+    /// unescaped LF is exactly the value that corrupts an NDJSON-shaped state
+    /// file or a log line if it is ever written out raw, and a cursor is
+    /// stored and logged, not merely compared.
+    Cursor, min = 1, max = 4096, check = is_printable
 }
 
 guarded_string! {
@@ -599,6 +605,19 @@ mod tests {
         assert!(SourceScope::parse("local-root:reference-library-v1").is_ok());
         assert!(SourceScope::parse("scope\nwith-newline").is_err());
         assert!(SourceScope::parse("scope\u{7f}").is_err());
+    }
+
+    #[test]
+    fn cursor_guard_excludes_every_c0_control_character_not_only_nul() {
+        assert!(Cursor::parse("walk:v1:seq=2;mtime=2026-08-22T09:45:00Z").is_ok());
+        assert!(Cursor::parse("walk:v1:with\0nul").is_err());
+        assert!(
+            Cursor::parse("walk:v1:with\nlinefeed").is_err(),
+            "a cursor containing LF is exactly the value that corrupts an NDJSON-shaped state \
+             file or a log line, and it was previously legal"
+        );
+        assert!(Cursor::parse("walk:v1:with\ttab").is_err());
+        assert!(Cursor::parse("walk:v1:with\u{7f}del").is_err());
     }
 
     #[test]

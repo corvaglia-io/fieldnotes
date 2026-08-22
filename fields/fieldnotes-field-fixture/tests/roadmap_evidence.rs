@@ -225,7 +225,7 @@ fn each_malformed_shape_is_rejected_with_its_own_closed_vocabulary_code() {
             "malformed-duplicate-seq",
             RejectionCode::ProtocolDuplicateSeq,
         ),
-        ("malformed-seq-gap", RejectionCode::ProtocolUnexpectedOrder),
+        ("malformed-seq-gap", RejectionCode::ProtocolSeqGap),
         ("malformed-invalid-utf8", RejectionCode::ProtocolInvalidUtf8),
         (
             "malformed-truncated-frame",
@@ -616,7 +616,7 @@ fn every_hostile_artifact_reference_is_rejected_with_the_code_the_package_specif
         ),
         (
             "artifact-symlink-escape",
-            RejectionCode::ArtifactInvalidHandle,
+            RejectionCode::ArtifactNotRegularFile,
         ),
         (
             "artifact-digest-mismatch",
@@ -679,6 +679,33 @@ fn a_digest_only_reference_is_accepted_only_for_bytes_the_notebook_already_store
         run.rejection_code(),
         Some(RejectionCode::ArtifactUnknownDigest)
     );
+}
+
+#[test]
+fn an_artifact_too_large_to_retain_stays_at_source_without_failing_the_run() {
+    // "Stays at source": oversize material is not a protocol violation. Core
+    // stores no bytes and computes no digest for it, and the record and the
+    // run are both still accepted.
+    let case = Case::new("artifact-not-retained");
+    let run = case.incremental(LOCAL_FIELD);
+
+    assert_eq!(run.report.outcome, RunOutcome::Complete);
+    assert!(run.rejection.is_none());
+    assert!(
+        run.actions
+            .iter()
+            .any(|action| matches!(action, CoreObservation::DeclinedArtifact { .. })),
+        "core must observe the decline rather than treat it as nothing happening: {:?}",
+        run.actions
+    );
+    assert!(
+        !run.actions
+            .iter()
+            .any(|action| matches!(action, CoreObservation::InstalledArtifact { .. })),
+        "a declined artifact must never be installed: {:?}",
+        run.actions
+    );
+    assert_eq!(run.committed_cursors.len(), 1);
 }
 
 #[test]

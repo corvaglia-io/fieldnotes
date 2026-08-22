@@ -397,9 +397,37 @@ impl Drop for FieldProcess {
     }
 }
 
+/// Classifies a raw Windows exit code.
+///
+/// Extracted into a pure function, with no OS dependency, so its logic can be
+/// exercised on any host rather than only when this crate is actually built
+/// on Windows.
+///
+/// NTSTATUS "error"-severity codes have both of their two high bits set. A
+/// process that ended by unhandled structured exception -- including the
+/// exception `std::process::abort()` raises via `__fastfail`, `0xC0000409`
+/// (`STATUS_STACK_BUFFER_OVERRUN`) -- surfaces here rather than through a
+/// POSIX-style signal, and its value does not fit a `u8` the way an ordinary
+/// exit code does.
+#[cfg(any(windows, test))]
+fn classify_windows_exit_code(raw: u32) -> ExitObservation {
+    if raw & 0xC000_0000 == 0xC000_0000 {
+        ExitObservation::WindowsAbnormalTermination(raw)
+    } else {
+        ExitObservation::Exited(u8::try_from(raw & 0xff).unwrap_or(0xff))
+    }
+}
+
 fn classify(status: &std::process::ExitStatus) -> ExitObservation {
     if let Some(code) = status.code() {
-        return ExitObservation::Exited(u8::try_from(code & 0xff).unwrap_or(0xff));
+        #[cfg(windows)]
+        {
+            return classify_windows_exit_code(code as u32);
+        }
+        #[cfg(not(windows))]
+        {
+            return ExitObservation::Exited(u8::try_from(code & 0xff).unwrap_or(0xff));
+        }
     }
     #[cfg(unix)]
     {
@@ -488,5 +516,24 @@ mod tests {
     fn operation_tokens_are_the_two_v1_operations() {
         assert_eq!(Operation::Describe.as_str(), "describe");
         assert_eq!(Operation::Collect.as_str(), "collect");
+    }
+
+    #[test]
+    fn windows_abnormal_termination_carries_the_full_code_rather_than_a_narrowed_u8() {
+        // 0xC0000409 is STATUS_STACK_BUFFER_OVERRUN, what `std::process::abort()`
+        // surfaces as on Windows. Its low byte alone, 0x09, would misread as
+        // ordinary exit code 9 ("configuration invalid") if ever narrowed.
+        match classify_windows_exit_code(0xC000_0409) {
+            ExitObservation::WindowsAbnormalTermination(code) => {
+                assert_eq!(code, 0xC000_0409);
+            }
+            other => {
+                panic!("an NTSTATUS error code must not be read as an ordinary exit: {other:?}")
+            }
+        }
+        // An ordinary exit code in the low byte, with neither high bit set,
+        // classifies normally.
+        assert_eq!(classify_windows_exit_code(0), ExitObservation::Exited(0));
+        assert_eq!(classify_windows_exit_code(9), ExitObservation::Exited(9));
     }
 }

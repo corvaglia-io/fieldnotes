@@ -148,8 +148,12 @@ scenarios! {
     PropertyUnknown => "property-unknown", Local;
     PropertyTypeMismatch => "property-type-mismatch", Local;
     PropertyCoreOwned => "property-core-owned", Local;
+    PropertyInvalidDate => "property-invalid-date", Local;
+    PropertyDerivedRecordOnly => "property-derived-record-only", Local;
     NoteTypeInvalid => "note-type-invalid", Local;
+    NoteTypeNotDeclared => "note-type-not-declared", Local;
     CapabilityUndeclared => "capability-undeclared", Local;
+    ArtifactNotRetained => "artifact-not-retained", Local;
     Cancel => "cancel", Local;
     CrashBeforeCheckpoint => "crash-before-checkpoint", Local;
     CrashAfterCheckpoint => "crash-after-checkpoint", Local;
@@ -164,7 +168,13 @@ scenarios! {
 /// Answers a describe request.
 pub fn describe(scenario: Scenario, request: &DescribeRequest) -> ScenarioOutcome {
     let run_id = request.run_id.as_str();
-    let mut emitter = Emitter::new(request.limits.max_frame_bytes);
+    // A describe run almost never states limits, since it has almost nothing
+    // to bound; fall back to the frozen ceiling when core omitted them.
+    let max_frame_bytes = request.limits.map_or(
+        fieldnotes_field_protocol::limits::Limits::ceilings().max_frame_bytes,
+        |limits| limits.max_frame_bytes,
+    );
+    let mut emitter = Emitter::new(max_frame_bytes);
     match scenario.flavor() {
         Flavor::NoSharedVersion => {
             // A Field that supports no version core offered emits no manifest:
@@ -631,6 +641,59 @@ pub fn collect<R: BufRead>(
             }
             out.frame(record);
             ScenarioOutcome::failed(ProtocolExit::Internal)
+        }
+        Scenario::NoteTypeNotDeclared => {
+            // "document" is one of A1's eleven approved types, so it passes
+            // the registry check; it simply is not what the "file" capability
+            // slice declares. Declaration before exercise: a slice's
+            // note_type is a bound, not decoration.
+            out.frame(records::readme_with_note_type(run_id, 1, "document"));
+            ScenarioOutcome::failed(ProtocolExit::Internal)
+        }
+        Scenario::PropertyInvalidDate => {
+            out.frame(records::agreement_with_property(
+                run_id,
+                1,
+                "local_document_date",
+                json!("not-a-date"),
+            ));
+            ScenarioOutcome::failed(ProtocolExit::Internal)
+        }
+        Scenario::PropertyDerivedRecordOnly => {
+            // 'confidence' is a registered A1 property, but only for a
+            // derived record generated from other Notes. A Field collects a
+            // Note and must not be able to emit it.
+            out.frame(records::readme_with_property(
+                run_id,
+                1,
+                "confidence",
+                json!(0.9),
+            ));
+            ScenarioOutcome::failed(ProtocolExit::Internal)
+        }
+        Scenario::ArtifactNotRetained => {
+            // Bytes this large stay at the source by policy: the Field
+            // declines to stage them, and the run still completes.
+            out.frame(records::readme_with_artifact(
+                run_id,
+                1,
+                json!({
+                    "kind": "not_retained",
+                    "byte_length": 1_073_741_824_u64,
+                    "media_type": "application/zip",
+                    "role": "attachment",
+                    "source_filename": "full-export.zip"
+                }),
+            ));
+            out.frame(records::checkpoint(
+                run_id,
+                2,
+                "walk:v1:seq=1;mtime=2026-08-22T09:45:00Z",
+                1,
+                1,
+                true,
+            ));
+            ScenarioOutcome::completed()
         }
         Scenario::CapabilityUndeclared => {
             let mut record = records::readme(run_id, 1);

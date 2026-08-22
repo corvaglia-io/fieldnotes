@@ -102,6 +102,27 @@ pub fn readme_with_property(run_id: &str, seq: u64, name: &str, value: Value) ->
     record
 }
 
+/// The `readme.md` record declaring a `note_type` that disagrees with its
+/// capability slice's declared one. `object_kind` stays `file`, whose
+/// declared slice always maps to `note_type: "file"`.
+#[must_use]
+pub fn readme_with_note_type(run_id: &str, seq: u64, note_type: &str) -> Value {
+    let mut record = readme(run_id, seq);
+    set(&mut record, "note_type", json!(note_type));
+    record
+}
+
+/// The master services agreement record with one property candidate replaced,
+/// for exercising a declared property's value grammar in isolation.
+#[must_use]
+pub fn agreement_with_property(run_id: &str, seq: u64, name: &str, value: Value) -> Value {
+    let mut record = agreement(run_id, seq);
+    if let Some(properties) = record.get_mut("properties").and_then(Value::as_object_mut) {
+        properties.insert(name.to_owned(), value);
+    }
+    record
+}
+
 /// The `readme.md` record with a divergent body, for the in-run divergence case.
 #[must_use]
 pub fn readme_divergent(run_id: &str, seq: u64) -> Value {

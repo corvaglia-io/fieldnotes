@@ -16,7 +16,10 @@
       "$ref": "common.schema.json#/$defs/protocolRevision"
     },
     "field_id": { "$ref": "common.schema.json#/$defs/fieldId" },
-    "limits": { "$ref": "common.schema.json#/$defs/limits" },
+    "limits": {
+      "description": "The effective bounds for this run, when core states them. Optional here, unlike in collect_request: a describe run emits at most one manifest and reads no records, artifacts, or diagnostics, so it has almost nothing to bound, and requiring the full ceiling table would make every Field parse thirteen numbers it cannot act on. When present, core still enforces it as the frame-size ceiling for this run.",
+      "$ref": "common.schema.json#/$defs/limits"
+    },
     "deadline": { "$ref": "common.schema.json#/$defs/deadline" }
   },
   "required": [
@@ -25,7 +28,6 @@
     "run_id",
     "supported_protocol_versions",
     "max_protocol_revision",
-    "limits",
     "deadline"
   ],
   "additionalProperties": false

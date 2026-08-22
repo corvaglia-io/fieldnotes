@@ -34,6 +34,11 @@ pub enum RejectionCode {
     ProtocolDuplicateSeq,
     /// A sequence number went backwards.
     ProtocolSeqRegression,
+    /// A sequence number skipped ahead, neither repeating nor regressing.
+    /// Distinct from [`RejectionCode::ProtocolUnexpectedOrder`], which is
+    /// reserved for a frame arriving somewhere the protocol does not allow it
+    /// at all, not for a hole in an otherwise well-ordered stream.
+    ProtocolSeqGap,
     /// A declared bound other than the frame ceiling was exceeded.
     ProtocolLimitExceeded,
     /// The run exceeded its wall-clock deadline.
@@ -46,7 +51,13 @@ pub enum RejectionCode {
     /// No protocol version is shared by the two peers, or a peer answered with
     /// a version that was not offered.
     ProtocolVersionUnsupported,
-    /// An unprefixed property name outside A1's closed shared registry.
+    /// A checkpoint's `records_covered` disagrees with what core actually
+    /// received for the range it claims to cover. The two sides disagree
+    /// about what was transferred.
+    ProtocolCoverageMismatch,
+    /// An unprefixed property name outside A1's closed shared registry,
+    /// including a name the registry types for a derived record only, which a
+    /// Field collecting a Note may not emit.
     RecordUnknownProperty,
     /// A prefixed property the declaring manifest does not list.
     RecordUndeclaredProperty,
@@ -57,6 +68,14 @@ pub enum RejectionCode {
     RecordPropertyTypeMismatch,
     /// A primary Note type the A1 registry does not contain.
     RecordInvalidNoteType,
+    /// A record's `note_type` differs from the `note_type` its capability
+    /// slice declared in the manifest. Declaration before exercise: without
+    /// this check a slice's declared `note_type` is decoration, not a bound.
+    RecordNoteTypeNotDeclared,
+    /// A `date` value that is not a well-formed A1 date-only value. Distinct
+    /// from [`RejectionCode::RecordInvalidDatetime`] so a reviewer can tell
+    /// which grammar failed without opening the record.
+    RecordInvalidDate,
     /// A datetime that is not an explicit-offset RFC 3339 value.
     RecordInvalidDatetime,
     /// A record without a usable portable exact-source key.
@@ -64,9 +83,14 @@ pub enum RejectionCode {
     /// One source key asserted twice in one run with divergent payloads and no
     /// declared version ordering.
     RecordDuplicateDivergentInRun,
-    /// An artifact handle that violates the single-segment handle grammar, or
-    /// a staged entry that is not a regular file.
+    /// An artifact handle that violates the single-segment handle grammar.
+    /// Distinct from [`RejectionCode::ArtifactNotRegularFile`], which is a
+    /// filesystem-shape failure rather than a grammar failure.
     ArtifactInvalidHandle,
+    /// A staged entry that is a symlink, a directory, or any other non-regular
+    /// file. The handle itself was grammatically valid; what is on the
+    /// filesystem is not what a staged artifact must be.
+    ArtifactNotRegularFile,
     /// Core's own digest over the staged bytes disagrees with the declared one.
     ArtifactDigestMismatch,
     /// The staged byte count disagrees with the declared length.
@@ -99,7 +123,7 @@ pub enum RejectionCode {
 
 impl RejectionCode {
     /// Every v1 rejection code, in declaration order.
-    pub const ALL: [RejectionCode; 37] = [
+    pub const ALL: [RejectionCode; 42] = [
         RejectionCode::ProtocolInvalidUtf8,
         RejectionCode::ProtocolNotJson,
         RejectionCode::ProtocolOversizedFrame,
@@ -109,20 +133,25 @@ impl RejectionCode {
         RejectionCode::ProtocolUnexpectedOrder,
         RejectionCode::ProtocolDuplicateSeq,
         RejectionCode::ProtocolSeqRegression,
+        RejectionCode::ProtocolSeqGap,
         RejectionCode::ProtocolLimitExceeded,
         RejectionCode::ProtocolTimeout,
         RejectionCode::ProtocolIdleTimeout,
         RejectionCode::ProtocolStderrFlood,
         RejectionCode::ProtocolVersionUnsupported,
+        RejectionCode::ProtocolCoverageMismatch,
         RejectionCode::RecordUnknownProperty,
         RejectionCode::RecordUndeclaredProperty,
         RejectionCode::RecordForeignPrefix,
         RejectionCode::RecordPropertyTypeMismatch,
         RejectionCode::RecordInvalidNoteType,
+        RejectionCode::RecordNoteTypeNotDeclared,
+        RejectionCode::RecordInvalidDate,
         RejectionCode::RecordInvalidDatetime,
         RejectionCode::RecordMissingSourceKey,
         RejectionCode::RecordDuplicateDivergentInRun,
         RejectionCode::ArtifactInvalidHandle,
+        RejectionCode::ArtifactNotRegularFile,
         RejectionCode::ArtifactDigestMismatch,
         RejectionCode::ArtifactLengthMismatch,
         RejectionCode::ArtifactMissingStagedFile,
@@ -152,20 +181,25 @@ impl RejectionCode {
             RejectionCode::ProtocolUnexpectedOrder => "protocol.unexpected_order",
             RejectionCode::ProtocolDuplicateSeq => "protocol.duplicate_seq",
             RejectionCode::ProtocolSeqRegression => "protocol.seq_regression",
+            RejectionCode::ProtocolSeqGap => "protocol.seq_gap",
             RejectionCode::ProtocolLimitExceeded => "protocol.limit_exceeded",
             RejectionCode::ProtocolTimeout => "protocol.timeout",
             RejectionCode::ProtocolIdleTimeout => "protocol.idle_timeout",
             RejectionCode::ProtocolStderrFlood => "protocol.stderr_flood",
             RejectionCode::ProtocolVersionUnsupported => "protocol.version_unsupported",
+            RejectionCode::ProtocolCoverageMismatch => "protocol.coverage_mismatch",
             RejectionCode::RecordUnknownProperty => "record.unknown_property",
             RejectionCode::RecordUndeclaredProperty => "record.undeclared_property",
             RejectionCode::RecordForeignPrefix => "record.foreign_prefix",
             RejectionCode::RecordPropertyTypeMismatch => "record.property_type_mismatch",
             RejectionCode::RecordInvalidNoteType => "record.invalid_note_type",
+            RejectionCode::RecordNoteTypeNotDeclared => "record.note_type_not_declared",
+            RejectionCode::RecordInvalidDate => "record.invalid_date",
             RejectionCode::RecordInvalidDatetime => "record.invalid_datetime",
             RejectionCode::RecordMissingSourceKey => "record.missing_source_key",
             RejectionCode::RecordDuplicateDivergentInRun => "record.duplicate_divergent_in_run",
             RejectionCode::ArtifactInvalidHandle => "artifact.invalid_handle",
+            RejectionCode::ArtifactNotRegularFile => "artifact.not_regular_file",
             RejectionCode::ArtifactDigestMismatch => "artifact.digest_mismatch",
             RejectionCode::ArtifactLengthMismatch => "artifact.length_mismatch",
             RejectionCode::ArtifactMissingStagedFile => "artifact.missing_staged_file",

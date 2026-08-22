@@ -6,8 +6,13 @@
 //! Each struct closes with `deny_unknown_fields`, which is the Rust spelling of
 //! the schemas' `additionalProperties: false`: an unknown member is a failed
 //! run, never a warning. Required members are plain fields; optional members
-//! are `Option`; a member that is required but nullable is [`Nullable`], which
-//! — unlike `Option` — still insists the key be present.
+//! are `Option`. No member is required-but-nullable: `Manifest::property_prefix`
+//! used to be exactly that, wrapped in a `Nullable` newtype, which meant an
+//! omitted key and an explicit `null` were indistinguishable failure modes at
+//! best and, at worst, an omitted key silently meant "contributes no prefix"
+//! while `null` meant something else entirely. `property_prefix` is now
+//! absent-or-present like every other optional member: absent means the Field
+//! contributes no prefix, and `null` is simply not a value the schema admits.
 //!
 //! Conditional rules that JSON Schema expresses with `if`/`then`/`not` cannot
 //! be expressed by a Rust field list, so each affected type carries a
@@ -23,7 +28,7 @@
 //! `protocol.schema_invalid`, so [`ArtifactRef::validate`] applies the grammar
 //! and returns that code.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::artifact::ArtifactHandle;
 use crate::codes::{DiagnosticCode, RejectionCode};
@@ -83,29 +88,6 @@ impl std::error::Error for SchemaError {}
 pub trait Validate {
     /// Checks the rules the schema states with `if`, `then`, and `not`.
     fn validate(&self) -> Result<(), SchemaError>;
-}
-
-/// A member that is required on the wire but whose value may be `null`.
-///
-/// `Option` alone will not do: serde treats a missing `Option` field as `None`,
-/// and a manifest that simply omits `property_prefix` must fail rather than be
-/// read as "contributes no prefix".
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Nullable<T>(pub Option<T>);
-
-impl<T> Nullable<T> {
-    /// The wrapped value.
-    #[must_use]
-    pub fn value(&self) -> Option<&T> {
-        self.0.as_ref()
-    }
-
-    /// Whether the member was explicitly null.
-    #[must_use]
-    pub fn is_null(&self) -> bool {
-        self.0.is_none()
-    }
 }
 
 /// A non-empty, unique, bounded list of major protocol versions.
@@ -192,7 +174,12 @@ fn bounded_scopes(scopes: &[String], what: &str) -> Result<(), SchemaError> {
 /// run.
 ///
 /// A describe run carries no credential grant, no cursor, and no staging
-/// directory: negotiation happens before any secret is delivered.
+/// directory: negotiation happens before any secret is delivered. Unlike
+/// [`CollectRequest`], `limits` is optional here: a describe run emits at most
+/// one manifest and reads no records, artifacts, or diagnostics, so it has
+/// almost nothing to bound, and requiring the full ceiling table would make
+/// every Field parse thirteen numbers it cannot act on. When present, core
+/// still enforces it as the frame-size ceiling for this run.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DescribeRequest {
@@ -210,8 +197,10 @@ pub struct DescribeRequest {
     /// The configured Field ID, when core has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field_id: Option<FieldIdToken>,
-    /// The effective bounds for this run.
-    pub limits: Limits,
+    /// The effective bounds for this run, when core states them. A describe
+    /// run has almost nothing to bound, so this member is optional.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limits: Option<Limits>,
     /// The run's wall-clock, idle, and grace bounds.
     pub deadline: Deadline,
 }
@@ -224,9 +213,11 @@ impl Validate for DescribeRequest {
                 "max_protocol_revision is outside the admitted range",
             ));
         }
-        self.limits
-            .validate()
-            .map_err(|error| SchemaError::invalid(error.to_string()))?;
+        if let Some(limits) = &self.limits {
+            limits
+                .validate()
+                .map_err(|error| SchemaError::invalid(error.to_string()))?;
+        }
         self.deadline
             .validate()
             .map_err(|error| SchemaError::invalid(error.to_string()))
@@ -572,6 +563,18 @@ pub struct Limitation {
     pub message: MediumText,
 }
 
+/// Deserializes `Manifest::property_prefix` when the key is present.
+///
+/// `#[serde(default)]` on the field handles a missing key; this function
+/// handles a present one, and it deliberately does **not** go through
+/// `Option<PropertyPrefix>`'s own `Deserialize` impl, which would read an
+/// explicit `null` as `None` and make it indistinguishable from omission.
+fn deserialize_present_property_prefix<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<PropertyPrefix>, D::Error> {
+    PropertyPrefix::deserialize(deserializer).map(Some)
+}
+
 /// The single manifest frame a Field emits in response to a describe request.
 ///
 /// The manifest is the Field's complete self-declaration and the only thing
@@ -601,8 +604,22 @@ pub struct Manifest {
     pub driver_version: DriverVersion,
     /// The registered A1 Field stem.
     pub field_stem: FieldStemToken,
-    /// The registered property prefix, or null for a Field contributing none.
-    pub property_prefix: Nullable<PropertyPrefix>,
+    /// The registered property prefix. Absent for a Field contributing none;
+    /// never `null`, which the schema does not admit.
+    ///
+    /// `#[serde(default)]` supplies `None` only when the *key* is missing.
+    /// When the key is present, `deserialize_present_property_prefix` runs
+    /// [`PropertyPrefix`]'s own deserializer, which fails on `null` exactly
+    /// as it fails on any other non-string value: plain `Option<T>` would
+    /// instead read an explicit `null` as `None`, indistinguishable from
+    /// omission, which is precisely the ambiguity this member exists to
+    /// avoid.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_property_prefix"
+    )]
+    pub property_prefix: Option<PropertyPrefix>,
     /// The exhaustive prefixed-property declaration.
     pub declared_properties: Vec<DeclaredProperty>,
     /// The source-object slices this release supports.
@@ -628,6 +645,20 @@ impl Manifest {
         self.capabilities
             .iter()
             .any(|slice| slice.object_kind.as_str() == object_kind)
+    }
+
+    /// The `note_type` the manifest declares for `object_kind`, when that
+    /// capability slice is declared at all.
+    ///
+    /// A record whose own `note_type` differs from this is rejected: without
+    /// that check, a slice's declared `note_type` would be decoration rather
+    /// than a bound a Field must actually honour.
+    #[must_use]
+    pub fn declared_note_type_for(&self, object_kind: &str) -> Option<&NoteTypeToken> {
+        self.capabilities
+            .iter()
+            .find(|slice| slice.object_kind.as_str() == object_kind)
+            .map(|slice| &slice.note_type)
     }
 }
 
@@ -998,6 +1029,13 @@ pub enum ArtifactKind {
     Staged,
     /// The Field knows the artifact by digest and transferred no bytes.
     DigestOnly,
+    /// The Field saw this artifact at the source and declined to retain it,
+    /// per the retention threshold [`Limits::max_artifact_bytes`] states in
+    /// the collection request. Core stores no bytes and computes no digest
+    /// for it: the record is still accepted, and the Note it becomes is still
+    /// created, without those bytes. "Stays at source" is a policy decision,
+    /// never a failure.
+    NotRetained,
 }
 
 /// An artifact's role in its record.
@@ -1068,13 +1106,6 @@ impl Validate for ArtifactRef {
                 "source_filename is 1 to 255 bytes of display evidence",
             ));
         }
-        if let Some(length) = self.byte_length
-            && length > 536_870_912
-        {
-            return Err(SchemaError::invalid(
-                "byte_length exceeds the frozen single-artifact ceiling",
-            ));
-        }
         match self.kind {
             ArtifactKind::Staged => {
                 // The grammar check comes first, so a traversal handle is
@@ -1084,6 +1115,13 @@ impl Validate for ArtifactRef {
                     return Err(SchemaError::invalid(
                         "a staged artifact reference declares its byte length so core can bound \
                          the read",
+                    ));
+                }
+                if let Some(length) = self.byte_length
+                    && length > 536_870_912
+                {
+                    return Err(SchemaError::invalid(
+                        "byte_length exceeds the frozen single-artifact transfer ceiling",
                     ));
                 }
                 Ok(())
@@ -1101,6 +1139,19 @@ impl Validate for ArtifactRef {
                          and no byte length",
                     ));
                 }
+                Ok(())
+            }
+            ArtifactKind::NotRetained => {
+                if self.handle.is_some() || self.sha256.is_some() {
+                    return Err(SchemaError::invalid(
+                        "a not_retained reference transfers no bytes and computes no digest, so \
+                         it carries no handle and no declared digest",
+                    ));
+                }
+                // byte_length is deliberately unbounded here: it is the
+                // Field's advisory account of how large the declined bytes
+                // are, and being over the transfer ceiling is the whole
+                // reason the Field declined to stage them.
                 Ok(())
             }
         }
@@ -2013,13 +2064,77 @@ mod tests {
     }
 
     #[test]
-    fn a_manifest_omitting_a_required_nullable_member_is_refused() -> Result<(), serde_json::Error>
-    {
-        // `property_prefix` is required but nullable. Omitting it must fail
-        // rather than being read as "contributes no prefix".
+    fn a_manifest_missing_its_required_members_is_refused() -> Result<(), serde_json::Error> {
         let value =
             json(r#"{"v":1,"type":"manifest","run_id":"1a4c9f2e-0000-4000-8000-000000000001"}"#)?;
         assert!(FieldEvent::decode(value).is_err());
+        Ok(())
+    }
+
+    fn manifest_json_without_property_prefix() -> &'static str {
+        r#"{"v":1,"type":"manifest","run_id":"1a4c9f2e-0000-4000-8000-000000000001",
+            "protocol_version":1,"protocol_revision":0,"supported_protocol_versions":[1],
+            "driver":"local-reference","driver_version":"0.1.1","field_stem":"local",
+            "declared_properties":[],
+            "capabilities":[{"object_kind":"file","note_type":"file","emits_artifacts":true,
+                "emits_identity_anchors":false,"description":"d"}],
+            "source_key":{"scope_rule":"local_root_id","scope_rule_version":1,
+                "scope_shape":"s","scope_depends_on_field_label":false,
+                "identity_shape":"i","identity_includes_object_kind":true,
+                "source_version_ordering":"unsupported","stable_across_instances":true},
+            "auth":{"kind":"none","credential_profile_required":false,
+                "protected_channel_required":false,"refresh_owner":"not_applicable",
+                "writes_to_source":false},
+            "collection":{"incremental":true,"cursor_format_version":1,
+                "supported_modes":["incremental"],"window_supported":false,
+                "refetch":"unsupported",
+                "deletion":{"tombstones":"unsupported","snapshot":"unsupported"}}}"#
+    }
+
+    #[test]
+    fn a_manifest_omitting_property_prefix_means_it_contributes_none()
+    -> Result<(), serde_json::Error> {
+        // Absent-or-present, never required-but-nullable: an omitted
+        // `property_prefix` is read as "contributes no prefix" rather than
+        // being indistinguishable from an explicit null that silently
+        // disabled all prefix checking.
+        let value = json(manifest_json_without_property_prefix())?;
+        match FieldEvent::decode(value) {
+            Ok(FieldEvent::Manifest(manifest)) => assert!(manifest.property_prefix.is_none()),
+            other => {
+                panic!("an omitted property_prefix must decode as contributing none: {other:?}")
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn a_manifest_declaring_property_prefix_null_is_refused() -> Result<(), serde_json::Error> {
+        // The schema does not admit `null` at all now: it is absent or a
+        // string, never explicitly null.
+        let text = manifest_json_without_property_prefix().replace(
+            "\"declared_properties\":[]",
+            "\"property_prefix\":null,\"declared_properties\":[]",
+        );
+        let value = json(&text)?;
+        assert!(FieldEvent::decode(value).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn a_describe_request_need_not_state_the_full_limits_object()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A describe run emits at most one manifest and reads no records,
+        // artifacts, or diagnostics, so it has almost nothing to bound.
+        let value = json(
+            r#"{"v":1,"type":"describe_request","run_id":"1a4c9f2e-0000-4000-8000-000000000001",
+                "supported_protocol_versions":[1],"max_protocol_revision":0,
+                "deadline":{"not_after":"2026-08-22T19:30:00+02:00","idle_seconds":120,
+                "cancel_grace_seconds":10}}"#,
+        )?;
+        let decoded: DescribeRequest = serde_json::from_value(value)?;
+        assert!(decoded.limits.is_none());
+        decoded.validate()?;
         Ok(())
     }
 

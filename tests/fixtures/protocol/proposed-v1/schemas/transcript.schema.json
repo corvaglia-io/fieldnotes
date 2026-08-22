@@ -95,6 +95,7 @@
             "stage_artifact",
             "install_artifact",
             "reuse_artifact",
+            "decline_artifact",
             "write_note",
             "update_note",
             "remove_note",

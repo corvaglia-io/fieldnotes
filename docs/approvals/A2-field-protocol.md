@@ -113,7 +113,16 @@ repeat, or a regression is a protocol violation, because it is the cheapest
 possible detection of a truncated, interleaved, or reordered stream. Ordering
 is a protocol rule that a single-frame schema cannot express, so core enforces
 it separately; the transcripts mark such frames with the code core must reject
-them with.
+them with. A repeat is `protocol.duplicate_seq`, a regression is
+`protocol.seq_regression`, and a gap is `protocol.seq_gap` — its own code,
+distinct from `protocol.unexpected_order`, which is reserved for a frame
+arriving somewhere the protocol does not allow it at all rather than for a
+hole in an otherwise well-ordered stream. **This corrects the proposal as
+originally drafted**, which overloaded `protocol.unexpected_order` for a gap
+and, separately, for a checkpoint's `records_covered` disagreeing with what
+core actually received — see section 9's `protocol.coverage_mismatch`. Both
+are now distinguishable in logs, metrics, and tests from an ordering violation
+that has nothing to do with counting.
 
 The built-in `self` Field does not use this protocol. It is a registered A1
 Field with no process, no credential, and no prefix.
@@ -161,6 +170,13 @@ grant, staging directory, or collect run exists:
 3. the negotiated revision is the minimum of the two declared revisions.
    Neither peer may emit a member introduced above it.
 
+`describe_request`'s `limits` member is **optional**, unlike `collect_request`'s
+required one: a describe run emits at most one manifest and reads no records,
+artifacts, or diagnostics, so it has almost nothing to bound, and requiring the
+full thirteen-member ceiling table would make every Field parse numbers it
+cannot act on. When core does state `limits` on a describe run, it still
+enforces the frame-size ceiling within it.
+
 Failure is closed and actionable in both directions. A Field that supports no
 version core offered emits no manifest — a manifest it cannot express correctly
 is worse than none — writes one actionable line naming both version sets to
@@ -199,8 +215,16 @@ consults about a Field's powers. It declares:
 
 - the negotiated protocol version, its revision, and every version supported;
 - the driver name and version;
-- the registered A1 Field stem and the registered property prefix, or `null`
-  for a Field that contributes none;
+- the registered A1 Field stem and the registered property prefix, **absent**
+  for a Field that contributes none. *This corrects the proposal as originally
+  drafted*, which made `property_prefix` required-but-nullable — a shape that
+  traps an implementer twice over: an omitted member and an explicit `null`
+  are indistinguishable failure modes at the type level, and the omitted case
+  was meant to be read as "contributes no prefix" while a stray `null` could
+  silently disable all prefix checking instead of failing loudly. The member
+  is now absent-or-present like every other optional manifest member: present
+  with a string means that prefix, absent means none, and `null` is simply not
+  a value the schema admits;
 - `declared_properties`: the exhaustive prefixed-property declaration in
   section 4;
 - `capabilities`: the source-object slices this release actually supports, each
@@ -270,18 +294,50 @@ Core then enforces, on every record:
    **rejected**, which is A1 section 4's prefix-to-producer binding;
 4. an unprefixed name outside A1's closed shared registry is **rejected**;
 5. spelling-based inference is retired for declared properties. Core takes the
-   type from the declaration.
+   type from the declaration;
+6. an unprefixed name that the registry types for a **derived record** only —
+   `confidence`, `generated_at`, `evidence_spans`, `binding_status`, and the
+   rest of that subset, listed precisely alongside the rest of A1's shared
+   registry entries — is **rejected**, even though it is a registered A1
+   property type. **The Note-applicable subset of A1's shared registry is
+   named precisely and enforced**: a Field collects a Note, never a derived
+   record, so it never has an evidence span, a confidence score, or a binding
+   status to report, and the fact that the registry also carries names for
+   generated Notes does not make those names available to a collecting Field.
+   Rejected as `record.unknown_property`, the same code an unregistered name
+   gets, because from a collecting Field's point of view the name is equally
+   unusable either way;
+7. a record's `note_type` that disagrees with the `note_type` its
+   `object_kind`'s capability slice declares is **rejected** as
+   `record.note_type_not_declared`, even when the value itself is one of A1's
+   eleven approved types. **A capability slice's declared `note_type` is now
+   enforced**, not merely descriptive: "declare before exercise" is this
+   package's own principle for capability, deletion authority, and snapshot
+   authority, and without this check a slice's declared `note_type` would be
+   decoration a Field is free to ignore, which contradicts that principle for
+   the one manifest member it had not yet been applied to.
 
 A manifest may not declare unprefixed properties. Those belong to A1's closed
 shared registry and take their type from it; a Field uses them by name or not
 at all.
 
-Core snapshots each configured Field's manifest. If a later manifest changes a
-declared property's `value_type` or `cardinality`, or changes
-`cursor_format_version`, core refuses to sync that Field until an explicit
-migration, rather than retyping notebook data in place. This is A1's rule that
-"a property name never changes meaning or scalar/list type within v0.1", made
-enforceable at the boundary where the change would arrive.
+Core snapshots each configured Field's manifest. **Adding** a declared
+property is a Field release change, not a migration, and needs none: a name
+the Field starts emitting carries no prior notebook data to retype. **Changing
+or removing** one requires a migration; core refuses to sync that Field until
+it happens, rather than either retyping notebook data in place or losing track
+of what a no-longer-declared name used to mean. If a later manifest changes a
+declared property's `value_type` or `cardinality`, removes a declared property
+outright, or changes `cursor_format_version`, core refuses to sync closed. This
+is A1's rule that "a property name never changes meaning or scalar/list type
+within v0.1", made enforceable at the boundary where the change would arrive.
+*This corrects the reference implementation as first written*, which treated
+removal as freely allowed on the reasoning that "a name the Field no longer
+emits cannot retype anything" — true as far as it goes, but the manifest is the
+only place that property's type and list semantics were ever recorded, so once
+the declaration disappears core can no longer tell a previously-collected value
+of that property from an undeclared one on the next divergence check. Removal
+is now a migration for the same reason a type change is.
 
 #### Alternatives considered
 
@@ -303,10 +359,15 @@ enforceable at the boundary where the change would arrive.
 
 - Adding a prefixed property is a Field release change reviewed with that
   Field's fixtures, and it is visible in the manifest diff.
-- Changing one is a migration, and core says so instead of guessing.
+- Changing **or removing** one is a migration, and core says so instead of
+  guessing or silently forgetting.
 - The interim inference rule survives only as the reading rule for notebooks
   written before `0.1.1`, which by construction contain no prefixed property at
   all, because only `self` ships at `0.1.0` and `self` has no prefix.
+- A Field's own vendor vocabulary is bounded by two independent checks now,
+  not one: the declared-property mechanism above governs its *prefixed*
+  names, and the Note-applicable subset governs which of A1's *unprefixed*
+  shared names it may use at all.
 
 ### 5. The collection request
 
@@ -343,14 +404,39 @@ A record carries:
 - `source`: the portable exact-source key, plus optional non-identity source
   metadata (`version`, `url`, `parent_identity`);
 - `object_kind`: the declared capability slice it belongs to;
-- `note_type`: the primary Note type candidate;
+- `note_type`: the primary Note type candidate, which must also equal the
+  `note_type` the manifest's capability slice for this `object_kind` declares.
+  **This equality is now enforced**, not merely descriptive: a value that
+  clears the A1 registry check but disagrees with the declared slice is
+  rejected as `record.note_type_not_declared` (section 4);
 - `occurred_at`: the event instant with an explicit offset;
 - `properties`: flat property candidates keyed by A1 property names — shared
-  registry names plus this Field's declared prefixed names;
+  registry names from the **Note-applicable subset** of the closed registry
+  (section 4), plus this Field's declared prefixed names;
 - `body`: deterministically normalized source evidence as Markdown text;
 - `artifacts`: original-byte references in role order, per section 8;
 - `identity_anchors`: structured anchors, per section 7;
 - `integrity`: `damaged`, `truncated`, and measured `lost_characters`.
+
+**A number crosses the boundary in its wire spelling, verbatim.** The
+reference implementation keeps a numeric property value as the JSON number the
+Field sent — not decoded to a binary floating-point value and re-encoded —
+because decoding to `f64` and back would turn `8814423` into `8814423.0`,
+breaking the round-trip the evidence list requires. A1 owns canonical number
+spelling (RFC 8785); A2 deliberately says nothing about it and simply carries
+the Field's spelling through unchanged until core's own canonicalization step
+decides the final bytes.
+
+A `date` value that is not a well-formed A1 date-only string is rejected as
+`record.invalid_date`, distinct from `record.invalid_datetime` (a manifest may
+declare a property's `value_type` as `date`, and a Field that sends
+`"August 20"` for one is a different mistake from one that sends a malformed
+instant). **The envelope's own instants are guarded at decode**: `occurred_at`
+and `observed_at` are explicit-offset RFC 3339 values checked by the transport
+grammar itself, before a record is even accepted, so `record.invalid_datetime`
+can in practice only fire for a *declared or registered temporal property*
+inside `properties` — never for the envelope's own timing fields, which fail
+earlier and more generically as `protocol.schema_invalid` if malformed.
 
 Core owns, and a Field never supplies: the Note ID; `instance_id` and
 `field_id`; `captured_at`; `collected_by`; `content_hash`; the projected
@@ -477,11 +563,42 @@ that directory under a `handle`, and the record references the handle.
 
 A handle is a single path segment from a closed character set:
 `^[a-z0-9][a-z0-9_-]{0,63}$`, additionally excluding reserved Windows device
-names. It admits no dot, no separator, and no traversal sequence, so a handle
-cannot be a path however it is spelled. Core joins the handle to the staging
-directory, opens it without following symlinks, requires a regular file whose
-identity is unchanged between check and use, and bounds the read by the
-declared length.
+names — `con`, `prn`, `aux`, `nul`, `com0`-`com9`, and `lpt0`-`lpt9`. `com0` and
+`lpt0` are excluded alongside the numbered range even though the conventional
+numbering starts at 1, because Windows reserves both. It admits no dot, no
+separator, and no traversal sequence, so a handle cannot be a path however it
+is spelled. Core joins the handle to the staging directory, opens it without
+following symlinks, requires a regular file whose identity is unchanged
+between check and use, and bounds the read by the declared length.
+
+A grammar failure and a filesystem-shape failure are distinguishable
+rejections. `artifact.invalid_handle` is a malformed handle string, refused
+before any filesystem call. `artifact.not_regular_file` is a *grammatically
+valid* handle whose staged entry turned out to be a symlink, a directory, or
+any other non-regular file — a defect no grammar can catch, because the handle
+itself was fine. Logs, metrics, and tests can then distinguish "the Field sent
+a hostile string" from "the Field staged the wrong kind of thing," which the
+original proposal's single overloaded code could not.
+
+**The two-layer validity model.** The transcript corpus's `valid` field means
+*wire-schema* validity — would a validator checking only the JSON Schema
+accept this frame's shape — and `expect_reject` names the code from whichever
+pipeline stage actually rejects the frame, which is not always the schema. An
+artifact handle is the clearest example: the wire schema's `artifactRef.handle`
+carries the closed handle-character-set pattern as a well-formedness guard (so
+a validator checking the schema alone correctly flags a traversal string as not
+matching it), but **the reference implementation's own data-transfer object
+carries `handle` as an unvalidated string**, and applies the grammar itself, by
+hand, as a distinct artifact-validation step that runs before any filesystem
+call. This is not an inconsistency: it is what keeps the *code* right. A DTO
+field typed to enforce the grammar during deserialization would fail a hostile
+handle at decode time with a generic `protocol.schema_invalid` — "the frame
+does not validate" — when the code this package actually specifies, and the
+one the transcripts pin, is `artifact.invalid_handle` from the later,
+purpose-built step. An implementer translating this package's schemas
+literally into a strongly-typed DTO must not collapse the wire-schema guard
+into the type used for decoding, or every hostile handle silently becomes the
+wrong rejection code.
 
 Core always computes its own SHA-256 over the staged bytes and derives A1's
 `artifact_sha256_<hex>` identity and notebook path from **its own** digest. A
@@ -497,6 +614,11 @@ retries with bytes. This is what stops a mail Field from re-downloading every
 forwarded attachment on every sync, and it is safe because A1 already
 establishes that the same digest is the same bytes. Identical artifact bytes
 deduplicate storage; they never collapse Notes from different source objects.
+
+A third reference kind, `not_retained`, lets a Field say "I saw this artifact
+at the source and chose not to retain it." See section 14's retention
+threshold for when and why a Field does this, and why it is a policy decision
+rather than a failure.
 
 #### Alternatives considered
 
@@ -523,10 +645,17 @@ deduplicate storage; they never collapse Notes from different source objects.
 
 - Core does one extra pass over artifact bytes to hash them. Hashing is
   streaming, so this is bounded and predictable.
-- The staging directory is operational, not notebook state: it lives under the
-  disposable cache class and its removal is always safe.
+- **The staging directory is operational sync state, not the disposable cache
+  class.** *This corrects the proposal as originally drafted*, which placed it
+  under the disposable cache class; that recommendation is now settled the
+  other way — see the "Questions the reviewer may want to settle" section.
+  Artifact bytes must not transit a directory users are told is always safe to
+  delete at any time, even briefly and even before they are durable.
 - A crash mid-run leaves staged bytes that startup recovery removes; no Note
   references them because the record was never accepted.
+- A `not_retained` reference never touches the staging directory, the digest
+  index, or the run's staged-byte budget: core does no filesystem work and no
+  hashing for it at all, and it never counts against `max_run_artifact_bytes`.
 
 ### 9. Cursors, checkpoints, and crash safety
 
@@ -546,9 +675,29 @@ accounts for), `records_covered` for cross-checking against what core actually
 received, an optional snapshot completeness claim, an optional window, and a
 `final` flag.
 
-**Core commits a cursor only after** every record with a sequence number at or
-below `covers_record_seq_through` has reached durable current state and the
-store's durability barrier has returned. The order is fixed:
+**Core commits a cursor only after every accepted *record* with a sequence
+number at or below `covers_record_seq_through` has reached durable current
+state** and the store's durability barrier has returned. That italicized word
+is deliberate and is **the single most dangerous ambiguity in this package**,
+worth making impossible to misread: `seq` is shared across event kinds — a
+record, a checkpoint, and a diagnostic all draw from the same per-run counter —
+so "every seq at or below N" and "every accepted record with seq at or below N"
+are different claims, and only the second one is checkpoint eligibility.
+
+Concretely: a diagnostic at seq 1 and a record at seq 2 means a checkpoint
+declaring `covers_record_seq_through: 2` covers exactly **one** record — the
+one at seq 2 — not two. An implementation that instead tracks a naive
+contiguous-seq watermark (waiting for every seq from 1 through N to be
+individually accounted for as "durable," including seq values that were never
+records at all) never commits, silently and forever, the moment a run emits
+even one diagnostic or one earlier checkpoint before the record a later
+checkpoint covers. The failure is silent because nothing rejects the run: the
+checkpoint offer is simply never eligible, the cursor never advances, and every
+subsequent run replays from scratch, indefinitely, with no error anywhere. The
+reference implementation tracks durability per accepted record specifically —
+never per raw `seq` value — for exactly this reason.
+
+The order of the underlying work is fixed:
 
 1. validate and bound the event;
 2. normalize it into core domain values;
@@ -560,12 +709,45 @@ store's durability barrier has returned. The order is fixed:
 8. atomically commit the cursor.
 
 Never the reverse, and never partially. `records_covered` disagreeing with what
-core received fails the run, because it means the two sides disagree about what
-was transferred.
+core actually received fails the run as `protocol.coverage_mismatch` — a code
+of its own, not the overloaded `protocol.unexpected_order` the original
+proposal used — because it means the two sides disagree about what was
+transferred, which is a different defect from a frame arriving somewhere the
+protocol forbids it.
+
+**Coverage range edge cases**, stated explicitly because an implementation that
+gets them wrong either commits nothing or panics:
+
+- `covers_record_seq_through: 0` means **no records are covered at all** — the
+  cursor advances without any record in between, which a Field may emit once it
+  has proven a page contained nothing new. `records_covered` must then be `0`.
+- **Repeated coverage of an already-covered range is legal, and a no-op.** A
+  checkpoint whose `covers_record_seq_through` equals the previous checkpoint's
+  value accounts for zero new records; core commits it (or would, if offered)
+  without effect, and `records_covered` must be `0`.
+- **The implementation trap**: naively computing the covered count as
+  `(previous_coverage + 1)..=covers_record_seq_through` and asking a sorted set
+  of accepted-record sequence numbers for that range panics the moment
+  `covers_record_seq_through` has not strictly advanced past `previous_coverage`
+  — a start bound after the end bound is a logic error for most sorted-range
+  APIs, not silently zero. The range must only ever be constructed in the
+  branch where coverage has actually advanced; the no-advance case is handled
+  separately and yields zero without ever building the range.
 
 **A cursor may advance** only at a checkpoint whose covered records are all
 durable, and only monotonically within a run in emission order. A run in which
 core rejected a record commits no further checkpoint.
+
+**Durability is conservative on purpose, in v0.1.** Core refuses to consume the
+next event at all while a checkpoint's durability barrier is outstanding: the
+Field's next frame is not read until the pending offer is resolved, committed
+or withheld. Core could instead pipeline — keep consuming and durably writing
+records while an earlier checkpoint's barrier is still outstanding, and
+reconcile which records a given commit actually covers after the fact. That is
+a permitted future optimization, and it is deliberately **not** done in v0.1:
+without pipelining, "which records does this commit cover" is a question with
+one answer, decided before the next event is even read, rather than a question
+about in-flight state that a reviewer or a test has to reconstruct.
 
 **On crash before a checkpoint commit**, records already made durable remain,
 and the committed cursor lags them. The next run replays from that cursor, the
@@ -582,11 +764,28 @@ cursor loses an object forever.** Over-collection is always safe and
 under-collection never is, so the cursor is required to lag.
 
 Duplicates are explicitly safe. Two frames for one source key with identical
-semantic payloads are a no-op, within a run or across runs. Two frames for one
-key with divergent payloads and no declared version ordering are a Field
-defect, not a conflict: within a single run, one producer asserting two
-different current states for one object with no ordering is a bug, and core
-rejects the second frame rather than manufacturing a conflict bundle out of it.
+semantic payloads are a no-op, within a run or across runs. **Cross-run and
+cross-instance idempotence is guaranteed by the store, not by the protocol
+boundary**: recognizing a replayed object as the same current state requires
+comparing it against the notebook's *current* durable state, which is
+information the protocol library cannot see — it only ever sees the events of
+one run. The store, which reconciles by portable exact-source key and can
+consult what is actually on disk, is what makes replay after a crash
+idempotent across runs and across instances of the same Field.
+
+Two frames for one key with divergent payloads and no declared version
+ordering are a Field defect, not a conflict, and **this recommendation is
+settled**: within a single run, one producer asserting two different current
+states for one object with no ordering is a bug in that Field, and core
+rejects the second frame — `record.duplicate_divergent_in_run` — rather than
+manufacturing a conflict bundle out of it. Turning a same-run self-contradiction
+into user-visible conflict material would hide the bug instead of surfacing it.
+This scope is deliberately narrow: **cross-run and cross-instance divergence
+still becomes a visible conflict**, at the store, which is where evidence
+preservation applies — two different producers, or two different runs of the
+same producer, disagreeing about an object's current state is exactly the
+situation a conflict exists to record. Only the in-run, single-producer,
+self-contradictory case is treated as a defect instead.
 
 #### Alternatives considered
 
@@ -742,6 +941,19 @@ descriptor, a duplicated handle, or an OS-appropriate per-run endpoint, all
 named in the request rather than in the environment. Core closes it when the
 run ends and refuses an expired grant.
 
+**The channel descriptor's flat object shape — one `kind` discriminator plus
+every mechanism's fields sitting as siblings, rather than a tagged union of
+four distinct shapes — is deliberate**, not an oversight to tidy up later.
+`additionalProperties: false` and serde's internally tagged enums fight each
+other: a Rust enum tagged on `kind` with per-variant payload structs would
+either have to relax `additionalProperties` for the whole object (defeating
+the closed-schema guarantee everywhere else) or reject legitimate members with
+a spurious "unknown field" the moment a variant's own fields are checked
+against the union of every variant's schema. A flat shape sidesteps the
+conflict entirely, and every implementation language pulls toward a union here
+for the same reason serde does — worth stating plainly so the shape is not
+"fixed" into something more idiomatic-looking that quietly reopens the schema.
+
 `credential_response.material` is the **only member in the entire protocol that
 carries a secret**, and it exists on no other channel. Nowhere else: not in
 process arguments, not in the inherited environment, not in `config`, not in
@@ -781,6 +993,18 @@ and the invariant, which is what the boundary needs.
   the channel and asserted absent from argv, the inherited environment,
   standard output, standard error, logs, diagnostics, cursors, Notes, and
   artifacts. That is release gates R1, R3, and R9.
+- The A2-level evidence stands as designed and is not weakened: both channel
+  frames are typed, `credential_response.material` is the only secret-bearing
+  member anywhere in the protocol, `CredentialMaterial`'s `Debug`
+  implementation redacts, and a canary-absence scan runs with its negative
+  control (a scenario that deliberately leaks, proving the scan is not
+  vacuous). **The end-to-end credential canary — granting a canary through a
+  real per-platform channel mechanism and confirming its absence everywhere —
+  is assigned to the `0.1.3` authentication gate**, because section 12 already
+  defers the per-platform channel mechanism, refresh semantics, and memory
+  clearing to that gate, and A2 cannot freeze evidence for a mechanism it does
+  not itself freeze. This is an explicit addition to the evidence list, not an
+  obligation dropped: `0.1.3` inherits it by name.
 
 ### 13. Exit codes, partial failure, and cancellation
 
@@ -806,7 +1030,21 @@ survives a crashed or hung process.
 
 Core treats any signal termination — 128 plus the signal number on POSIX, and
 its Windows equivalent — as a failed run, and normalizes it rather than
-inventing a Field-level meaning for it.
+inventing a Field-level meaning for it. **The Windows equivalent is specified
+explicitly**, because "its Windows equivalent" as originally written could be
+misread as another small integer: Windows has no POSIX-style signal number.
+Where a process ends by unhandled structured exception — including the one
+`std::process::abort()` raises on Windows, which surfaces as the NTSTATUS code
+`0xC0000409` (`STATUS_STACK_BUFFER_OVERRUN`) — the exit-status value core
+observes is a full NTSTATUS-shaped 32-bit code, which **does not fit the `u8`**
+every ordinary exit code and every POSIX 128-plus-signal value fits into.
+Core's exit-observation type must therefore carry a value wide enough for this
+case on Windows specifically, distinct from the ordinary 0–255 exit-code
+observation, and classify any such value as a failed run exactly like a POSIX
+signal termination — never attempting to narrow it into the 0–255 range, which
+would silently alias an abnormal termination onto an ordinary exit code (for
+example, `0xC0000409`'s low byte is `0x09`, which would misread as exit code 9,
+"configuration invalid," if naively truncated).
 
 **Partial failure does not roll back durable work.** Notes, artifacts, and the
 cursor committed before the failure remain, and they are correct because they
@@ -837,27 +1075,58 @@ boundary isolates dependencies and failures and is explicitly not a sandbox
 against a malicious connector — but its output is data from outside, and a
 buggy connector is far more likely than a malicious one.
 
-Protocol v1 freezes these ceilings. A notebook may configure a value lower;
-raising one above its ceiling requires a protocol revision.
+Protocol v1 freezes these ceilings: absolute technical bounds that protect core
+against a hostile or buggy child, which no configuration may cross, and which
+only a protocol revision can raise. For most of them the ceiling is also the
+sensible default. **Two are not**: the single-artifact bound and the run wall
+clock each have a configurable *default* distinct from their ceiling, settled
+by the "Questions the reviewer may want to settle" section below. A notebook
+may configure either bound — and, in general, may configure any bound in this
+table — anywhere from the product's own minimum up to the ceiling, in either
+direction from the default; configuring *up* toward the ceiling is exactly as
+legal as configuring down from it, and only crossing the ceiling itself
+requires a protocol revision. This is a change from the original proposal,
+which stated the weaker rule "a notebook may configure a value lower"; that
+rule is retained for every bound that keeps ceiling equal to default, and
+loosened for the two that do not, precisely because the ceiling — not the
+default — is what actually protects core.
 
-| Bound | Ceiling |
-|---|---|
-| One frame, including its terminating LF | 1 MiB |
-| Record `body.text` | 1 MiB |
-| Property candidates per record | 256 |
-| One property value | 64 KiB |
-| List members | 1024 |
-| Artifact references per record | 64 |
-| One staged artifact | 512 MiB |
-| Staged bytes per run | 8 GiB |
-| Standard output per run | 1 GiB |
-| Records per run | 1,000,000 |
-| Diagnostics per run | 10,000 |
-| Captured standard error per run | 256 KiB, ring-buffered |
-| Cursor | 4 KiB |
-| Run wall clock | 3600 s |
-| Idle without a frame or artifact progress | 120 s |
-| Cancellation grace before termination | 10 s |
+| Bound | Default | Ceiling |
+|---|---|---|
+| One frame, including its terminating LF | 1 MiB | 1 MiB |
+| Record `body.text` | 1 MiB | 1 MiB |
+| Property candidates per record | 256 | 256 |
+| One property value | 64 KiB | 64 KiB |
+| List members | 1024 | 1024 |
+| Artifact references per record | 64 | 64 |
+| One staged artifact, and the retention threshold (see below) | 25 MiB (26,214,400 bytes) | 512 MiB (536,870,912 bytes) |
+| Staged bytes per run | 8 GiB | 8 GiB |
+| Standard output per run | 1 GiB | 1 GiB |
+| Records per run | 1,000,000 | 1,000,000 |
+| Diagnostics per run | 10,000 | 10,000 |
+| Captured standard error per run | 256 KiB, ring-buffered | 256 KiB |
+| Cursor | 4 KiB | 4 KiB |
+| Run wall clock | 600 s (10 minutes) | 3600 s (1 hour) |
+| Idle without a frame or artifact progress | 120 s | 3600 s |
+| Cancellation grace before termination | 10 s | 120 s |
+
+**The single-artifact bound doubles as the retention threshold**, and this is
+a deliberate one-number design rather than two separate numbers (a transfer
+ceiling and a retention policy). A Field compares a known artifact's size
+against this same value *before* staging it: at or under it, stage normally;
+over it, emit a `not_retained` reference (section 8) instead of bytes core
+would otherwise have to reject as oversized. One number communicated in the
+request is simpler to explain and to configure than a transfer ceiling and a
+retention policy that could drift apart, and it means a Field that stages
+something larger really is violating a limit it was told, not guessing at an
+unstated one. The default of 25 MiB reflects the product's own boundary: a
+notebook is disposable working material, not a system of record — deleting and
+refetching is a supported lifecycle action — so the default keeps what is
+useful for work and context, and larger original material stays at its source
+rather than being copied in by default. Exceeding the threshold is **never** a
+run failure and **never** a hostile-output violation: the Note is still
+created, referencing the source object, without the retained bytes. See the
+`not_retained` rejection-free reference kind in section 8.
 
 Rejection is uniform: **any protocol violation fails the run.** Core stops
 consuming output, terminates the child after the grace period, removes the run's
@@ -869,22 +1138,36 @@ The v1 rejection codes are closed and grouped by what went wrong:
 - `protocol.invalid_utf8`, `protocol.not_json`, `protocol.oversized_frame`,
   `protocol.truncated_frame`, `protocol.schema_invalid`,
   `protocol.unknown_event`, `protocol.unexpected_order`,
-  `protocol.duplicate_seq`, `protocol.seq_regression`,
+  `protocol.duplicate_seq`, `protocol.seq_regression`, `protocol.seq_gap`,
   `protocol.limit_exceeded`, `protocol.timeout`, `protocol.idle_timeout`,
-  `protocol.stderr_flood`, `protocol.version_unsupported`;
+  `protocol.stderr_flood`, `protocol.version_unsupported`,
+  `protocol.coverage_mismatch`;
 - `record.unknown_property`, `record.undeclared_property`,
   `record.foreign_prefix`, `record.property_type_mismatch`,
-  `record.invalid_note_type`, `record.invalid_datetime`,
+  `record.invalid_note_type`, `record.note_type_not_declared`,
+  `record.invalid_date`, `record.invalid_datetime`,
   `record.missing_source_key`, `record.duplicate_divergent_in_run`;
-- `artifact.invalid_handle`, `artifact.digest_mismatch`,
-  `artifact.length_mismatch`, `artifact.missing_staged_file`,
-  `artifact.unknown_digest`, `artifact.oversized`;
+- `artifact.invalid_handle`, `artifact.not_regular_file`,
+  `artifact.digest_mismatch`, `artifact.length_mismatch`,
+  `artifact.missing_staged_file`, `artifact.unknown_digest`,
+  `artifact.oversized`;
 - `deletion.unauthorized`, `snapshot.completeness_contradicted`,
   `snapshot.scope_widened`;
 - `credential.unknown_grant`, `credential.grant_expired`,
   `credential.channel_closed`;
 - `manifest.property_type_changed`, `manifest.cursor_format_changed`,
   `manifest.undeclared_capability`.
+
+**Five codes are new relative to the original proposal**, each closing a
+specific ambiguity or gap surfaced by implementation, and each recorded where
+it is decided: `protocol.seq_gap` and `protocol.coverage_mismatch` (section 1
+and section 9, splitting a gap and a coverage disagreement out of the
+overloaded `protocol.unexpected_order`); `artifact.not_regular_file` (section
+8, splitting a filesystem-shape failure out of `artifact.invalid_handle`);
+`record.note_type_not_declared` (section 4 and section 6, enforcing a
+capability slice's declared `note_type` as a bound rather than decoration);
+and `record.invalid_date` (section 6, distinguishing a malformed date-only
+value from a malformed datetime).
 
 **Path safety is structural, not defensive.** No Field-supplied string is ever
 a path component:
@@ -995,11 +1278,17 @@ A2 is approved, IG2 must produce, before `0.1.1` closes:
   manifest whose declared type changed between runs;
 - artifact tests: staged install, digest-only reuse, digest mismatch, unknown
   digest, oversized, missing staged file, symlink escape, traversal handle,
-  reserved device name, and a hard-link and check-versus-use race case;
+  a non-regular staged entry distinguished from a hostile handle by code,
+  reserved device name (including `com0` and `lpt0`), a `not_retained`
+  reference that neither stages nor fails, and a hard-link and
+  check-versus-use race case;
 - secret-canary tests with a unique canary granted on the protected channel and
   asserted absent from argv, the inherited environment, standard output,
   standard error, logs, diagnostics, cursors, Notes, artifacts, and any crash
-  recovery file;
+  recovery file, using the in-process fixture channel A2 can exercise now;
+  **the end-to-end version, over a real per-platform channel mechanism, is
+  `0.1.3` authentication-gate evidence** (section 12), because A2 does not
+  freeze that mechanism;
 - bound-enforcement tests for each ceiling in section 14, including a frame
   that exceeds the limit without core buffering the remainder;
 - negotiation tests for an unsupported version in each direction, a revision
@@ -1055,8 +1344,15 @@ accept, reject, or amend.
   values contradicting a declared type or cardinality, another Field's prefix,
   and unprefixed names outside A1's closed shared registry.
 - [ ] Spelling-based type inference retired for declared properties, and a
-  declared-type or cursor-format change treated as a migration that blocks sync
-  rather than a silent retype.
+  declared-type change, a declared-property removal, or a cursor-format change
+  each treated as a migration that blocks sync rather than a silent retype or
+  a silently forgotten type; adding a declared property needs no migration.
+- [ ] The Note-applicable subset of A1's shared registry named precisely and
+  enforced, so a Field collecting a Note cannot emit a name the registry types
+  for a derived record only.
+- [ ] A record's `note_type` enforced against its capability slice's declared
+  `note_type`, closing the one manifest member "declare before exercise" had
+  not yet been applied to.
 
 ### Record envelope and identity
 
@@ -1077,6 +1373,12 @@ accept, reject, or amend.
 - [ ] Separately declared identity anchors with namespace, scope class, and
   normalization rule and version, which may relate graph entities and never
   substitute for the exact-source key or reconcile a Note.
+- [ ] A property number crossing the boundary in its wire spelling, verbatim,
+  with A1 alone owning canonical number spelling.
+- [ ] A malformed `date` value (`record.invalid_date`) distinguishable from a
+  malformed `datetime` value (`record.invalid_datetime`), and the envelope's
+  own instants guarded at decode so the latter can only fire for a declared or
+  registered temporal property.
 
 ### Artifacts
 
@@ -1087,8 +1389,16 @@ accept, reject, or amend.
   and path from it, with a declared digest as a detection aid only.
 - [ ] The `digest_only` reference, accepted only for a digest the notebook
   already stores and otherwise rejected so the Field retries with bytes.
+- [ ] The `not_retained` reference, for an artifact the Field saw and declined
+  to retain per the single-artifact bound's default; never a rejection, and
+  the record and its Note are still accepted without those bytes.
 - [ ] Artifacts durable before any Note that references them, and identical
   bytes deduplicating storage without ever collapsing Notes.
+- [ ] A grammar failure (`artifact.invalid_handle`) and a filesystem-shape
+  failure (`artifact.not_regular_file`) as distinguishable rejection codes,
+  and the handle grammar applied by the implementation as an artifact-
+  validation step distinct from wire-schema validity, never folded into the
+  DTO type used for decoding.
 
 ### Cursors, checkpoints, and crash safety
 
@@ -1101,9 +1411,26 @@ accept, reject, or amend.
   advancing past an undurable write.
 - [ ] A run in which core rejected a record commits no further checkpoint.
 - [ ] A lagging cursor as the deliberately required direction, with replay made
-  idempotent by portable-source-key reconciliation.
+  idempotent by portable-source-key reconciliation **at the store**, which is
+  the only place that can see the notebook's current state; the protocol
+  boundary itself guarantees only within-run duplicate detection.
 - [ ] Identical duplicate records as no-ops within and across runs, and
-  in-run divergence without declared ordering as a rejected Field defect.
+  in-run divergence without declared ordering as a rejected Field defect —
+  settled, not reopened by cross-run or cross-instance divergence, which
+  still becomes a visible conflict at the store.
+- [ ] Checkpoint eligibility stated precisely as "every accepted *record* with
+  seq at or below the covered value," not "every seq," because `seq` is
+  shared across records, checkpoints, and diagnostics and a naive contiguous
+  watermark over raw `seq` values never commits.
+- [ ] `covers_record_seq_through: 0` meaning no records covered, and repeated
+  coverage of an already-covered range as a legal no-op.
+- [ ] `protocol.coverage_mismatch` as its own code for a `records_covered`
+  disagreement, and `protocol.seq_gap` as its own code for a sequence gap,
+  neither overloading `protocol.unexpected_order`.
+- [ ] Durability handled conservatively in v0.1: core refuses the next event
+  while a checkpoint's durability barrier is outstanding, with pipelining left
+  as a permitted future optimization.
+- [ ] The cursor grammar excluding every C0 control character, not only NUL.
 
 ### Deletion and partial results
 
@@ -1135,19 +1462,33 @@ accept, reject, or amend.
   standard error.
 - [ ] Redaction as an obligation on Fieldnotes' own output only, with no secret
   scanning of collected evidence, per ruling 3.
+- [ ] The channel descriptor's flat object shape as deliberate, not an
+  oversight: `additionalProperties: false` and an internally tagged union
+  fight each other, and a flat shape is what every implementation language
+  will be pulled toward for the same reason.
+- [ ] The end-to-end credential canary — over a real per-platform channel
+  mechanism — assigned to the `0.1.3` authentication gate, since section 12
+  defers that mechanism there and A2 cannot freeze evidence for a mechanism it
+  does not itself freeze.
 
 ### Failure, bounds, and trust
 
 - [ ] The exit-code table, with reserved ranges and signal termination
-  normalized to a failed run.
+  normalized to a failed run, including Windows abnormal termination — a full
+  NTSTATUS-shaped 32-bit value such as `0xC0000409`, which does not fit the
+  `u8` an ordinary exit code fits into and must never be narrowed into one.
 - [ ] Complete, partial, and failed run outcomes, with only complete
   authorizing deletion by absence, and durable work before a failure retained.
 - [ ] Per-Field outcomes in a multi-Field sync, with the CLI's own exit-code
   table left to the CLI contract.
 - [ ] Cooperative cancellation with a grace period, exit code 8, and a
   cancelled run never complete.
-- [ ] The frozen bound ceilings, configurable downward only, and echoed to the
-  Field in the request.
+- [ ] The frozen bound ceilings — absolute technical bounds no configuration
+  may cross — echoed to the Field in the request. For most bounds the ceiling
+  is also the default and configuration is downward only; the single-artifact
+  bound and the run wall clock instead have a configurable default distinct
+  from their ceiling and may be configured in either direction up to it, per
+  the "Questions the reviewer may want to settle" section.
 - [ ] Any protocol violation failing the run, with the closed rejection-code
   vocabulary and previously committed checkpoints standing.
 - [ ] Structural path safety: no Field-supplied string is ever a path
@@ -1188,11 +1529,17 @@ These are places where the existing documents did not determine the answer and
 the recommendation above made a defensible choice that a reviewer may prefer to
 make differently.
 
-1. **In-run divergence for one source key.** The recommendation rejects the
-   second frame as a Field defect rather than creating a conflict bundle,
-   reasoning that one producer asserting two unordered current states within
-   one run is a bug. A reviewer who would rather never lose evidence may prefer
-   a conflict bundle even here.
+1. **In-run divergence for one source key.** *Settled by the coordinator on
+   2026-08-22: the recommendation stands.* The second frame for one source key
+   within a single run, with divergent payloads and no declared version
+   ordering, is rejected as a Field defect (`record.duplicate_divergent_in_run`)
+   rather than turned into a conflict bundle. One producer asserting two
+   unordered current states within one run is a bug in that Field, and turning
+   it into user-visible conflict material would hide the bug instead of
+   surfacing it. This is deliberately narrow: cross-run and cross-instance
+   divergence still becomes a visible conflict, at the store, which is where
+   evidence preservation applies — nothing about this settles item 2 differently
+   or reduces conflict-preservation across runs or instances.
 2. **`source_version_ordering: unsupported` for the v0.1 Fields.** *Settled by
    the coordinator on 2026-08-22: intended.* Neither a Graph change key nor a
    file content hash gives a reliable order, so both candidate manifests declare
@@ -1201,23 +1548,61 @@ make differently.
    divergence becomes a visible conflict instead. A source version is
    deliberately not required for these Fields, and preserving divergence as a
    conflict rather than guessing an order is the intended behavior.
-3. **The 512 MiB single-artifact ceiling.** Chosen as a number large enough for
-   ordinary mail attachments and documents and small enough to bound a run.
-   No existing document states a size expectation.
-4. **The 3600 s run and 120 s idle ceilings.** Likewise chosen rather than
-   derived. A first full mailbox sync may legitimately exceed an hour, in which
-   case the answer is either a larger ceiling or windowed runs, and the reviewer
-   may have a preference.
-5. **Where the staging directory lives.** The recommendation places it under
-   the disposable cache class, which makes cleanup unambiguous but means
-   artifact bytes transit a directory a user may be told is safe to delete at
-   any time. Placing it under operational sync state instead would be
-   defensible.
-6. **Whether `describe` should run on every sync.** The recommendation runs it
-   every sync, because that is where negotiation and the manifest-change check
-   happen. The cost is one extra process start per Field per sync.
-7. **Transcript file format.** The corpus wraps wire frames in a fixture
-   envelope so one file can show both directions, both channels, core's
-   actions, and deliberately invalid bytes. A reviewer who wants transcripts to
-   be literal wire captures would need a different arrangement, probably one
-   file per direction plus a separate expectations file.
+3. **The single-artifact ceiling.** *Settled by the coordinator on 2026-08-22:
+   default 25 MiB (26,214,400 bytes), ceiling unchanged at 512 MiB
+   (536,870,912 bytes).* The ceiling remains the absolute technical bound
+   protecting core against a hostile or buggy child, chosen as a number large
+   enough for ordinary mail attachments and documents and small enough to
+   bound a run; no configuration may exceed it, and it is unchanged from the
+   original recommendation. The **default** — what core requests absent
+   configuration — is set well below it: a notebook is disposable working
+   material, not a system of record, and copying every large blob by default
+   contradicts that boundary, so the default keeps what is useful for work and
+   context and larger original material stays at its source. This same number
+   doubles as the retention threshold that decides when a Field emits a
+   `not_retained` reference instead of staging bytes (section 8, section 14). A
+   notebook may configure the effective value anywhere from the product's
+   minimum up to the 512 MiB ceiling, in either direction from the default —
+   settings plumbing for this is `sync`-command scope (`0.1.1`) and is not
+   built here; A2 states the default, the ceiling, and the behavior a
+   configured value must have.
+4. **The run and idle ceilings.** *Settled by the coordinator on 2026-08-22:
+   run default 600 seconds (10 minutes), run ceiling unchanged at 3600 seconds
+   (1 hour); idle ceiling unchanged at 120 seconds; cancellation grace
+   unchanged at 10 seconds.* The run ceiling remains the absolute bound past
+   which no configuration may push a run. The **default** is set to 10
+   minutes, well under it: a first full sync expected to run longer is handled
+   by windowed, resumable runs — the cursor and checkpoint machinery already
+   exists for exactly that — rather than by one long-running process, because a
+   crash late in a long run discards far more durable-but-uncommitted work
+   than a crash late in a short one. The idle and grace values stay as
+   recommended, sensibly proportioned to the 10-minute run default. As with
+   item 3, a notebook may configure the run length between the product's
+   minimum and the 3600-second ceiling; settings plumbing is `sync`-command
+   scope and is not built here.
+5. **Where the staging directory lives.** *Settled by the coordinator on
+   2026-08-22: operational sync state, not the disposable cache class.*
+   Artifact bytes must not transit a directory users are told is always safe to
+   delete at any time, even before they are durable. This reverses the
+   recommendation as originally drafted, which placed it under the disposable
+   cache class for cleanup simplicity; that convenience does not outweigh
+   staged bytes passing through a directory whose entire contract is "always
+   safe to delete."
+6. **Whether `describe` should run on every sync.** *Settled by the coordinator
+   on 2026-08-22: yes, on every sync.* That is where negotiation and the
+   manifest-change check happen, and the cost — one extra process start per
+   Field per sync — is accepted as the price of never syncing against a stale
+   or incompatible manifest.
+7. **Transcript file format.** *Settled by the coordinator on 2026-08-22: keep
+   the fixture envelope.* It carries the `expect_reject` information the
+   executable conformance tests need — which pipeline stage rejects a frame and
+   with which code — that a literal wire capture has no place to record. A
+   reviewer who wants transcripts to be literal wire captures would need a
+   different arrangement, probably one file per direction plus a separate
+   expectations file, at the cost of losing the single-file, side-by-side
+   review the current format gives a human reader.
+
+The single-artifact ceiling's *default* (item 3) and the run ceiling's
+*default* (item 4) were the two questions this package originally left open
+for the owner; both are now settled above, alongside the four questions that
+were already resolved. No question in this section remains open.

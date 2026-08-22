@@ -39,6 +39,7 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:\\+[0-9]{2}:[0-9]{2}|-(?!00:00)[0-9]{2}:[0-9]{2})$"
     },
     "dateOnly": {
+      "description": "A1 date-only grammar (YYYY-MM-DD), for reference only: it is not $ref'd from record-event.schema.json's generic 'properties' map, and deliberately so. A property's scalar type -- text, date, or datetime -- comes from the declaring manifest or the A1 shared registry, never from a single frame in isolation, so no wire schema can single out 'this string must be a date' the way it singles out 'occurred_at must be an offset datetime'. Core enforces this grammar at the point where it does know the declared or registered type, rejecting a malformed value with 'record.invalid_date', distinct from 'record.invalid_datetime'.",
       "type": "string",
       "maxLength": 10,
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
@@ -171,11 +172,11 @@
       "pattern": "^[0-9a-f]{64}$"
     },
     "artifactHandle": {
-      "description": "Single-segment staging name chosen by the Field from a closed character set. It is never a path: it contains no separator, no dot, no traversal sequence, and no reserved Windows device name, and core resolves it only inside the run's staging directory.",
+      "description": "Single-segment staging name chosen by the Field from a closed character set. It is never a path: it contains no separator, no dot, no traversal sequence, and no reserved Windows device name -- including 'com0' and 'lpt0', reserved alongside 'com1'-'com9' and 'lpt1'-'lpt9' even though the numbered range conventionally starts at 1 -- and core resolves it only inside the run's staging directory.",
       "type": "string",
       "minLength": 1,
       "maxLength": 64,
-      "pattern": "^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9][a-z0-9_-]{0,63}$"
+      "pattern": "^(?!(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$)[a-z0-9][a-z0-9_-]{0,63}$"
     },
     "mediaType": {
       "description": "Declared media type. Core maps it through the A1 canonical-extension registry; an unknown or conflicting type falls back to '.bin'. The media type is never artifact identity.",
@@ -185,11 +186,11 @@
       "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
     },
     "cursor": {
-      "description": "Opaque, non-secret, bounded Field-owned resume token. Core never parses, orders, or interprets it.",
+      "description": "Opaque, non-secret, bounded Field-owned resume token. Core never parses, orders, or interprets it. Excludes every C0 control character and DEL, matching the treatment sourceScope already gets, not only NUL: a cursor containing an unescaped LF is exactly the value that corrupts an NDJSON-shaped state file or a log line, since a cursor is stored and logged, not merely compared.",
       "type": "string",
       "minLength": 1,
       "maxLength": 4096,
-      "pattern": "^[^\\u0000]*$"
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
     },
     "cursorFormatVersion": {
       "description": "Field-declared cursor encoding version. A stored cursor whose version differs from the manifest's is not replayed; core starts unbounded and reports a recovery gap.",
@@ -298,7 +299,7 @@
       "maxProperties": 32
     },
     "limits": {
-      "description": "Effective bounds for this run so the Field can self-police. Core enforces them regardless of what the Field does. A notebook may lower a value; raising one above the A2 ceiling requires a protocol revision.",
+      "description": "Effective bounds for this run so the Field can self-police. Core enforces them regardless of what the Field does. A ceiling is an absolute technical bound protecting core against a hostile or buggy child: no configuration may exceed it, and only a protocol revision can raise it. For most members the ceiling is also the sensible default. Two members instead have a configurable default distinct from their ceiling -- max_artifact_bytes (default 26214400 bytes / 25 MiB, ceiling 536870912 bytes / 512 MiB) and the run wall clock, expressed only as the absolute collect_request/describe_request 'deadline.not_after' rather than as a duration field here (default 600 seconds / 10 minutes, ceiling 3600 seconds / 1 hour) -- and a notebook may configure either anywhere between the product's own minimum and that ceiling, in either direction from the default.",
       "type": "object",
       "properties": {
         "max_frame_bytes": { "type": "integer", "minimum": 4096, "maximum": 1048576 },
@@ -307,7 +308,12 @@
         "max_property_value_bytes": { "type": "integer", "minimum": 64, "maximum": 65536 },
         "max_list_members": { "type": "integer", "minimum": 1, "maximum": 1024 },
         "max_artifacts_per_record": { "type": "integer", "minimum": 0, "maximum": 64 },
-        "max_artifact_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "max_artifact_bytes": {
+          "description": "The single-artifact ceiling, and also the retention threshold a Field compares a known artifact's size against before staging it: over this number, the Field is expected to emit a 'not_retained' reference instead of staging bytes core would then have to reject as oversized. One number serves both purposes so a Field that stages something larger really is violating a limit it was told, rather than juggling a transfer ceiling and a separate retention policy. Default 26214400 (25 MiB): a notebook is disposable working material, not a system of record, so the default keeps what is useful for work and context and larger original material stays at its source. Ceiling 536870912 (512 MiB): the absolute technical bound: a notebook may configure the default up to this ceiling, never past it.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 536870912
+        },
         "max_run_artifact_bytes": { "type": "integer", "minimum": 0, "maximum": 8589934592 },
         "max_run_stdout_bytes": { "type": "integer", "minimum": 4096, "maximum": 1073741824 },
         "max_run_records": { "type": "integer", "minimum": 0, "maximum": 1000000 },
@@ -335,7 +341,10 @@
     "deadline": {
       "type": "object",
       "properties": {
-        "not_after": { "$ref": "#/$defs/offsetDatetime" },
+        "not_after": {
+          "description": "The absolute instant after which the run has exceeded its wall clock. Core computes this from a configurable run-length setting: default 600 seconds (10 minutes), which a notebook may lengthen up to the absolute 3600-second (1-hour) ceiling that protects core against a hostile or buggy child that never stops. A first full sync expected to run longer than the configured length is handled by windowed, resumable runs -- the cursor and checkpoint machinery already exists for exactly that -- rather than by one long-running process, because a crash late in a long run discards far more durable-but-uncommitted work than a crash late in a short one.",
+          "$ref": "#/$defs/offsetDatetime"
+        },
         "idle_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
         "cancel_grace_seconds": { "type": "integer", "minimum": 1, "maximum": 120 }
       },

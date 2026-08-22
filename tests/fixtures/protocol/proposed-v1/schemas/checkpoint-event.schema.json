@@ -12,19 +12,19 @@
     "cursor": { "$ref": "common.schema.json#/$defs/cursor" },
     "cursor_format_version": { "$ref": "common.schema.json#/$defs/cursorFormatVersion" },
     "covers_record_seq_through": {
-      "description": "Sequence number of the last record this cursor accounts for. Must be less than this checkpoint's own seq, and greater than or equal to the previous checkpoint's value in the same run. Zero means the cursor advances without any record in between, which a Field may emit when it has proven that a page contained nothing new.",
+      "description": "Sequence number of the last record this cursor accounts for. Must be less than this checkpoint's own seq, and greater than or equal to the previous checkpoint's value in the same run. Zero means no records are covered at all -- the cursor advances without any record in between, which a Field may emit when it has proven that a page contained nothing new. Equal to the previous checkpoint's value means repeated coverage of an already-covered range: legal, and a no-op that accounts for zero new records. Eligibility for commit means every accepted *record* with seq at or below this value is durable, not that every seq in that range is durable: seq is shared by records, checkpoints, and diagnostics, so a diagnostic's or another checkpoint's seq falling inside the range proves nothing about it. A naive implementation that builds a '(previous + 1)..=covers' range to count covered records must special-case 'covers' not having advanced past 'previous', because ranging a sorted set backwards panics rather than yielding an empty range.",
       "type": "integer",
       "minimum": 0,
       "maximum": 1000000
     },
     "records_covered": {
-      "description": "Count of record events this checkpoint accounts for since the previous checkpoint. Core cross-checks it against what it actually received and fails the run on disagreement.",
+      "description": "Count of record events this checkpoint accounts for since the previous checkpoint. Core cross-checks it against what it actually received and fails the run as 'protocol.coverage_mismatch' on disagreement -- not 'protocol.unexpected_order', which is reserved for a frame arriving somewhere the protocol does not allow it at all.",
       "type": "integer",
       "minimum": 0,
       "maximum": 1000000
     },
     "snapshot": {
-      "description": "Present only in a snapshot-mode run. 'complete' is the Field's explicit claim that it enumerated the whole declared scope. Anything else, including a partial claim, a windowed run, an error diagnostic anywhere in the run, cancellation, a deadline, or a non-zero exit, leaves absence meaningless: core removes nothing.",
+      "description": "Present only in a snapshot-mode run. 'complete' is the Field's explicit claim that it enumerated the whole declared scope. Anything else, including a partial claim, a windowed run, an error diagnostic anywhere in the run, cancellation, a deadline, or a non-zero exit, leaves absence meaningless: core removes nothing. When a claim is invalid for more than one reason at once, core reports 'snapshot.completeness_contradicted' before 'snapshot.scope_widened': whether the run and manifest even admit a completeness claim at all is checked first, and only a claim that clears that bar is then checked against the requested scope.",
       "type": "object",
       "properties": {
         "scope": {

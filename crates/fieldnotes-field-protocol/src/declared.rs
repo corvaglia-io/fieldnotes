@@ -18,7 +18,12 @@
 //!    **rejected**, which is A1 section 4's prefix-to-producer binding;
 //! 4. an unprefixed name outside A1's closed shared registry is **rejected**;
 //! 5. spelling-based inference is retired for declared properties: the type
-//!    comes from the declaration.
+//!    comes from the declaration;
+//! 6. an unprefixed name that the registry types for a **derived record**
+//!    only — [`fieldnotes_format::registry::DERIVED_RECORD_ONLY`], such as
+//!    `confidence` or `generated_at` — is **rejected**. A Field collects a
+//!    Note, never a derived record, so that subset of the registry is not
+//!    Note-applicable and is not a vocabulary a record may use.
 //!
 //! A manifest may not declare unprefixed properties. Those belong to A1's
 //! closed shared registry and take their type from it, which is why
@@ -195,7 +200,15 @@ impl PropertyShape {
     /// Whether `value`'s JSON shape agrees with this approved shape.
     ///
     /// A temporal type additionally requires the string to be a well-formed A1
-    /// value; a string that merely looks like a date is not one.
+    /// value; a string that merely looks like a date is not one. A malformed
+    /// `date` and a malformed `datetime` are reported with their own codes:
+    /// [`RejectionCode::RecordInvalidDate`] and
+    /// [`RejectionCode::RecordInvalidDatetime`] respectively, so a reviewer
+    /// reading logs or metrics can tell which grammar failed without opening
+    /// the record. The envelope's own instants (`occurred_at`, `observed_at`)
+    /// are guarded at decode by [`crate::grammar::OffsetDatetime`], so this
+    /// code path only ever fires for a declared or registered temporal
+    /// *property*.
     pub fn accepts(&self, value: &PropertyValue) -> Result<(), RejectionCode> {
         let list_expected = self.cardinality == Cardinality::List;
         if list_expected != value.is_list() {
@@ -207,28 +220,28 @@ impl PropertyShape {
             | (ScalarKind::Bool, PropertyValue::Boolean(_) | PropertyValue::BooleanList(_)) => {
                 Ok(())
             }
-            (ScalarKind::Date, PropertyValue::Text(text)) => temporal(Date::parse(text).is_ok()),
-            (ScalarKind::Date, PropertyValue::TextList(members)) => {
-                temporal(members.iter().all(|text| Date::parse(text).is_ok()))
+            (ScalarKind::Date, PropertyValue::Text(text)) => {
+                temporal(Date::parse(text).is_ok(), RejectionCode::RecordInvalidDate)
             }
-            (ScalarKind::Datetime, PropertyValue::Text(text)) => {
-                temporal(Datetime::parse(text).is_ok())
-            }
-            (ScalarKind::Datetime, PropertyValue::TextList(members)) => {
-                temporal(members.iter().all(|text| Datetime::parse(text).is_ok()))
-            }
+            (ScalarKind::Date, PropertyValue::TextList(members)) => temporal(
+                members.iter().all(|text| Date::parse(text).is_ok()),
+                RejectionCode::RecordInvalidDate,
+            ),
+            (ScalarKind::Datetime, PropertyValue::Text(text)) => temporal(
+                Datetime::parse(text).is_ok(),
+                RejectionCode::RecordInvalidDatetime,
+            ),
+            (ScalarKind::Datetime, PropertyValue::TextList(members)) => temporal(
+                members.iter().all(|text| Datetime::parse(text).is_ok()),
+                RejectionCode::RecordInvalidDatetime,
+            ),
             _ => Err(RejectionCode::RecordPropertyTypeMismatch),
         }
     }
 }
 
-fn temporal(well_formed: bool) -> Result<(), RejectionCode> {
-    if well_formed {
-        Ok(())
-    } else {
-        // v1's closed vocabulary has one code for both temporal scalar types.
-        Err(RejectionCode::RecordInvalidDatetime)
-    }
+fn temporal(well_formed: bool, code: RejectionCode) -> Result<(), RejectionCode> {
+    if well_formed { Ok(()) } else { Err(code) }
 }
 
 /// Why one property candidate was refused.
@@ -276,7 +289,7 @@ impl<'a> DeclaredPropertyIndex<'a> {
         let mut declared = BTreeMap::new();
         for entry in &manifest.declared_properties {
             let name = entry.name.as_str();
-            match manifest.property_prefix.value() {
+            match manifest.property_prefix.as_ref() {
                 Some(prefix) if name.starts_with(prefix.as_str()) => {}
                 Some(prefix) => {
                     return Err(PropertyRejection {
@@ -373,6 +386,17 @@ impl<'a> DeclaredPropertyIndex<'a> {
                     .to_owned(),
             });
         };
+        if !fieldnotes_format::registry::is_note_applicable(name) {
+            return Err(PropertyRejection {
+                code: RejectionCode::RecordUnknownProperty,
+                name: name.to_owned(),
+                detail: "this name is registered, but only for a derived record generated from \
+                         other Notes; a Field collects a Note and maps a source object onto A1 \
+                         vocabulary, so it has no evidence span, confidence score, or binding \
+                         status to report and may not emit this name"
+                    .to_owned(),
+            });
+        }
         let shape = PropertyShape::from_registry(entry);
         shape.accepts(value).map_err(|code| PropertyRejection {
             code,
@@ -443,10 +467,16 @@ impl ManifestSnapshot {
 
     /// Compares a stored snapshot with the manifest that just arrived.
     ///
-    /// Adding a declared property is a Field release change, not a migration,
-    /// so it is allowed. Removing one is allowed too: a name the Field no longer
-    /// emits cannot retype anything. Changing one is a migration, and so is
-    /// changing the cursor format.
+    /// The declared-property change policy: **adding** a declared property is
+    /// a Field release change, not a migration, so it is allowed without one.
+    /// **Changing or removing** one requires a migration. A changed type or
+    /// cardinality is refused because core will not silently retype notebook
+    /// data in place; a removed name is refused for the same reason a changed
+    /// one is — the manifest is the only place that type was ever recorded,
+    /// so once the declaration disappears core can no longer tell a
+    /// previously-collected value of that property from an undeclared one on
+    /// the next divergence check, which is exactly the ambiguity ruling 4
+    /// exists to prevent. Changing the cursor format is a migration too.
     pub fn check_against(&self, current: &ManifestSnapshot) -> Result<(), MigrationRequired> {
         if self.cursor_format_version != current.cursor_format_version {
             return Err(MigrationRequired {
@@ -459,18 +489,31 @@ impl ManifestSnapshot {
             });
         }
         for (name, stored) in &self.declared {
-            if let Some(now) = current.declared.get(name)
-                && (stored.value_type != now.value_type
-                    || stored.cardinality != now.cardinality
-                    || stored.list_semantics != now.list_semantics)
-            {
-                return Err(MigrationRequired {
-                    code: RejectionCode::ManifestPropertyTypeChanged,
-                    detail: format!(
-                        "declared property {name} changed shape between runs; core says so \
-                         instead of retyping notebook data in place"
-                    ),
-                });
+            match current.declared.get(name) {
+                Some(now)
+                    if stored.value_type != now.value_type
+                        || stored.cardinality != now.cardinality
+                        || stored.list_semantics != now.list_semantics =>
+                {
+                    return Err(MigrationRequired {
+                        code: RejectionCode::ManifestPropertyTypeChanged,
+                        detail: format!(
+                            "declared property {name} changed shape between runs; core says so \
+                             instead of retyping notebook data in place"
+                        ),
+                    });
+                }
+                Some(_) => {}
+                None => {
+                    return Err(MigrationRequired {
+                        code: RejectionCode::ManifestPropertyTypeChanged,
+                        detail: format!(
+                            "declared property {name} is no longer declared; removing a \
+                             declared property is a migration, not a manifest edit, because \
+                             its type and list semantics are recorded nowhere else"
+                        ),
+                    });
+                }
             }
         }
         Ok(())
@@ -539,6 +582,29 @@ mod tests {
         );
         assert_eq!(
             date.accepts(&PropertyValue::Text("August 20".into())),
+            Err(RejectionCode::RecordInvalidDate),
+            "a malformed date-only value has its own code, distinct from an invalid datetime"
+        );
+    }
+
+    #[test]
+    fn a_malformed_date_and_a_malformed_datetime_use_different_codes() {
+        let date = PropertyShape {
+            value_type: ScalarType::from(ScalarKind::Date),
+            cardinality: Cardinality::Scalar,
+            list_semantics: None,
+        };
+        let datetime = PropertyShape {
+            value_type: ScalarType::from(ScalarKind::Datetime),
+            cardinality: Cardinality::Scalar,
+            list_semantics: None,
+        };
+        assert_eq!(
+            date.accepts(&PropertyValue::Text("not-a-date".into())),
+            Err(RejectionCode::RecordInvalidDate)
+        );
+        assert_eq!(
+            datetime.accepts(&PropertyValue::Text("not-a-datetime".into())),
             Err(RejectionCode::RecordInvalidDatetime)
         );
     }
@@ -554,5 +620,91 @@ mod tests {
             }
             None => panic!("'to' is an approved A1 shared property"),
         }
+    }
+
+    fn stem_registry() -> &'static FieldStemRegistry {
+        FieldStemRegistry::v1()
+    }
+
+    fn local_manifest_json() -> serde_json::Value {
+        serde_json::json!({
+            "v": 1, "type": "manifest", "run_id": "1a4c9f2e-0000-4000-8000-000000000001",
+            "protocol_version": 1, "protocol_revision": 0, "supported_protocol_versions": [1],
+            "driver": "local-reference", "driver_version": "0.1.1", "field_stem": "local",
+            "property_prefix": "local_",
+            "declared_properties": [],
+            "capabilities": [{
+                "object_kind": "file", "note_type": "file", "emits_artifacts": true,
+                "emits_identity_anchors": false, "description": "d"
+            }],
+            "source_key": {
+                "scope_rule": "local_root_id", "scope_rule_version": 1,
+                "scope_shape": "s", "scope_depends_on_field_label": false,
+                "identity_shape": "i", "identity_includes_object_kind": true,
+                "source_version_ordering": "unsupported", "stable_across_instances": true
+            },
+            "auth": {
+                "kind": "none", "credential_profile_required": false,
+                "protected_channel_required": false, "refresh_owner": "not_applicable",
+                "writes_to_source": false
+            },
+            "collection": {
+                "incremental": true, "cursor_format_version": 1,
+                "supported_modes": ["incremental"], "window_supported": false,
+                "refetch": "unsupported",
+                "deletion": { "tombstones": "unsupported", "snapshot": "unsupported" }
+            }
+        })
+    }
+
+    #[test]
+    fn an_unprefixed_derived_record_only_name_is_rejected_as_unknown()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let manifest: Manifest = serde_json::from_value(local_manifest_json())?;
+        let stems = stem_registry();
+        let index = DeclaredPropertyIndex::new(&manifest, stems)?;
+        match index.check(
+            "confidence",
+            &PropertyValue::Number(serde_json::Number::from(1)),
+        ) {
+            Err(rejection) => assert_eq!(rejection.code, RejectionCode::RecordUnknownProperty),
+            Ok(()) => panic!("confidence is derived-record-only and must be rejected"),
+        }
+        // An ordinary shared Note property remains usable.
+        assert!(
+            index
+                .check("title", &PropertyValue::Text("x".into()))
+                .is_ok()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn adding_a_declared_property_is_not_a_migration_but_removing_one_is()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let without_tags = local_manifest_json();
+        let mut with_tags = local_manifest_json();
+        if let Some(properties) = with_tags.get_mut("declared_properties") {
+            *properties = serde_json::json!([{
+                "name": "local_tags", "value_type": "text", "cardinality": "list",
+                "list_semantics": "set", "description": "d"
+            }]);
+        }
+        let stored = ManifestSnapshot::of(&serde_json::from_value::<Manifest>(without_tags)?);
+        let current = ManifestSnapshot::of(&serde_json::from_value::<Manifest>(with_tags)?);
+
+        // Adding local_tags between the stored and the current manifest is not
+        // a migration: the added property carries no prior notebook data.
+        assert!(stored.check_against(&current).is_ok());
+
+        // Removing it (going the other direction) is a migration: its type and
+        // list semantics are recorded nowhere else once the declaration is gone.
+        match current.check_against(&stored) {
+            Err(migration) => {
+                assert_eq!(migration.code, RejectionCode::ManifestPropertyTypeChanged)
+            }
+            Ok(()) => panic!("removing a declared property must require a migration"),
+        }
+        Ok(())
     }
 }

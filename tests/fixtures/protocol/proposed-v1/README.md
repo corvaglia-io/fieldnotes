@@ -101,6 +101,35 @@ express — sequence ordering, declared deletion authority, registry membership,
 declared property typing, or what is actually on the filesystem. Both must
 fail; only the first is a schema matter.
 
+### The two-layer validity model
+
+`valid` in every `frame` line means **wire-schema validity only**: would a
+validator checking this frame's `type` against its corresponding schema in
+`schemas/` accept its shape. `expect_reject` names the code from whichever
+pipeline stage actually rejects the frame — the wire schema itself, or a later
+stage that a single frame's shape cannot express an opinion about at all.
+
+The artifact handle is the case worth being explicit about, because it is easy
+to implement in a way that produces the wrong code. `record-event.schema.json`
+carries the handle-character-set pattern on `artifacts[].handle` as a
+well-formedness guard, so a validator checking the wire schema alone correctly
+reports a traversal string as not matching it. **The reference implementation's
+own data-transfer object nonetheless carries `handle` as an unvalidated
+string**, and applies the grammar itself, by hand, as a distinct
+artifact-validation step that runs before any filesystem call. This is not
+carelessness: a DTO field typed to enforce the grammar at deserialization would
+fail a hostile handle at decode time with a generic `protocol.schema_invalid`
+— "the frame does not validate" — when the code this package actually
+specifies, and the one the transcripts pin, is `artifact.invalid_handle` from
+the purpose-built later step. **An implementer translating these schemas into
+a strongly-typed DTO in any language must not collapse the wire-schema guard
+into the type used for decoding**, or a hostile handle silently produces the
+wrong rejection code. Transcript 11 pins `artifact.invalid_handle` for a
+grammar failure and `artifact.not_regular_file` for a *grammatically valid*
+handle whose staged entry turned out to be a symlink — two different pipeline
+stages, two different codes, and only the grammar failure is something the
+wire schema itself has an opinion about.
+
 | Transcript | Case demonstrated | Expected outcome |
 |---|---|---|
 | `01-successful-incremental-collection.ndjson` | describe, negotiation, two upserts, one staged artifact, one committed checkpoint | complete, exit 0 |
@@ -112,8 +141,8 @@ fail; only the first is a schema matter.
 | `07-version-negotiation-failure.ndjson` | negotiation fails closed before any credential exists, in both directions | failed, exit 3 |
 | `08-malformed-output-rejection.ndjson` | non-JSON, unknown event, sequence regression, invalid UTF-8, oversized frame, truncated frame | failed, exit 10 |
 | `09-snapshot-complete-authorizes-absence.ndjson` | the one path by which absence removes a Note | complete, exit 0 |
-| `10-artifact-transfer-and-dedup.ndjson` | staged original bytes installed, then a digest-only reference reused | complete, exit 0 |
-| `11-hostile-artifact-references.ndjson` | traversal, absolute path, reserved device name, symlink escape, digest mismatch, unknown digest | failed, exit 10 |
+| `10-artifact-transfer-and-dedup.ndjson` | staged original bytes installed, a digest-only reference reused, and an oversize attachment declined and left at its source | complete, exit 0 |
+| `11-hostile-artifact-references.ndjson` | traversal, absolute path, reserved device name, symlink escape (rejected as `artifact.not_regular_file`, distinct from a handle-grammar failure), digest mismatch, unknown digest | failed, exit 10 |
 | `12-crash-before-checkpoint.ndjson` | durable write, commit, durable write, crash, resume, idempotent replay | failed then complete, exit 137 then 0 |
 | `13-undeclared-prefixed-property-rejection.ndjson` | ruling 4 enforcement: undeclared, foreign-prefixed, unknown unprefixed, mistyped, and core-owned properties | failed, exit 10 |
 | `14-cancellation-and-deadline.ndjson` | cooperative cancellation of a snapshot run; partial, so nothing is removed | partial, exit 8 |
@@ -143,10 +172,10 @@ or vendor payload appears here.
 
 | Corpus area | A2 approval meaning if approved | Later gate work |
 |---|---|---|
-| `schemas/common.schema.json` grammars, limits, deadline, closed diagnostic vocabulary | Normative for protocol v1 transport well-formedness and for the frozen limit ceilings | Lowering a default is configuration; raising a ceiling or adding a diagnostic code is an additive protocol revision |
+| `schemas/common.schema.json` grammars, limits, deadline, closed diagnostic vocabulary | Normative for protocol v1 transport well-formedness and for the frozen limit ceilings — absolute bounds no configuration may cross | Configuring within a ceiling is `sync`-command scope, including the single-artifact bound's and the run wall clock's configurable defaults; raising a ceiling or adding a diagnostic code is an additive protocol revision |
 | `schemas/describe-manifest.schema.json` envelope, `declared_properties`, `source_key`, `identity_anchors`, `auth`, `collection` | Normative for the manifest envelope and for prefixed-property declaration and enforcement, closing the gap [ruling 4](../../../../docs/decisions/0006-a1-implementation-rulings.md) assigned to A2 | Each Field's actual declared property names, capability slices, and scopes are approved with that Field's release: `local_` at `0.1.1`, `outlook_mail_` at `0.1.3` |
 | `schemas/collect-request.schema.json`, `cancel-control.schema.json` | Normative for the request envelope, mode, window, snapshot scope, staging directory, and cooperative cancellation | The CLI's own exit-code table and multi-Field summary remain a CLI-contract decision |
-| `schemas/record-event.schema.json` | Normative for the normalized-source-envelope boundary, the upsert/delete split, deletion authority, artifact references, and the core-owned property exclusion | Property names inside `properties` remain governed by the A1 registry; new shared names need registry review |
+| `schemas/record-event.schema.json` | Normative for the normalized-source-envelope boundary, the upsert/delete split, deletion authority, the three artifact reference kinds including `not_retained`, the retention threshold's protocol-level effect, the Note-applicable registry subset, and the core-owned property exclusion | Property names inside `properties` remain governed by the A1 registry; new shared names need registry review, including a possible future name for "an attachment was seen but is not retained," which A2 does not propose |
 | `schemas/checkpoint-event.schema.json` | Normative for cursor commit eligibility, coverage accounting, and the snapshot completeness claim | Retry classification and backoff policy are implementation policy inside these bounds |
 | `schemas/diagnostic-event.schema.json` | Normative for the diagnostic envelope, the closed code vocabulary, severity semantics, and the redaction obligation | `0.1.5` Teams and `0.1.6` Jira may need additional codes, which is an additive revision |
 | `schemas/credential-channel.schema.json` | Normative for the shape of protected delivery and for the rule that `material` is the only secret-bearing member in the protocol | The exact per-platform channel mechanism, refresh ownership, and memory-clearing behavior close at the `0.1.3` authentication gate |
@@ -187,3 +216,31 @@ The check ran with `python3` and `jsonschema` 4.26.0 in a throwaway virtual
 environment outside the repository: 75 assertions, 0 failures. The generator
 and checker are scratch tooling and are deliberately not committed; IG2 replaces
 them with the Rust conformance kit, which is the real evidence.
+
+### Re-verification after the implementation-finding pass
+
+The reference implementation named in the A2 package (`fieldnotes-field-protocol`
+and `fields/fieldnotes-field-fixture`) has since been built and, in the course
+of building it, surfaced the defects and ambiguities this pass corrects — new
+rejection codes, the checkpoint-eligibility clarification, the two-layer
+validity model, the `not_retained` artifact kind, and the rest recorded
+throughout the A2 package above. Every schema and transcript byte this pass
+touched was re-verified the same way, again with `python3` and `jsonschema`
+4.26.0 in a throwaway virtual environment outside the repository: every schema
+still parses, is UTF-8, and ends with exactly one final LF; every schema still
+validates against the 2020-12 meta-schema; every `$ref` still resolves inside
+this twelve-file set; every transcript line still parses and validates against
+`transcript.schema.json`; every `frame` line's payload still validates against
+the wire schema its `type` selects, with every `valid: false` line still
+failing that schema exactly as before. This second pass also re-ran targeted
+probes for every grammar this revision touched: the artifact handle grammar
+now also refuses `com0` and `lpt0`; the cursor grammar now refuses an embedded
+LF or TAB, not only NUL; `describe_request` validates without a `limits`
+member; a manifest's `property_prefix` validates when present and fails
+schema validation when explicitly `null`; and an `artifactRef` of kind
+`not_retained` validates with a `byte_length` far past the 512 MiB transfer
+ceiling, which applies only to `staged`. This is still scratch tooling,
+deliberately not committed, and still not a substitute for the Rust
+conformance kit, which by this point exists and is the real evidence — this
+second check exists only to keep the schemas and transcripts honest while they
+were being hand-edited alongside the code.

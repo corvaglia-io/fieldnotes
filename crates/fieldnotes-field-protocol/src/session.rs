@@ -22,6 +22,38 @@
 //! `Refused` unless *all* of the A2 conditions hold, and it names every reason
 //! it refused rather than returning a bare boolean, so a test asserts the
 //! reason and not merely the outcome.
+//!
+//! # Durability is conservative on purpose
+//!
+//! [`CollectSession::accept`] refuses the next event outright while a
+//! checkpoint offer is still awaiting a commit decision (see
+//! [`RejectionCode::ProtocolUnexpectedOrder`] at that call site). Core could
+//! instead pipeline: keep consuming records while an earlier checkpoint's
+//! durability barrier is outstanding, and reconcile later. That is a
+//! permitted future optimization, and it is deliberately **not** done in
+//! v0.1, so that "which records does a given commit cover" stays a question
+//! with one answer instead of a question about in-flight state.
+//!
+//! # Cross-run idempotence is the store's job, not this one
+//!
+//! [`RecordDisposition::NoChange`] and [`RejectionCode::RecordDuplicateDivergentInRun`]
+//! are both scoped to *one run*: [`CollectSession`] tracks
+//! `(source_scope, source_identity) -> semantic fingerprint` only for the
+//! events it has itself accepted. Telling a replayed object apart from a
+//! genuinely new current state **across runs** requires the notebook's
+//! current state — what is actually durable on disk — which this library
+//! cannot see; it is handed a starting point via
+//! [`CollectSession::with_current_state`] by a caller that owns that state
+//! (the conformance kit's [`crate::conformance::CollectRun::current_state`]
+//! stands in for a notebook in tests). Cross-run and cross-instance
+//! idempotence is therefore guaranteed by the store that reconciles by
+//! portable exact-source key, not by the protocol boundary itself. In-run
+//! divergence stays a rejected Field defect rather than a conflict for the
+//! reason [`RejectionCode::RecordDuplicateDivergentInRun`] documents: one
+//! producer asserting two different current states inside a single run, with
+//! no declared ordering, is a bug in that Field. Cross-run and
+//! cross-instance divergence still becomes a visible conflict at the store,
+//! which is where evidence preservation applies.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -29,7 +61,7 @@ use std::path::Path;
 
 use fieldnotes_domain::{FieldStemRegistry, NoteType};
 
-use crate::artifact::{ArtifactDigestIndex, ArtifactRejection, ResolvedArtifact, resolve_artifact};
+use crate::artifact::{ArtifactDigestIndex, ArtifactOutcome, ArtifactRejection, resolve_artifact};
 use crate::codes::{ExitCode, RejectionCode, RunOutcome};
 use crate::declared::{DeclaredPropertyIndex, PropertyRejection};
 use crate::grammar::Cursor;
@@ -222,12 +254,25 @@ pub enum AcceptedEvent {
 pub enum ExitObservation {
     /// The process exited with a status code.
     Exited(u8),
-    /// The process was terminated by a signal, reported as 128 plus the signal
-    /// number on POSIX and its equivalent on Windows.
+    /// The process was terminated by a POSIX signal, reported as 128 plus the
+    /// signal number.
     ///
     /// Core normalizes any signal termination to a failed run rather than
     /// inventing a Field-level meaning for it.
     Signalled(u8),
+    /// The process ended on Windows by unhandled structured exception rather
+    /// than by exiting with an ordinary status code, carrying the full
+    /// NTSTATUS-shaped 32-bit value Windows reports.
+    ///
+    /// Windows has no POSIX-style signal number, so this is not "the Windows
+    /// equivalent of [`ExitObservation::Signalled`]" in the sense of also
+    /// fitting a `u8`: `std::process::abort()` on Windows surfaces as
+    /// `0xC0000409` (`STATUS_STACK_BUFFER_OVERRUN`), whose low byte alone is
+    /// `0x09` — indistinguishable from ordinary exit code 9, "configuration
+    /// invalid," if naively narrowed. Core normalizes this to a failed run
+    /// exactly like a POSIX signal termination, without ever attempting that
+    /// narrowing.
+    WindowsAbnormalTermination(u32),
     /// Core terminated the child, after a cancellation grace period or a bound.
     TerminatedByCore,
     /// The run exceeded its wall clock.
@@ -539,10 +584,11 @@ impl<'a> CollectSession<'a> {
             ));
         }
         if seq != self.last_seq + 1 {
-            // v1's closed vocabulary has no dedicated code for a gap, so the
-            // ordering code carries it.
+            // A gap has its own code, distinct from `protocol.unexpected_order`:
+            // it is a well-formed stream with a hole in it, not a frame that
+            // arrived somewhere the protocol forbids it outright.
             return Err(self.fail(
-                RejectionCode::ProtocolUnexpectedOrder,
+                RejectionCode::ProtocolSeqGap,
                 format!(
                     "sequence number jumped from {} to {seq}; seq increases by exactly 1 across \
                      every event of one run",
@@ -632,15 +678,30 @@ impl<'a> CollectSession<'a> {
             return Err(self.fail(RejectionCode::ManifestUndeclaredCapability, detail));
         }
 
-        if let Some(note_type) = &record.note_type
-            && NoteType::parse(note_type.as_str()).is_none()
-        {
-            let detail = format!(
-                "'{note_type}' is not one of A1's eleven approved primary Note types; the \
-                 protocol does not restate that vocabulary and core validates against the A1 \
-                 registry"
-            );
-            return Err(self.fail(RejectionCode::RecordInvalidNoteType, detail));
+        if let Some(note_type) = &record.note_type {
+            if NoteType::parse(note_type.as_str()).is_none() {
+                let detail = format!(
+                    "'{note_type}' is not one of A1's eleven approved primary Note types; the \
+                     protocol does not restate that vocabulary and core validates against the A1 \
+                     registry"
+                );
+                return Err(self.fail(RejectionCode::RecordInvalidNoteType, detail));
+            }
+            // Declare before exercise: a capability slice's declared
+            // note_type is a bound, not decoration. The object-kind check
+            // above already rejected an undeclared slice, so a slice is found
+            // here whenever object_kind was supplied at all.
+            if let Some(object_kind) = &record.object_kind
+                && let Some(declared) = self.manifest.declared_note_type_for(object_kind.as_str())
+                && declared.as_str() != note_type.as_str()
+            {
+                let detail = format!(
+                    "record declares note_type '{note_type}' but the manifest's capability slice \
+                     for object kind '{object_kind}' declares '{declared}'; a slice's declared \
+                     note_type is a bound the Field must honour, not a suggestion"
+                );
+                return Err(self.fail(RejectionCode::RecordNoteTypeNotDeclared, detail));
+            }
         }
 
         if let Some(body) = &record.body {
@@ -789,8 +850,13 @@ impl<'a> CollectSession<'a> {
                 ),
             ));
         }
-        // A checkpoint whose coverage equals the previous one accounts for no
-        // records, and an empty range must not be constructed backwards.
+        // A checkpoint whose coverage equals the previous one is a repeated,
+        // already-covered range: legal, and a no-op that accounts for no new
+        // records. The empty range must not be constructed backwards — a
+        // naive `(previous + 1)..=covers` panics on `BTreeSet::range` when
+        // `covers` has not advanced past `previous`, since that is a start
+        // bound greater than the end bound — so the range is only ever built
+        // in the branch where `covers` has actually advanced.
         let actual = if checkpoint.covers_record_seq_through > self.last_checkpoint_coverage {
             u64::try_from(
                 self.records_by_seq
@@ -804,10 +870,8 @@ impl<'a> CollectSession<'a> {
             0
         };
         if actual != checkpoint.records_covered {
-            // v1's closed vocabulary has no dedicated code for a coverage
-            // accounting disagreement, so the ordering code carries it.
             return Err(self.fail(
-                RejectionCode::ProtocolUnexpectedOrder,
+                RejectionCode::ProtocolCoverageMismatch,
                 format!(
                     "the checkpoint accounts for {} records through seq {} but core received {}; \
                      the two sides disagree about what was transferred",
@@ -837,6 +901,14 @@ impl<'a> CollectSession<'a> {
             ));
         }
 
+        // Precedence, when both `snapshot.completeness_contradicted` and
+        // `snapshot.scope_widened` could apply to the same claim: whether the
+        // run and manifest even admit a completeness claim at all is checked
+        // first, and only a claim that clears that bar is then checked
+        // against the requested scope. An incremental-mode run offering a
+        // claim whose scope also happens to differ from some other run's
+        // scope is reported as "contradicted", not "widened" — the more
+        // fundamental defect wins the report.
         if let Some(claim) = &checkpoint.snapshot {
             if self.mode != CollectionMode::Snapshot {
                 return Err(self.fail(
@@ -912,20 +984,25 @@ impl<'a> CollectSession<'a> {
     ///
     /// Artifacts become durable before any Note that references them, so a
     /// caller calls this before its Note write and only calls
-    /// [`CollectSession::record_durable`] once both are durable.
+    /// [`CollectSession::record_durable`] once both are durable. A
+    /// `not_retained` reference resolves to [`ArtifactOutcome::Declined`]:
+    /// it never touches the run's staged-byte budget, because core reads
+    /// nothing for it, and it never fails the record — the whole point of
+    /// "stays at source" is that declining to retain something is a policy
+    /// decision, not a violation.
     pub fn resolve_artifacts(
         &mut self,
         record: &RecordEvent,
         staging_dir: &Path,
         index: &dyn ArtifactDigestIndex,
-    ) -> Result<Vec<ResolvedArtifact>, Rejection> {
+    ) -> Result<Vec<ArtifactOutcome>, Rejection> {
         let mut resolved = Vec::new();
         let Some(references) = &record.artifacts else {
             return Ok(resolved);
         };
         for reference in references {
             match resolve_artifact(staging_dir, reference, &self.limits, index) {
-                Ok(artifact) => {
+                Ok(ArtifactOutcome::Resolved(artifact)) => {
                     if !artifact.reused {
                         self.staged_bytes = self.staged_bytes.saturating_add(artifact.byte_length);
                         if self.staged_bytes > self.limits.max_run_artifact_bytes {
@@ -938,7 +1015,10 @@ impl<'a> CollectSession<'a> {
                             ));
                         }
                     }
-                    resolved.push(artifact);
+                    resolved.push(ArtifactOutcome::Resolved(artifact));
+                }
+                Ok(declined @ ArtifactOutcome::Declined(_)) => {
+                    resolved.push(declined);
                 }
                 Err(rejection) => {
                     self.rejected = true;
@@ -1087,5 +1167,213 @@ impl<'a> CollectSession<'a> {
             records_accepted: self.record_count,
             diagnostics_accepted: self.diagnostic_count,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::message::FieldEvent;
+
+    fn manifest() -> Manifest {
+        let value = serde_json::json!({
+            "v": 1, "type": "manifest", "run_id": "1a4c9f2e-0000-4000-8000-000000000001",
+            "protocol_version": 1, "protocol_revision": 0, "supported_protocol_versions": [1],
+            "driver": "local-reference", "driver_version": "0.1.1", "field_stem": "local",
+            "property_prefix": "local_",
+            "declared_properties": [],
+            "capabilities": [
+                {"object_kind": "file", "note_type": "file", "emits_artifacts": true,
+                 "emits_identity_anchors": false, "description": "d"},
+                {"object_kind": "document", "note_type": "document", "emits_artifacts": false,
+                 "emits_identity_anchors": false, "description": "d"}
+            ],
+            "source_key": {
+                "scope_rule": "local_root_id", "scope_rule_version": 1,
+                "scope_shape": "s", "scope_depends_on_field_label": false,
+                "identity_shape": "i", "identity_includes_object_kind": true,
+                "source_version_ordering": "unsupported", "stable_across_instances": true
+            },
+            "auth": {
+                "kind": "none", "credential_profile_required": false,
+                "protected_channel_required": false, "refresh_owner": "not_applicable",
+                "writes_to_source": false
+            },
+            "collection": {
+                "incremental": true, "cursor_format_version": 1,
+                "supported_modes": ["incremental", "snapshot"], "window_supported": false,
+                "refetch": "unsupported",
+                "deletion": { "tombstones": "unsupported", "snapshot": "authoritative" }
+            }
+        });
+        serde_json::from_value(value)
+            .unwrap_or_else(|error| panic!("manifest fixture must parse: {error}"))
+    }
+
+    fn collect_request(mode: &str, snapshot_scope: Option<&str>) -> CollectRequest {
+        let mut value = serde_json::json!({
+            "v": 1, "type": "collect_request", "run_id": "1a4c9f2e-0000-4000-8000-000000000002",
+            "protocol_version": 1, "protocol_revision": 0, "field_id": "local_work",
+            "mode": mode, "config": {},
+            "artifact_staging_dir": "/tmp/staging",
+            "limits": serde_json::to_value(Limits::ceilings())
+                .unwrap_or_else(|error| panic!("limits must encode: {error}")),
+            "deadline": {
+                "not_after": "2099-01-01T00:00:00+00:00",
+                "idle_seconds": 120,
+                "cancel_grace_seconds": 10
+            }
+        });
+        if let Some(scope) = snapshot_scope {
+            value["snapshot_scope"] = serde_json::json!(scope);
+        }
+        serde_json::from_value(value)
+            .unwrap_or_else(|error| panic!("collect_request fixture must parse: {error}"))
+    }
+
+    fn session(mode: &str, snapshot_scope: Option<&str>) -> (CollectSession<'static>, Manifest) {
+        let manifest: &'static Manifest = Box::leak(Box::new(manifest()));
+        let stems: &'static FieldStemRegistry = Box::leak(Box::new(FieldStemRegistry::v1()));
+        let request = collect_request(mode, snapshot_scope);
+        let session = CollectSession::new(&request, manifest, stems)
+            .unwrap_or_else(|error| panic!("the session must start: {error}"));
+        (session, manifest.clone())
+    }
+
+    fn record_event(seq: u64, object_kind: &str, note_type: &str) -> FieldEvent {
+        let value = serde_json::json!({
+            "v": 1, "type": "record", "run_id": "1a4c9f2e-0000-4000-8000-000000000002",
+            "seq": seq, "change": "upsert",
+            "source": {"scope": "local-root:reference-library-v1", "identity": format!("file/{seq}")},
+            "object_kind": object_kind, "note_type": note_type,
+            "occurred_at": "2026-08-22T09:45:00+02:00",
+            "body": {"format": "markdown", "text": "x"}
+        });
+        FieldEvent::decode(value)
+            .unwrap_or_else(|error| panic!("the record fixture must decode: {error}"))
+    }
+
+    fn checkpoint_event(
+        seq: u64,
+        covers: u64,
+        records_covered: u64,
+        snapshot: Option<serde_json::Value>,
+    ) -> FieldEvent {
+        let mut value = serde_json::json!({
+            "v": 1, "type": "checkpoint", "run_id": "1a4c9f2e-0000-4000-8000-000000000002",
+            "seq": seq, "cursor": "walk:v1:seq", "cursor_format_version": 1,
+            "covers_record_seq_through": covers, "records_covered": records_covered,
+            "final": false
+        });
+        if let Some(claim) = snapshot {
+            value["snapshot"] = claim;
+        }
+        FieldEvent::decode(value)
+            .unwrap_or_else(|error| panic!("the checkpoint fixture must decode: {error}"))
+    }
+
+    #[test]
+    fn a_sequence_gap_is_its_own_code_distinct_from_unexpected_order() {
+        let (mut harness, _manifest) = session("incremental", None);
+        harness
+            .accept(record_event(1, "file", "file"))
+            .unwrap_or_else(|error| panic!("seq 1 must be accepted: {error}"));
+        match harness.accept(record_event(3, "file", "file")) {
+            Err(rejection) => assert_eq!(rejection.code, RejectionCode::ProtocolSeqGap),
+            Ok(_) => panic!("a gap from 1 to 3 must be rejected"),
+        }
+    }
+
+    #[test]
+    fn a_checkpoint_coverage_disagreement_is_its_own_code() {
+        let (mut harness, _manifest) = session("incremental", None);
+        harness
+            .accept(record_event(1, "file", "file"))
+            .unwrap_or_else(|error| panic!("seq 1 must be accepted: {error}"));
+        // The checkpoint claims to cover two records through seq 1, but only
+        // one record exists in that range.
+        match harness.accept(checkpoint_event(2, 1, 2, None)) {
+            Err(rejection) => assert_eq!(rejection.code, RejectionCode::ProtocolCoverageMismatch),
+            Ok(_) => panic!("a coverage disagreement must be rejected"),
+        }
+    }
+
+    #[test]
+    fn covers_zero_means_no_records_are_covered() {
+        let (mut harness, _manifest) = session("incremental", None);
+        // A checkpoint at seq 1 covering through 0 with zero records claimed
+        // is legal: it advances the cursor without any record in between.
+        match harness.accept(checkpoint_event(1, 0, 0, None)) {
+            Ok(AcceptedEvent::Checkpoint(offer)) => {
+                assert_eq!(offer.covers_record_seq_through, 0);
+            }
+            other => panic!("covers=0 with records_covered=0 must be accepted: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repeated_coverage_of_an_already_covered_range_is_a_legal_no_op() {
+        let (mut harness, _manifest) = session("incremental", None);
+        harness
+            .accept(record_event(1, "file", "file"))
+            .unwrap_or_else(|error| panic!("seq 1 must be accepted: {error}"));
+        let first = match harness.accept(checkpoint_event(2, 1, 1, None)) {
+            Ok(AcceptedEvent::Checkpoint(offer)) => offer,
+            other => panic!("the first checkpoint must be accepted: {other:?}"),
+        };
+        harness.record_durable(1);
+        harness
+            .commit(&first)
+            .unwrap_or_else(|error| panic!("the first checkpoint must commit: {error}"));
+
+        // A second checkpoint repeating the same coverage claims zero new
+        // records. A naive `(previous + 1)..=covers` range would try to
+        // range a BTreeSet backwards here and panic; this must not.
+        let repeat = match harness.accept(checkpoint_event(3, 1, 0, None)) {
+            Ok(AcceptedEvent::Checkpoint(offer)) => offer,
+            other => panic!("repeated coverage must be accepted as a no-op: {other:?}"),
+        };
+        assert!(harness.commit(&repeat).is_ok());
+    }
+
+    #[test]
+    fn contradicted_takes_precedence_over_widened_when_both_could_apply() {
+        // An incremental-mode run never admits a completeness claim at all,
+        // regardless of what scope the claim names, so this must report
+        // `snapshot.completeness_contradicted`, not `snapshot.scope_widened`.
+        let (mut harness, _manifest) = session("incremental", None);
+        harness
+            .accept(record_event(1, "file", "file"))
+            .unwrap_or_else(|error| panic!("seq 1 must be accepted: {error}"));
+        let claim = serde_json::json!({
+            "scope": "local-root:everything", "state": "complete", "objects_enumerated": 1
+        });
+        match harness.accept(checkpoint_event(2, 1, 1, Some(claim))) {
+            Err(rejection) => assert_eq!(
+                rejection.code,
+                RejectionCode::SnapshotCompletenessContradicted
+            ),
+            Ok(_) => panic!("a claim in an incremental run must be rejected"),
+        }
+    }
+
+    #[test]
+    fn a_note_type_disagreeing_with_the_declared_capability_slice_is_rejected() {
+        let (mut harness, _manifest) = session("incremental", None);
+        // object_kind "file" declares note_type "file" in the fixture
+        // manifest; "document" disagrees with that declaration.
+        match harness.accept(record_event(1, "file", "document")) {
+            Err(rejection) => {
+                assert_eq!(rejection.code, RejectionCode::RecordNoteTypeNotDeclared);
+            }
+            Ok(_) => panic!("a mismatched note_type must be rejected"),
+        }
+        // The matching slice's own note_type is still accepted.
+        let (mut matching, _manifest) = session("incremental", None);
+        assert!(
+            matching
+                .accept(record_event(1, "document", "document"))
+                .is_ok()
+        );
     }
 }
