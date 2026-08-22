@@ -1193,12 +1193,14 @@ make differently.
    reasoning that one producer asserting two unordered current states within
    one run is a bug. A reviewer who would rather never lose evidence may prefer
    a conflict bundle even here.
-2. **`source_version_ordering: unsupported` for the v0.1 Fields.** Neither a
-   Graph change key nor a file content hash gives a reliable order, so both
-   candidate manifests declare `unsupported`. A1's merge rule 4 — reliable
-   newer version selects content — would then never fire for a shipping v0.1
-   Field, and cross-instance divergence becomes a visible conflict instead.
-   That is the safe reading, and it is worth confirming it is the intended one.
+2. **`source_version_ordering: unsupported` for the v0.1 Fields.** *Settled by
+   the coordinator on 2026-08-22: intended.* Neither a Graph change key nor a
+   file content hash gives a reliable order, so both candidate manifests declare
+   `unsupported`. A1's merge rule 4 — reliable newer version selects content —
+   therefore never fires for a shipping v0.1 Field, and cross-instance
+   divergence becomes a visible conflict instead. A source version is
+   deliberately not required for these Fields, and preserving divergence as a
+   conflict rather than guessing an order is the intended behavior.
 3. **The 512 MiB single-artifact ceiling.** Chosen as a number large enough for
    ordinary mail attachments and documents and small enough to bound a run.
    No existing document states a size expectation.
