@@ -7,6 +7,17 @@ publish = false
 
 [dependencies]
 fieldnotes-field-protocol.workspace = true
+# Calendar/instant math for `occurred_at`, reused from the existing internal
+# domain crate rather than reimplemented or pulled in from an external crate
+# such as `time` or `chrono`.
+fieldnotes-domain.workspace = true
+# SHA-256 for the source-scope digest, the artifact detection-aid digest, and
+# the opaque source-version token. Already a workspace dependency for the A1
+# hash domains; reused here rather than adding a second hashing crate.
+sha2.workspace = true
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true
