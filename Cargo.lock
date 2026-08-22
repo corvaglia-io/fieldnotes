@@ -190,6 +190,7 @@ dependencies = [
  "fieldnotes-graph",
  "fieldnotes-store",
  "fieldnotes-test-support",
+ "serde_json",
 ]
 
 [[package]]
@@ -240,7 +241,10 @@ dependencies = [
 name = "fieldnotes-field-local"
 version = "0.1.0"
 dependencies = [
+ "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-test-support",
+ "sha2",
 ]
 
 [[package]]
@@ -317,6 +321,8 @@ dependencies = [
  "fieldnotes-domain",
  "fieldnotes-format",
  "fieldnotes-test-support",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

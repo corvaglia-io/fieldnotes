@@ -14,6 +14,10 @@
 //! - `fieldnotes.note.v1`
 //! - `fieldnotes.status.v1`
 //! - `fieldnotes.inspect.v1`
+//! - `fieldnotes.fields_add.v1`
+//! - `fieldnotes.fields_list.v1`
+//! - `fieldnotes.fields_status.v1`
+//! - `fieldnotes.fields_remove.v1`
 //! - `fieldnotes.error.v1`
 //!
 //! Failures print `fieldnotes.error.v1` on standard **error**, leaving standard
@@ -57,11 +61,12 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fieldnotes_app::{
-    AppError, InitOutcome, InspectReport, Kernel, NoteOutcome, NoteRequest, NoteSource,
-    StatusReport, create_note, init, inspect, status,
+    AppError, FieldStatusReport, FieldSummary, InitOutcome, InspectReport, Kernel, NoteOutcome,
+    NoteRequest, NoteSource, StatusReport, add_field, create_note, field_status, init, inspect,
+    list_fields, remove_field, status, validate_field_id,
 };
 use fieldnotes_domain::{Clock, Datetime};
-use fieldnotes_store::{InitState, Notebook, Profile};
+use fieldnotes_store::{FieldConfig, InitState, LastSyncOutcome, Notebook, Profile};
 
 use crate::environment::{OFFSET_ENV, OsRandom, SystemClock};
 use crate::json::Json;
@@ -173,6 +178,76 @@ enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Manage Field configuration.
+    ///
+    /// A Field is a stable producer of Notes. `self` is the built-in Field
+    /// and is not managed here. Configuring, enabling, disabling, or removing
+    /// a Field is entirely local bookkeeping: no `fields` command starts a
+    /// Field process, contacts a source, or writes to one.
+    Fields {
+        #[command(subcommand)]
+        action: FieldsAction,
+    },
+}
+
+/// A `fieldnotes fields` action.
+#[derive(Debug, Subcommand)]
+enum FieldsAction {
+    /// Configure a new external Field.
+    ///
+    /// `<type>` must be a registered Field stem (for example `local`); `self`
+    /// is reserved and cannot be added this way. The resulting Field ID is
+    /// `<type>_<label>` and is immutable once configured: to reconfigure,
+    /// remove it first.
+    ///
+    /// Fieldnotes never searches `PATH` or otherwise discovers a Field
+    /// executable implicitly, so `--executable` is required and always names
+    /// an exact, pinned path.
+    Add {
+        /// Registered Field type (stem), e.g. `local`.
+        r#type: String,
+        /// User-chosen label. Combined with `<type>` as `<type>_<label>`.
+        label: String,
+        /// Pinned path to the Field's executable.
+        #[arg(long, value_name = "PATH")]
+        executable: PathBuf,
+        /// Non-secret `key=value` connector configuration, repeatable.
+        /// Credential material must never appear here: a handful of
+        /// obviously credential-shaped key names (`password`, `token`,
+        /// `api_key`, and similar) are refused outright, and a future
+        /// release's credential-profile reference belongs here as a name,
+        /// never as a secret value.
+        #[arg(long = "config", value_name = "KEY=VALUE")]
+        config: Vec<String>,
+        /// Configure the Field disabled rather than enabled.
+        #[arg(long)]
+        disabled: bool,
+    },
+    /// List every Field: the built-in `self` Field plus every configured
+    /// external Field.
+    List,
+    /// Show per-Field state useful before and after a sync: enabled or not,
+    /// whether a durable cursor is recorded, whether a `describe` manifest
+    /// snapshot is recorded, and the last recorded sync outcome, if any.
+    ///
+    /// `0.1.1` does not run Fields itself, so a freshly configured Field
+    /// normally shows no cursor, no manifest, and no sync outcome yet; that
+    /// state is populated once a later `sync` implementation runs it.
+    Status {
+        /// Show only this Field. Omit to show every Field.
+        field_id: Option<String>,
+    },
+    /// Remove one external Field's configuration and operational sync state.
+    ///
+    /// This never deletes Notes or artifacts: Notes and retained artifacts
+    /// are the notebook's canonical evidence and remain, attributable to
+    /// their original producer, whether or not the Field that produced them
+    /// is still configured. Removing a Field also never touches any other
+    /// Field's configuration or Notes. `self` cannot be removed.
+    Remove {
+        /// The Field to remove.
+        field_id: String,
+    },
 }
 
 /// A `fieldnotes config` action.
@@ -228,8 +303,24 @@ impl From<AppError> for Failure {
             "io" => EXIT_IO,
             "not_a_notebook" | "not_a_directory" | "unexpected_tree" => EXIT_NOTEBOOK,
             "invalid_record" | "invalid_file" | "artifact_corrupt" => EXIT_CONTRACT,
-            "empty_note" | "not_audio" | "invalid_offset" | "unknown_target"
-            | "invalid_profile" => EXIT_USAGE,
+            "empty_note"
+            | "not_audio"
+            | "invalid_offset"
+            | "unknown_target"
+            | "invalid_profile"
+            | "invalid_field_config"
+            | "credential_shaped_config_key"
+            | "invalid_field_id"
+            | "cannot_configure_self"
+            | "field_already_configured"
+            | "field_not_configured"
+            | "invalid_manifest" => EXIT_USAGE,
+            // A migration is required before this Field may sync again: the
+            // notebook's own configuration state disagrees with a freshly
+            // reported manifest, which is the same class of problem as an
+            // unhealthy notebook (`inspect`'s EXIT_CONTRACT), not a usage
+            // mistake or an internal bug.
+            "manifest_migration_required" => EXIT_CONTRACT,
             _ => EXIT_INTERNAL,
         };
         Failure::new(error.kind(), error.to_string(), code)
@@ -409,6 +500,76 @@ fn run(cli: Cli) -> Result<i32, Failure> {
         Command::Config { action } => {
             let text = run_config(action, profile_path.as_deref(), &profile, cli.format)?;
             print(&text);
+            Ok(EXIT_OK)
+        }
+        Command::Fields { action } => run_fields(action, notebook_start, cli.format),
+    }
+}
+
+/// Splits one `KEY=VALUE` argument, rejecting a missing `=` or an empty key.
+fn parse_config_pair(pair: &str) -> Result<(String, String), Failure> {
+    let (key, value) = pair.trim().split_once('=').ok_or_else(|| {
+        Failure::new(
+            "invalid_config_pair",
+            format!("`--config {pair}` is not `KEY=VALUE`"),
+            EXIT_USAGE,
+        )
+    })?;
+    let key = key.trim();
+    if key.is_empty() {
+        return Err(Failure::new(
+            "invalid_config_pair",
+            format!("`--config {pair}` has an empty key"),
+            EXIT_USAGE,
+        ));
+    }
+    Ok((key.to_owned(), value.trim().to_owned()))
+}
+
+fn parse_config_pairs(
+    pairs: &[String],
+) -> Result<std::collections::BTreeMap<String, String>, Failure> {
+    let mut config = std::collections::BTreeMap::new();
+    for pair in pairs {
+        let (key, value) = parse_config_pair(pair)?;
+        config.insert(key, value);
+    }
+    Ok(config)
+}
+
+fn run_fields(
+    action: FieldsAction,
+    notebook_start: Option<PathBuf>,
+    format: Format,
+) -> Result<i32, Failure> {
+    let notebook = open_notebook(notebook_start)?;
+    match action {
+        FieldsAction::Add {
+            r#type,
+            label,
+            executable,
+            config,
+            disabled,
+        } => {
+            let field_id = validate_field_id(&r#type, &label)?;
+            let config = parse_config_pairs(&config)?;
+            let added = add_field(&notebook, &field_id, executable, config, !disabled)?;
+            print(&render_fields_add(&added, format));
+            Ok(EXIT_OK)
+        }
+        FieldsAction::List => {
+            let fields = list_fields(&notebook)?;
+            print(&render_fields_list(&fields, format));
+            Ok(EXIT_OK)
+        }
+        FieldsAction::Status { field_id } => {
+            let reports = field_status(&notebook, field_id.as_deref())?;
+            print(&render_fields_status(&reports, format));
+            Ok(EXIT_OK)
+        }
+        FieldsAction::Remove { field_id } => {
+            remove_field(&notebook, &field_id)?;
+            print(&render_fields_remove(&field_id, format));
             Ok(EXIT_OK)
         }
     }
@@ -771,6 +932,179 @@ fn render_inspect(report: &InspectReport, format: Format) -> String {
                             .collect(),
                     ),
                 ),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
+fn render_fields_add(config: &FieldConfig, format: Format) -> String {
+    match format {
+        Format::Human => {
+            let mut out = format!("Configured Field {}\n", config.id);
+            out.push_str(&format!(
+                "  enabled     {}\n",
+                if config.enabled { "yes" } else { "no" }
+            ));
+            out.push_str(&format!("  executable  {}\n", config.executable.display()));
+            for (key, value) in &config.config {
+                out.push_str(&format!("  config      {key} = {value}\n"));
+            }
+            out
+        }
+        Format::Json => {
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.fields_add.v1")),
+                ("ok", Json::Bool(true)),
+                ("id", Json::text(config.id.clone())),
+                ("enabled", Json::Bool(config.enabled)),
+                (
+                    "executable",
+                    Json::text(config.executable.display().to_string()),
+                ),
+                ("config", config_map_json(&config.config)),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
+fn config_map_json(config: &std::collections::BTreeMap<String, String>) -> Json {
+    Json::Arr(
+        config
+            .iter()
+            .map(|(key, value)| {
+                Json::Obj(vec![
+                    ("key", Json::text(key.clone())),
+                    ("value", Json::text(value.clone())),
+                ])
+            })
+            .collect(),
+    )
+}
+
+fn render_fields_list(fields: &[FieldSummary], format: Format) -> String {
+    match format {
+        Format::Human => {
+            let mut out = String::from("Fields\n");
+            for field in fields {
+                let origin = if field.built_in {
+                    "built-in".to_owned()
+                } else {
+                    field.executable.as_ref().map_or_else(
+                        || "configured".to_owned(),
+                        |path| path.display().to_string(),
+                    )
+                };
+                let state = if field.enabled { "enabled" } else { "disabled" };
+                out.push_str(&format!("  {:<20} {state:<9} {origin}\n", field.id));
+            }
+            out
+        }
+        Format::Json => {
+            let items: Vec<Json> = fields
+                .iter()
+                .map(|field| {
+                    Json::Obj(vec![
+                        ("id", Json::text(field.id.clone())),
+                        ("built_in", Json::Bool(field.built_in)),
+                        ("enabled", Json::Bool(field.enabled)),
+                        (
+                            "executable",
+                            Json::maybe_text(
+                                field
+                                    .executable
+                                    .as_ref()
+                                    .map(|path| path.display().to_string()),
+                            ),
+                        ),
+                    ])
+                })
+                .collect();
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.fields_list.v1")),
+                ("ok", Json::Bool(true)),
+                ("fields", Json::Arr(items)),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
+fn last_sync_json(last_sync: Option<&LastSyncOutcome>) -> Json {
+    match last_sync {
+        Some(outcome) => Json::Obj(vec![
+            ("outcome", Json::text(outcome.outcome.clone())),
+            ("at", Json::text(outcome.at.clone())),
+        ]),
+        None => Json::Null,
+    }
+}
+
+fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String {
+    match format {
+        Format::Human => {
+            let mut out = String::from("Field status\n");
+            for report in reports {
+                out.push_str(&format!("  {}\n", report.id));
+                out.push_str(&format!(
+                    "    enabled            {}\n",
+                    if report.enabled { "yes" } else { "no" }
+                ));
+                out.push_str(&format!(
+                    "    cursor recorded    {}\n",
+                    if report.cursor_present { "yes" } else { "no" }
+                ));
+                out.push_str(&format!(
+                    "    manifest recorded  {}\n",
+                    if report.manifest_present { "yes" } else { "no" }
+                ));
+                match &report.last_sync {
+                    Some(outcome) => out.push_str(&format!(
+                        "    last sync          {} at {}\n",
+                        outcome.outcome, outcome.at
+                    )),
+                    None => out.push_str("    last sync          never\n"),
+                }
+            }
+            out
+        }
+        Format::Json => {
+            let items: Vec<Json> = reports
+                .iter()
+                .map(|report| {
+                    Json::Obj(vec![
+                        ("id", Json::text(report.id.clone())),
+                        ("built_in", Json::Bool(report.built_in)),
+                        ("enabled", Json::Bool(report.enabled)),
+                        ("cursor_present", Json::Bool(report.cursor_present)),
+                        ("manifest_present", Json::Bool(report.manifest_present)),
+                        ("last_sync", last_sync_json(report.last_sync.as_ref())),
+                    ])
+                })
+                .collect();
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.fields_status.v1")),
+                ("ok", Json::Bool(true)),
+                ("fields", Json::Arr(items)),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
+fn render_fields_remove(field_id: &str, format: Format) -> String {
+    match format {
+        Format::Human => format!(
+            "Removed Field {field_id}\n  Notes and artifacts it produced remain in the \
+             notebook.\n"
+        ),
+        Format::Json => {
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.fields_remove.v1")),
+                ("ok", Json::Bool(true)),
+                ("id", Json::text(field_id.to_owned())),
+                ("notes_preserved", Json::Bool(true)),
             ]);
             format!("{}\n", value.render())
         }

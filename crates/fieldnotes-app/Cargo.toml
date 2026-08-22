@@ -12,6 +12,13 @@ fieldnotes-field-protocol.workspace = true
 fieldnotes-format.workspace = true
 fieldnotes-graph.workspace = true
 fieldnotes-store.workspace = true
+# A stored Field configuration's manifest snapshot is an opaque JSON value at
+# the storage layer (`fieldnotes-store` does not know the Field-protocol
+# manifest shape); this crate is where it is decoded into
+# `fieldnotes_field_protocol::message::Manifest` for the A2 declared-property
+# and `cursor_format_version` migration check. Already a workspace dependency
+# used by `fieldnotes-field-protocol` itself.
+serde_json.workspace = true
 
 [dev-dependencies]
 # Injected clocks/ID sources and temporary notebooks for use-case tests.

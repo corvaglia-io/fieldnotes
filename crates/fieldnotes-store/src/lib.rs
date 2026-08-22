@@ -20,6 +20,7 @@
 pub mod artifact;
 pub mod atomic;
 pub mod error;
+pub mod fields;
 pub mod instance;
 pub mod layout;
 pub mod note;
@@ -28,6 +29,11 @@ pub mod scan;
 
 pub use artifact::{StoredArtifact, store_artifact};
 pub use error::StoreError;
+pub use fields::{
+    FieldConfig, LastSyncOutcome, cursor_exists, cursor_state_path, field_config_path,
+    last_sync_path, list_field_configs, read_field_config, read_last_sync_outcome,
+    remove_field_config, remove_sync_state, write_field_config,
+};
 pub use instance::{read_instance, write_instance};
 pub use layout::{InitState, Notebook};
 pub use note::{NoteWrite, replace_note, write_note};

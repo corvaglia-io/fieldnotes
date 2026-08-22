@@ -3,7 +3,7 @@
 use std::fmt;
 use std::path::PathBuf;
 
-use fieldnotes_domain::{DatetimeError, IdError};
+use fieldnotes_domain::{DatetimeError, FieldIdError, IdError};
 use fieldnotes_format::ValidationError;
 use fieldnotes_store::StoreError;
 
@@ -38,6 +38,51 @@ pub enum AppError {
         /// The requested target.
         target: String,
     },
+    /// A `fields add` candidate ID failed [`FieldId::parse`].
+    ///
+    /// [`FieldId::parse`]: fieldnotes_domain::FieldId::parse
+    InvalidFieldId {
+        /// The rejected candidate ID (`<type>_<label>`).
+        candidate: String,
+        /// Why it was rejected.
+        source: FieldIdError,
+    },
+    /// `self` was named as the target of a Field-configuration command that
+    /// only applies to configured external Fields.
+    ///
+    /// `self` is the built-in Field: it has no process, no executable, and no
+    /// configuration file, so it cannot be added, reconfigured, or removed.
+    CannotConfigureSelf,
+    /// `fields add` named an already-configured Field ID.
+    ///
+    /// A Field ID is immutable once configured (fields.md): reconfiguring one
+    /// in place would risk silently changing what `(instance_id, field_id)`
+    /// has meant for Notes it already produced. Remove it first, or choose a
+    /// different label.
+    FieldAlreadyConfigured {
+        /// The already-configured ID.
+        id: String,
+    },
+    /// A Field-configuration command named an ID with no stored configuration
+    /// (and that is not the built-in `self` Field).
+    FieldNotConfigured {
+        /// The unconfigured ID.
+        id: String,
+    },
+    /// A manifest value could not be decoded or did not satisfy the A2
+    /// schema's own validation rules.
+    InvalidManifest {
+        /// Why it was rejected.
+        message: String,
+    },
+    /// A freshly reported manifest disagrees with the stored snapshot in a
+    /// way A2 requires a migration for: a declared property's type or
+    /// cardinality changed or was removed, or `cursor_format_version`
+    /// changed.
+    ManifestMigrationRequired {
+        /// The disagreement, in reviewable terms.
+        detail: String,
+    },
 }
 
 impl AppError {
@@ -53,6 +98,12 @@ impl AppError {
             AppError::EmptyNote => "empty_note",
             AppError::NotAudio { .. } => "not_audio",
             AppError::UnknownTarget { .. } => "unknown_target",
+            AppError::InvalidFieldId { .. } => "invalid_field_id",
+            AppError::CannotConfigureSelf => "cannot_configure_self",
+            AppError::FieldAlreadyConfigured { .. } => "field_already_configured",
+            AppError::FieldNotConfigured { .. } => "field_not_configured",
+            AppError::InvalidManifest { .. } => "invalid_manifest",
+            AppError::ManifestMigrationRequired { .. } => "manifest_migration_required",
         }
     }
 }
@@ -87,6 +138,26 @@ impl fmt::Display for AppError {
             AppError::UnknownTarget { target } => {
                 write!(f, "no record in this notebook matches `{target}`")
             }
+            AppError::InvalidFieldId { candidate, source } => {
+                write!(f, "`{candidate}` is not a valid Field ID: {source}")
+            }
+            AppError::CannotConfigureSelf => write!(
+                f,
+                "`self` is the built-in Field; it has no configuration to add, show, or remove"
+            ),
+            AppError::FieldAlreadyConfigured { id } => write!(
+                f,
+                "`{id}` is already configured; remove it first or choose a different label"
+            ),
+            AppError::FieldNotConfigured { id } => {
+                write!(f, "no Field `{id}` is configured in this notebook")
+            }
+            AppError::InvalidManifest { message } => {
+                write!(f, "manifest is invalid: {message}")
+            }
+            AppError::ManifestMigrationRequired { detail } => {
+                write!(f, "manifest change requires a migration: {detail}")
+            }
         }
     }
 }
@@ -98,6 +169,7 @@ impl std::error::Error for AppError {
             AppError::Record(error) => Some(error),
             AppError::Id(error) => Some(error),
             AppError::Datetime(error) => Some(error),
+            AppError::InvalidFieldId { source, .. } => Some(source),
             _ => None,
         }
     }

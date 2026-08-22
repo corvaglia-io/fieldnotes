@@ -60,6 +60,33 @@ pub enum StoreError {
         /// Why it was rejected.
         message: String,
     },
+    /// A Field configuration or operational-state file exists but does not
+    /// parse.
+    ///
+    /// Field configuration is meant to be durable, reviewable state; a
+    /// malformed file fails loudly with the offending file and reason rather
+    /// than silently defaulting to an empty or disabled Field, which would
+    /// hide a hand-edit mistake or a partial write that reached disk outside
+    /// the atomic-write path.
+    InvalidFieldConfig {
+        /// The offending file.
+        path: PathBuf,
+        /// Why it was rejected.
+        message: String,
+    },
+    /// A Field configuration's `config` map used a key name that is
+    /// unambiguously credential-shaped, such as `password` or `api_key`.
+    ///
+    /// This is a fixed denylist on **key names**, not a scan of stored
+    /// values: Fieldnotes performs no secret scanning of content (ADR 0006
+    /// ruling 3). Field configuration has no credential field at all — a
+    /// named credential-profile *reference* is the `0.1.3` shape — so a key
+    /// that is only ever used to hold a secret is refused by name before it
+    /// is ever written to disk.
+    CredentialShapedConfigKey {
+        /// The offending key.
+        key: String,
+    },
 }
 
 impl StoreError {
@@ -86,6 +113,8 @@ impl StoreError {
             StoreError::UnexpectedTree { .. } => "unexpected_tree",
             StoreError::ArtifactCorrupt { .. } => "artifact_corrupt",
             StoreError::InvalidProfile { .. } => "invalid_profile",
+            StoreError::InvalidFieldConfig { .. } => "invalid_field_config",
+            StoreError::CredentialShapedConfigKey { .. } => "credential_shaped_config_key",
         }
     }
 }
@@ -123,6 +152,17 @@ impl fmt::Display for StoreError {
             StoreError::InvalidProfile { path, message } => {
                 write!(f, "profile `{}` is malformed: {message}", path.display())
             }
+            StoreError::InvalidFieldConfig { path, message } => write!(
+                f,
+                "Field configuration `{}` is malformed: {message}",
+                path.display()
+            ),
+            StoreError::CredentialShapedConfigKey { key } => write!(
+                f,
+                "configuration key `{key}` looks like it is meant to hold a credential; \
+                 Field configuration is non-secret by contract, so credential material must \
+                 never be stored here"
+            ),
         }
     }
 }

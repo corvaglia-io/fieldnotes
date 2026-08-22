@@ -8,6 +8,16 @@ publish = false
 [dependencies]
 fieldnotes-domain.workspace = true
 fieldnotes-format.workspace = true
+# Field configuration (`.fieldnotes/fields/<id>.json`) and the provisioned
+# operational sync-state files are private, non-canonical state, unlike the
+# public notebook contract's hand-written frontmatter serializer. Both carry
+# genuinely nested data (a flat config map, a stored `describe` manifest, a
+# forward-compatible last-sync record), which a flat `key = value` grammar
+# like the profile format cannot express. `serde`/`serde_json` are already
+# workspace dependencies used by `fieldnotes-field-protocol`, so this reuses
+# rather than introduces a serialization mechanism.
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 
 [dev-dependencies]
 # Temporary directories and injected clocks/IDs for filesystem tests.

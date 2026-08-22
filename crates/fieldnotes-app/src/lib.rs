@@ -11,6 +11,7 @@
 //! network, so the same inputs always produce the same bytes.
 
 pub mod error;
+pub mod fields;
 pub mod init;
 pub mod inspect;
 pub mod kernel;
@@ -18,6 +19,10 @@ pub mod note;
 pub mod status;
 
 pub use error::AppError;
+pub use fields::{
+    FieldStatusReport, FieldSummary, ManifestOutcome, add_field, check_manifest_agreement,
+    field_status, list_fields, record_manifest, remove_field, validate_field_id,
+};
 pub use init::{InitOutcome, init};
 pub use inspect::{InspectReport, InspectedArtifact, InspectedRecord, ReportedProblem, inspect};
 pub use kernel::{Kernel, SELF_FIELD};
