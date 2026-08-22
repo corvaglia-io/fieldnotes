@@ -103,7 +103,9 @@ impl Date {
     /// Parses the exact `YYYY-MM-DD` form and validates the calendar day.
     pub fn parse(text: &str) -> Result<Self, DatetimeError> {
         let bytes = text.as_bytes();
-        if bytes.len() != 10 || bytes[4] != b'-' || bytes[7] != b'-' {
+        // The grammar is pure ASCII; this keeps the byte offsets below on char
+        // boundaries so multibyte input cannot panic the slices.
+        if bytes.len() != 10 || !bytes.is_ascii() || bytes[4] != b'-' || bytes[7] != b'-' {
             return Err(DatetimeError::Malformed);
         }
         let year = parse_fixed_digits(&text[..4], 4).ok_or(DatetimeError::Malformed)?;
@@ -163,7 +165,10 @@ impl Datetime {
     /// [`DatetimeError::NegativeZeroOffset`].
     pub fn parse(text: &str) -> Result<Self, DatetimeError> {
         let bytes = text.as_bytes();
-        if bytes.len() < 19 {
+        // The date/time prefix is pure ASCII; requiring that before slicing
+        // keeps every fixed offset below on a char boundary so multibyte input
+        // cannot panic.
+        if bytes.len() < 19 || !bytes[..19].is_ascii() {
             return Err(DatetimeError::Malformed);
         }
         let date = Date::parse(&text[..10])?;
@@ -206,7 +211,7 @@ impl Datetime {
             b'-' => true,
             _ => return Err(DatetimeError::OffsetRequired),
         };
-        if offset_bytes.len() != 6 || offset_bytes[3] != b':' {
+        if offset_bytes.len() != 6 || !offset_bytes.is_ascii() || offset_bytes[3] != b':' {
             return Err(DatetimeError::Malformed);
         }
         let offset_hour = parse_fixed_digits(&offset[1..3], 2).ok_or(DatetimeError::Malformed)?;
@@ -369,6 +374,27 @@ mod tests {
             Err(DatetimeError::Malformed)
         );
         Ok(())
+    }
+
+    #[test]
+    fn rejects_multibyte_input_without_slicing_mid_codepoint() {
+        // Every offset below lands inside a multibyte character; parsing must
+        // reject rather than panic.
+        for text in [
+            "2026-08-22T11:36:1é+02:00",
+            "2026-08-2é11:36:14+02:00",
+            "aaaaaaaaa€aaaaaaaaaa",
+            "2026-08-22T11:36:14é02:00",
+            "2026-08-22T11:36:14.5é+02:00",
+        ] {
+            assert!(
+                Datetime::parse(text).is_err(),
+                "expected rejection for {text}"
+            );
+        }
+        for text in ["2026-08-é2", "20é6-08-22", "2026-0é-22"] {
+            assert!(Date::parse(text).is_err(), "expected rejection for {text}");
+        }
     }
 
     #[test]

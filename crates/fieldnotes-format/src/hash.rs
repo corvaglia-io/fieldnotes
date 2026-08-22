@@ -13,15 +13,32 @@ use crate::extension::canonical_extension;
 const CONTENT_DOMAIN: &[u8] = b"fieldnotes-content-v1\0";
 const RECORD_DOMAIN: &[u8] = b"fieldnotes-record-v1\0";
 
+/// Lowercase hexadecimal encoding of arbitrary bytes.
+fn hex_lower(bytes: &[u8]) -> String {
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        out.push(char::from(DIGITS[usize::from(byte >> 4)]));
+        out.push(char::from(DIGITS[usize::from(byte & 0x0f)]));
+    }
+    out
+}
+
+/// SHA-256 over a domain label, one NUL byte, then the payload, rendered as
+/// `<label><lowercase-hex>`.
+fn domain_separated_value(domain: &[u8], label: &str, payload: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(payload);
+    let mut out = String::from(label);
+    out.push_str(&hex_lower(&hasher.finalize()));
+    out
+}
+
 /// Lowercase hexadecimal SHA-256 of exact bytes, with no domain prefix.
 #[must_use]
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut out = String::with_capacity(64);
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    hex_lower(&Sha256::digest(bytes))
 }
 
 /// The content-addressed artifact ID for exact original bytes.
@@ -46,15 +63,11 @@ pub fn artifact_relative_path(id: &ArtifactId, media_type: Option<&str>) -> Stri
 /// normalized Markdown body bytes.
 #[must_use]
 pub fn content_hash_value(normalized_body: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(CONTENT_DOMAIN);
-    hasher.update(normalized_body.as_bytes());
-    let digest = hasher.finalize();
-    let mut out = String::from("fn-content-v1-sha256:");
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    domain_separated_value(
+        CONTENT_DOMAIN,
+        "fn-content-v1-sha256:",
+        normalized_body.as_bytes(),
+    )
 }
 
 /// The `fn-record-v1-sha256:<hex>` fingerprint over a canonical semantic
@@ -64,15 +77,11 @@ pub fn content_hash_value(normalized_body: &str) -> String {
 /// canonical semantic record bytes.
 #[must_use]
 pub fn record_fingerprint(canonical_semantic_record: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(RECORD_DOMAIN);
-    hasher.update(canonical_semantic_record.as_bytes());
-    let digest = hasher.finalize();
-    let mut out = String::from("fn-record-v1-sha256:");
-    for byte in digest {
-        out.push_str(&format!("{byte:02x}"));
-    }
-    out
+    domain_separated_value(
+        RECORD_DOMAIN,
+        "fn-record-v1-sha256:",
+        canonical_semantic_record.as_bytes(),
+    )
 }
 
 #[cfg(test)]

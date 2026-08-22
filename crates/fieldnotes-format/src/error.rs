@@ -21,6 +21,9 @@ pub enum ValidationError {
     MissingClosingDelimiter,
     /// The required single blank line between frontmatter and body is missing.
     MissingBodySeparator,
+    /// More than one blank line separates the frontmatter from the body, so the
+    /// body would begin with a blank line the canonical grammar does not allow.
+    ExtraBodySeparator,
     /// A frontmatter value contains a nested mapping or inline object.
     NestedMapping {
         /// One-based frontmatter line number.
@@ -239,7 +242,8 @@ impl ValidationError {
             ValidationError::InvalidUtf8 => "encoding.invalid_utf8",
             ValidationError::MissingOpeningDelimiter
             | ValidationError::MissingClosingDelimiter
-            | ValidationError::MissingBodySeparator => "frontmatter.envelope",
+            | ValidationError::MissingBodySeparator
+            | ValidationError::ExtraBodySeparator => "frontmatter.envelope",
             ValidationError::NestedMapping { .. } => "frontmatter.nested_mapping",
             ValidationError::ArrayObject { .. } => "frontmatter.array_object",
             ValidationError::MixedList { .. } => "frontmatter.mixed_list",
@@ -301,6 +305,9 @@ impl fmt::Display for ValidationError {
             }
             ValidationError::MissingBodySeparator => {
                 write!(f, "missing blank line between frontmatter and body")
+            }
+            ValidationError::ExtraBodySeparator => {
+                write!(f, "more than one blank line between frontmatter and body")
             }
             ValidationError::NestedMapping { line } => {
                 write!(f, "nested mapping at frontmatter line {line}")

@@ -16,7 +16,7 @@ use fieldnotes_domain::{
 
 use crate::error::ValidationError;
 use crate::jcs;
-use crate::normalize::normalize_body_str;
+use crate::normalize::{self, normalize_body_str};
 use crate::registry::{PropertyRegistry, PropertyType};
 use crate::yaml::{self, RawScalar, RawValue, ScalarStyle};
 
@@ -89,12 +89,7 @@ impl ParsedRecord {
 /// one leading BOM at ingestion.
 fn split_file(bytes: &[u8]) -> Result<(Vec<String>, String), ValidationError> {
     let text = core::str::from_utf8(bytes).map_err(|_| ValidationError::InvalidUtf8)?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let text = if text.contains('\r') {
-        normalize_line_endings(text)
-    } else {
-        text.to_owned()
-    };
+    let text = normalize::to_lf(normalize::strip_bom(text));
     let rest = text
         .strip_prefix("---\n")
         .ok_or(ValidationError::MissingOpeningDelimiter)?;
@@ -111,27 +106,17 @@ fn split_file(bytes: &[u8]) -> Result<(Vec<String>, String), ValidationError> {
         frontmatter_lines.push(line.to_owned());
         remainder = rest;
     }
-    // Exactly one blank separator line, then the body.
+    // Exactly one blank separator line, then the body. The separator is a file
+    // separator rather than the first body byte, so a body may not itself begin
+    // with a blank line: that would both break the canonical grammar and give
+    // two records with the same evidence different semantic fingerprints.
     let body = remainder
         .strip_prefix('\n')
         .ok_or(ValidationError::MissingBodySeparator)?;
-    Ok((frontmatter_lines, body.to_owned()))
-}
-
-fn normalize_line_endings(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\r' {
-            if chars.peek() == Some(&'\n') {
-                chars.next();
-            }
-            out.push('\n');
-        } else {
-            out.push(c);
-        }
+    if body.starts_with('\n') {
+        return Err(ValidationError::ExtraBodySeparator);
     }
-    out
+    Ok((frontmatter_lines, body.to_owned()))
 }
 
 fn coerce_scalar(raw: &RawScalar, kind: ScalarKind, key: &str) -> Result<Scalar, ValidationError> {
@@ -343,7 +328,7 @@ pub fn parse_record(bytes: &[u8]) -> Result<ParsedRecord, ValidationError> {
     let line_refs: Vec<&str> = frontmatter_lines.iter().map(String::as_str).collect();
     let raw_entries = yaml::parse_flat_block(&line_refs)?;
     let stems = FieldStemRegistry::v1();
-    let entries = type_entries(raw_entries, PropertyRegistry::v1(), &stems)?;
+    let entries = type_entries(raw_entries, PropertyRegistry::v1(), stems)?;
     let id_text = entries
         .iter()
         .find(|(key, _)| key == "id")
@@ -440,7 +425,7 @@ fn validate_note(record: &ParsedRecord) -> Result<(), ValidationError> {
     }
     let field_id = require_text(record, "field_id")?;
     let stems = FieldStemRegistry::v1();
-    FieldId::parse(field_id, &stems).map_err(|_| ValidationError::InvalidFieldId {
+    FieldId::parse(field_id, stems).map_err(|_| ValidationError::InvalidFieldId {
         value: field_id.to_owned(),
     })?;
     let note_type = require_text(record, "type")?;
@@ -512,7 +497,7 @@ fn validate_note(record: &ParsedRecord) -> Result<(), ValidationError> {
             let Scalar::Text(text) = item else { continue };
             let valid = text.split_once('/').is_some_and(|(instance, field)| {
                 RecordId::parse(instance).is_ok_and(|id| id.kind() == RecordKind::Instance)
-                    && FieldId::parse(field, &stems).is_ok()
+                    && FieldId::parse(field, stems).is_ok()
             });
             if !valid {
                 return Err(ValidationError::InvalidId {
@@ -592,6 +577,32 @@ occurred_at: 2026-08-22T11:36:14+02:00\n";
         assert_eq!(record.kind(), RecordKind::Note);
         assert_eq!(record.body(), "# Title\n");
         Ok(())
+    }
+
+    #[test]
+    fn rejects_more_than_one_blank_separator_line() {
+        // A second blank line would otherwise become the first body byte,
+        // giving identical evidence two different semantic fingerprints.
+        let extra = format!("---\n{MINIMAL}---\n\n\n# Title\n").into_bytes();
+        assert_eq!(
+            parse_record(&extra),
+            Err(ValidationError::ExtraBodySeparator)
+        );
+    }
+
+    #[test]
+    fn rejects_multibyte_text_in_a_datetime_property() {
+        // Fixed byte offsets in datetime parsing must not slice mid-codepoint.
+        let frontmatter = MINIMAL.replace(
+            "occurred_at: 2026-08-22T11:36:14+02:00",
+            "occurred_at: 2026-08-22T11:36:1é+02:00",
+        );
+        assert_eq!(
+            parse_record(&note(&frontmatter, "# Title\n")),
+            Err(ValidationError::InvalidDatetime {
+                key: "occurred_at".to_owned()
+            })
+        );
     }
 
     #[test]

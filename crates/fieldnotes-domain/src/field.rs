@@ -7,6 +7,7 @@
 //! against the configured registered stem set, never guessed from underscores.
 
 use core::fmt;
+use std::sync::LazyLock;
 
 /// Errors produced while validating a Field ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,8 +96,8 @@ impl FieldStemRegistry {
     /// The approved v0.1 external stems: `local`, `outlook_mail`,
     /// `outlook_calendar`, `outlook_contacts`, `teams`, and `jira`.
     #[must_use]
-    pub fn v1() -> Self {
-        FieldStemRegistry {
+    pub fn v1() -> &'static Self {
+        static REGISTRY: LazyLock<FieldStemRegistry> = LazyLock::new(|| FieldStemRegistry {
             stems: [
                 "local",
                 "outlook_mail",
@@ -108,7 +109,8 @@ impl FieldStemRegistry {
             .into_iter()
             .map(str::to_owned)
             .collect(),
-        }
+        });
+        &REGISTRY
     }
 
     /// Iterates the registered external stems.
@@ -179,17 +181,14 @@ mod tests {
     #[test]
     fn accepts_self_and_registered_external_ids() -> Result<(), FieldIdError> {
         let registry = FieldStemRegistry::v1();
-        assert_eq!(FieldId::parse("self", &registry)?.as_str(), "self");
+        assert_eq!(FieldId::parse("self", registry)?.as_str(), "self");
         assert_eq!(
-            FieldId::parse("outlook_mail_work", &registry)?.as_str(),
+            FieldId::parse("outlook_mail_work", registry)?.as_str(),
             "outlook_mail_work"
         );
+        assert_eq!(FieldId::parse("teams_wxs", registry)?.as_str(), "teams_wxs");
         assert_eq!(
-            FieldId::parse("teams_wxs", &registry)?.as_str(),
-            "teams_wxs"
-        );
-        assert_eq!(
-            FieldId::parse("jira_acme_eu", &registry)?.as_str(),
+            FieldId::parse("jira_acme_eu", registry)?.as_str(),
             "jira_acme_eu"
         );
         Ok(())
@@ -199,23 +198,23 @@ mod tests {
     fn rejects_unknown_stems_and_bad_labels() {
         let registry = FieldStemRegistry::v1();
         assert_eq!(
-            FieldId::parse("outlook", &registry),
+            FieldId::parse("outlook", registry),
             Err(FieldIdError::UnknownStem)
         );
         assert_eq!(
-            FieldId::parse("self_extra", &registry),
+            FieldId::parse("self_extra", registry),
             Err(FieldIdError::UnknownStem)
         );
         assert_eq!(
-            FieldId::parse("teams_", &registry),
+            FieldId::parse("teams_", registry),
             Err(FieldIdError::InvalidPart)
         );
         assert_eq!(
-            FieldId::parse("teams_9abc", &registry),
+            FieldId::parse("teams_9abc", registry),
             Err(FieldIdError::InvalidPart)
         );
         assert_eq!(
-            FieldId::parse("teams_Work", &registry),
+            FieldId::parse("teams_Work", registry),
             Err(FieldIdError::InvalidPart)
         );
     }
@@ -225,14 +224,14 @@ mod tests {
         let registry = FieldStemRegistry::v1();
         let label_31 = "a".repeat(31);
         let label_32 = "a".repeat(32);
-        assert!(FieldId::parse(&format!("teams_{label_31}"), &registry).is_ok());
+        assert!(FieldId::parse(&format!("teams_{label_31}"), registry).is_ok());
         assert_eq!(
-            FieldId::parse(&format!("teams_{label_32}"), &registry),
+            FieldId::parse(&format!("teams_{label_32}"), registry),
             Err(FieldIdError::PartTooLong)
         );
         let oversized = format!("outlook_calendar_{}", "a".repeat(60));
         assert_eq!(
-            FieldId::parse(&oversized, &registry),
+            FieldId::parse(&oversized, registry),
             Err(FieldIdError::TooLong)
         );
     }

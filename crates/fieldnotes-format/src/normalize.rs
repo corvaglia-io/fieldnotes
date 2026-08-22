@@ -6,18 +6,20 @@
 //! preserves all other whitespace and content, and ends the body with exactly
 //! one final LF.
 
+use std::borrow::Cow;
+
 use crate::error::ValidationError;
 
-/// Normalizes raw body bytes per the v1 rules.
-pub fn normalize_body_bytes(input: &[u8]) -> Result<String, ValidationError> {
-    let text = core::str::from_utf8(input).map_err(|_| ValidationError::InvalidUtf8)?;
-    Ok(normalize_body_str(text))
+/// Strips one leading UTF-8 BOM if present.
+pub(crate) fn strip_bom(input: &str) -> &str {
+    input.strip_prefix('\u{feff}').unwrap_or(input)
 }
 
-/// Normalizes an already-decoded body string per the v1 rules.
-#[must_use]
-pub fn normalize_body_str(input: &str) -> String {
-    let input = input.strip_prefix('\u{feff}').unwrap_or(input);
+/// Converts CRLF and lone CR to LF, borrowing when the input has no CR.
+pub(crate) fn to_lf(input: &str) -> Cow<'_, str> {
+    if !input.contains('\r') {
+        return Cow::Borrowed(input);
+    }
     let mut out = String::with_capacity(input.len());
     let mut chars = input.chars().peekable();
     while let Some(c) = chars.next() {
@@ -30,6 +32,19 @@ pub fn normalize_body_str(input: &str) -> String {
             out.push(c);
         }
     }
+    Cow::Owned(out)
+}
+
+/// Normalizes raw body bytes per the v1 rules.
+pub fn normalize_body_bytes(input: &[u8]) -> Result<String, ValidationError> {
+    let text = core::str::from_utf8(input).map_err(|_| ValidationError::InvalidUtf8)?;
+    Ok(normalize_body_str(text))
+}
+
+/// Normalizes an already-decoded body string per the v1 rules.
+#[must_use]
+pub fn normalize_body_str(input: &str) -> String {
+    let mut out = to_lf(strip_bom(input)).into_owned();
     while out.ends_with('\n') {
         out.pop();
     }

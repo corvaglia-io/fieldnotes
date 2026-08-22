@@ -99,22 +99,27 @@ fn emit_entry(
     Ok(())
 }
 
-fn ordered_keys<'a>(record: &'a ParsedRecord, structural: &[&'a str]) -> Vec<&'a str> {
-    let mut rest: Vec<&str> = record
+/// The record's entries in canonical order: the structural keys it actually
+/// carries, then every remaining key in ascending ASCII byte order.
+fn ordered_entries<'a>(
+    record: &'a ParsedRecord,
+    structural: &[&'a str],
+) -> Vec<(&'a str, &'a Value)> {
+    let mut rest: Vec<(&str, &Value)> = record
         .entries()
         .iter()
-        .map(|(key, _)| key.as_str())
-        .filter(|key| !structural.contains(key))
+        .map(|(key, value)| (key.as_str(), value))
+        .filter(|(key, _)| !structural.contains(key))
         .collect();
-    rest.sort_unstable();
-    let mut keys: Vec<&str> = Vec::with_capacity(record.entries().len());
+    rest.sort_unstable_by_key(|(key, _)| *key);
+    let mut ordered: Vec<(&str, &Value)> = Vec::with_capacity(record.entries().len());
     for key in structural {
-        if record.get(key).is_some() {
-            keys.push(key);
+        if let Some(value) = record.get(key) {
+            ordered.push((*key, value));
         }
     }
-    keys.extend(rest);
-    keys
+    ordered.extend(rest);
+    ordered
 }
 
 const NOTE_STRUCTURAL: [&str; 5] = ["id", "instance_id", "field_id", "type", "occurred_at"];
@@ -130,10 +135,8 @@ pub fn canonical_record_string(record: &ParsedRecord) -> Result<String, Validati
     let registry = PropertyRegistry::v1();
     let mut out = String::new();
     out.push_str("---\n");
-    for key in ordered_keys(record, structural) {
-        if let Some(value) = record.get(key) {
-            emit_entry(&mut out, key, value, registry)?;
-        }
+    for (key, value) in ordered_entries(record, structural) {
+        emit_entry(&mut out, key, value, registry)?;
     }
     out.push_str("---\n\n");
     out.push_str(record.body());
@@ -156,20 +159,17 @@ fn to_utc_scalar(scalar: &Scalar) -> Result<Scalar, ValidationError> {
 /// order, and datetimes rendered as their instant in UTC `+00:00`.
 pub fn semantic_record_string(record: &ParsedRecord) -> Result<String, ValidationError> {
     let registry = PropertyRegistry::v1();
-    let mut keys: Vec<&str> = record
+    let mut retained: Vec<(&str, &Value)> = record
         .entries()
         .iter()
-        .map(|(key, _)| key.as_str())
-        .filter(|key| !SEMANTIC_EXCLUSIONS.contains(key))
+        .map(|(key, value)| (key.as_str(), value))
+        .filter(|(key, _)| !SEMANTIC_EXCLUSIONS.contains(key))
         .collect();
-    keys.sort_unstable();
+    retained.sort_unstable_by_key(|(key, _)| *key);
 
     let mut out = String::new();
     out.push_str("---\n");
-    for key in keys {
-        let Some(value) = record.get(key) else {
-            continue;
-        };
+    for (key, value) in retained {
         let converted = match value {
             Value::Scalar(scalar) => Value::Scalar(to_utc_scalar(scalar)?),
             Value::List(items) => Value::List(
