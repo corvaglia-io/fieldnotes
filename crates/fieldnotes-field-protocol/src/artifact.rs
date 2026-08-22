@@ -42,7 +42,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use sha2::{Digest, Sha256};
 
 use crate::codes::RejectionCode;
-use crate::limits::Limits;
+use crate::grammar::MediaTypeMatcher;
+use crate::limits::{Limits, artifact_media_type_included, media_type_essence};
 use crate::message::{ArtifactKind, ArtifactRef};
 
 /// Reserved Windows device names a handle may never spell.
@@ -234,6 +235,11 @@ pub struct DeclinedArtifact {
     pub byte_length: Option<u64>,
     /// Display metadata only, exactly as for a resolved reference.
     pub source_filename: Option<String>,
+    /// The stable connector-namespaced upstream attachment reference. A
+    /// declined artifact has no bytes and no digest, so this is the only
+    /// stable identity it carries; core projects it onto the shared
+    /// `skipped_attachments` Note property.
+    pub attachment_ref: String,
 }
 
 /// What resolving one artifact reference produced.
@@ -335,6 +341,7 @@ pub fn resolve_artifact(
     staging_dir: &Path,
     reference: &ArtifactRef,
     limits: &Limits,
+    media_types: &[MediaTypeMatcher],
     index: &dyn ArtifactDigestIndex,
 ) -> Result<ArtifactOutcome, ArtifactRejection> {
     match reference.kind {
@@ -361,14 +368,23 @@ pub fn resolve_artifact(
                 ))
             }
         }
-        ArtifactKind::Staged => {
-            resolve_staged(staging_dir, reference, limits).map(ArtifactOutcome::Resolved)
+        ArtifactKind::Staged => resolve_staged(staging_dir, reference, limits, media_types)
+            .map(ArtifactOutcome::Resolved),
+        ArtifactKind::NotRetained => {
+            let Some(attachment_ref) = &reference.attachment_ref else {
+                return Err(ArtifactRejection::new(
+                    RejectionCode::ProtocolSchemaInvalid,
+                    "a not_retained reference declares attachment_ref, the only stable identity \
+                     a declined artifact carries",
+                ));
+            };
+            Ok(ArtifactOutcome::Declined(DeclinedArtifact {
+                role: reference.role,
+                byte_length: reference.byte_length,
+                source_filename: reference.source_filename.clone(),
+                attachment_ref: attachment_ref.as_str().to_owned(),
+            }))
         }
-        ArtifactKind::NotRetained => Ok(ArtifactOutcome::Declined(DeclinedArtifact {
-            role: reference.role,
-            byte_length: reference.byte_length,
-            source_filename: reference.source_filename.clone(),
-        })),
     }
 }
 
@@ -376,6 +392,7 @@ fn resolve_staged(
     staging_dir: &Path,
     reference: &ArtifactRef,
     limits: &Limits,
+    media_types: &[MediaTypeMatcher],
 ) -> Result<ResolvedArtifact, ArtifactRejection> {
     // The grammar check happens first, so a hostile spelling is refused before
     // anything touches a filesystem.
@@ -396,6 +413,23 @@ fn resolve_staged(
                 limits.max_artifact_bytes
             ),
         ));
+    }
+    // Best-effort: `media_type` is optional, and a declared type is the only
+    // signal this policy has to classify staged bytes by before they are
+    // read. An artifact staged with no declared media type is not rejected
+    // for type; only the size threshold above applies to it.
+    if let Some(declared_type) = &reference.media_type {
+        let essence = media_type_essence(declared_type.as_str());
+        if !artifact_media_type_included(media_types, &essence) {
+            return Err(ArtifactRejection::new(
+                RejectionCode::ArtifactTypeExcluded,
+                format!(
+                    "the declared media type {essence} is excluded by the run's media-type \
+                     retention policy; a Field should have declined to stage it as \
+                     not_retained instead"
+                ),
+            ));
+        }
     }
 
     let path = handle.resolve_in(staging_dir);

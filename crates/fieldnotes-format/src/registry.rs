@@ -4,6 +4,28 @@
 //! A property name has one meaning and one type everywhere in a notebook.
 //! Set-like lists are deduplicated and sorted by normalized text value;
 //! ordered lists preserve their registered role/generator order.
+//!
+//! # `skipped_attachments`
+//!
+//! Approved by [ADR 0007](../../../docs/decisions/0007-attachment-retention-policy.md)
+//! as a Note-applicable, set-like `list[text]`: a Note may have several
+//! attachments with some retained and some skipped, and A1 forbids both a
+//! second boolean-shaped property per attachment (there is no per-attachment
+//! slot to hang it on) and an array of objects. Two index-correlated parallel
+//! lists were also rejected, because A1 sorts and deduplicates set-like lists,
+//! which would destroy the index correlation between a references list and a
+//! sizes list. One flat set-like list of stable connector-namespaced
+//! attachment references is the only shape that survives canonicalization.
+//!
+//! Deliberately absent: a stored byte size or a stored reason. Re-collection
+//! (see the ADR) re-evaluates each reference against the *current* retention
+//! policy and refetches metadata from the source at that time, so a stored
+//! size would only be a stale copy of something the source already knows, and
+//! a stored reason would only be a stale copy of a policy decision that may
+//! since have changed. Per-attachment human detail — names, sizes, why a
+//! particular attachment was skipped — belongs in the Markdown body as
+//! deterministic evidence, which A1's flat-frontmatter rule does not
+//! constrain.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -94,6 +116,7 @@ fn build_v1() -> PropertyRegistry {
     map.insert("damaged", Scalar(Bool));
     map.insert("truncated", Scalar(Bool));
     map.insert("lost_characters", Scalar(Number));
+    map.insert("skipped_attachments", List(Text, Set));
     // Derived-record properties.
     map.insert("generated_at", Scalar(Datetime));
     map.insert("generator_version", Scalar(Text));
@@ -249,5 +272,21 @@ mod tests {
                 "{name} must remain Note-applicable"
             );
         }
+    }
+
+    #[test]
+    fn skipped_attachments_is_a_note_applicable_set_like_text_list() {
+        let registry = PropertyRegistry::v1();
+        assert_eq!(
+            registry.lookup("skipped_attachments"),
+            Some(PropertyType::List(ScalarKind::Text, ListSemantics::Set)),
+            "a Note may carry several attachments with some retained and some skipped, so this \
+             must be a set-like list rather than a scalar"
+        );
+        assert!(
+            is_note_applicable("skipped_attachments"),
+            "a Field collects Notes, so this must remain usable on a collected Note"
+        );
+        assert!(!SEMANTIC_EXCLUSIONS.contains(&"skipped_attachments"));
     }
 }

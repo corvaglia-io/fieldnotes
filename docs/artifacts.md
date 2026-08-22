@@ -86,6 +86,33 @@ Source filenames and source-declared types are labels and cannot override this
 result. Adding or changing a mapping is a notebook-format compatibility change;
 aliases do not create several stored paths for the same artifact ID.
 
+## Retention policy (proposed at A2)
+
+Whether an original is retained at all is a separate question from how a
+retained original is named, and is governed by the (currently unapproved) A2
+Field process protocol rather than by this document's extension registry. A2
+proposes two independent retention gates a Field checks before staging bytes,
+both stated in the collection request so a Field can self-police:
+
+- a size threshold (`Limits::max_artifact_bytes`, default 25 MiB, ceiling 512
+  MiB);
+- a default, per-run-configurable media-type include set (documents and text,
+  images, and audio; video, archives, disk images, and installers/executables
+  excluded by default), expressed as media types and never derived from a
+  source filename, so it stays independent of this document's extension
+  registry.
+
+An attachment excluded by either gate is never staged, hashed, or retained; it
+produces a `not_retained` artifact reference and its stable reference is
+recorded in the Note's `skipped_attachments` property instead. See
+[ADR 0007](decisions/0007-attachment-retention-policy.md) for the full
+rationale, including a cross-check showing that several of the default
+include set's media types (the Office and OpenDocument document formats, CSV,
+RTF, and HEIC) have no entry in the canonical extension registry above and so
+still fall back to `.bin` if retained — a real gap this policy does not close,
+left to a future extension-registry review. Nothing in this section is in
+force until A2 is approved.
+
 ## Import and collection
 
 For user imports and collected attachments, Fieldnotes must:

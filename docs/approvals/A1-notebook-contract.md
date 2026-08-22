@@ -37,6 +37,34 @@ Rulings 1, 2, and 5 change no approved byte; every file valid under the
 prior contract prose remains valid. Ruling 3 withdraws an A1 requirement.
 Ruling 4 adds an enforcement rule A1 left unstated.
 
+**2026-08-22:** The owner approved a new shared property and an attachment
+link-semantics clarification, recorded with rationale, rejected alternatives,
+and consequences in
+[ADR 0007](../decisions/0007-attachment-retention-policy.md):
+
+6. `skipped_attachments` is a new registered shared property: a Note-
+   applicable, set-like `list[text]` of stable connector-namespaced upstream
+   attachment references for attachments the Note had that a Field
+   deliberately did not retain. It stores neither a byte size nor a skip
+   reason, both of which would go stale the moment retention policy or
+   source metadata changes; per-attachment human detail belongs in the
+   Markdown body as deterministic evidence. Section 2 is amended to state it.
+   A golden fixture demonstrating it, alongside a retained attachment on the
+   same Note, is added to the review corpus (see the fixture-evidence list
+   below).
+7. Section 2's attachment-link guidance is clarified: the Markdown body's
+   attachment link targets the derived relative artifact path when the
+   artifact's bytes are retained, and the original source location when they
+   are not. `source_url` remains present in frontmatter in both cases, so
+   provenance never depends on a retention outcome that can later change.
+
+Ruling 6 adds one new registered property with fixture evidence, per the
+change policy's requirement that a new shared property go through registry
+review with fixtures. Ruling 7 states explicitly a body-rendering
+consequence of a rule (source provenance never depends on retention) that
+section 6 already implied; it changes no approved byte of an existing
+fixture.
+
 ## Decision requested
 
 A1 freezes the byte-visible notebook contract that core writers, Fields,
@@ -186,6 +214,17 @@ attachments:
 `artifacts` lists every original carried by the Note. `attachments` is the
 role-specific subset received as attachments. A readable Markdown body may
 also link to the derived relative artifact path.
+
+When a Field declines to retain an attachment's bytes under the effective
+retention policy (the size threshold or the media-type include set A2's
+collection request states), the reference is recorded instead in the shared
+`skipped_attachments` property (see the
+[property registry](../property-registry.md)) and never appears in
+`artifacts`/`attachments`. The Markdown body's attachment link targets the
+derived relative artifact path when bytes are retained, and the original
+source location when they are not; `source_url` remains present in
+frontmatter in both cases, so provenance never depends on the retention
+outcome. See [ADR 0007](../decisions/0007-attachment-retention-policy.md).
 
 Renditions never replace originals. Their final path/manifest contract is
 approved at the `0.1.7` renderer gate; A1 freezes only that a rendition cites
@@ -755,6 +794,10 @@ release to cover at least:
 - damaged/truncated material;
 - exact artifact bytes, canonical extension, artifact ID, relative link, and
   byte hash;
+- a Note carrying `skipped_attachments` alongside a retained attachment,
+  demonstrating that the two lists are independent and that the retained
+  attachment's link targets the local artifact path while the skipped one's
+  evidence points at its source (ADR 0007);
 - normalized body vectors for LF, CRLF, BOM, preserved Unicode code points,
   trailing whitespace, and exactly-one-final-LF behavior;
 - semantic-record fingerprint vectors proving that producer, capture,

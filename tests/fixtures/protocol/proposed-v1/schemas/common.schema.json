@@ -185,6 +185,30 @@
       "maxLength": 255,
       "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
     },
+    "mediaTypeMatcher": {
+      "description": "One entry of a media-type retention include set (ADR 0007): an exact 'type/subtype' media type, or a subtype wildcard such as 'image/*'. Never an extension and never derived from a source filename. Orthogonal to A1's frozen media-type-to-extension registry, which governs naming a retained original rather than whether one is retained at all.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/(\\*|[a-z0-9][a-z0-9!#$&^_.+-]{0,126})$"
+    },
+    "attachmentRef": {
+      "description": "A stable connector-namespaced upstream attachment reference, following the same object-kind-namespace convention sourceIdentity uses. Carried only on a not_retained artifact reference, and projected by core onto the shared skipped_attachments Note property.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "recollectTarget": {
+      "description": "One previously-collected source object, named by its portable exact-source key alone, that core asks a Field to explicitly recollect (ADR 0007).",
+      "type": "object",
+      "properties": {
+        "scope": { "$ref": "#/$defs/sourceScope" },
+        "identity": { "$ref": "#/$defs/sourceIdentity" }
+      },
+      "required": ["scope", "identity"],
+      "additionalProperties": false
+    },
     "cursor": {
       "description": "Opaque, non-secret, bounded Field-owned resume token. Core never parses, orders, or interprets it. Excludes every C0 control character and DEL, matching the treatment sourceScope already gets, not only NUL: a cursor containing an unescaped LF is exactly the value that corrupts an NDJSON-shaped state file or a log line, since a cursor is stored and logged, not merely compared.",
       "type": "string",

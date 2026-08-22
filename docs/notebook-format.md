@@ -317,6 +317,20 @@ are derived from the byte hash and the canonical media-type extension registry.
 Input paths are never stored as the only copy, and untrusted connector paths
 must not be used directly as notebook paths.
 
+An attachment a Field declines to retain under the effective retention policy
+(a size threshold or a media-type include set) never appears in `artifacts` or
+`attachments`; its reference lands instead in the shared `skipped_attachments`
+property (see the [property registry](property-registry.md) and
+[ADR 0007](decisions/0007-attachment-retention-policy.md)). The Markdown
+body's attachment link follows the retention outcome: it targets the derived
+relative artifact path when bytes are retained, and the original source
+location when they are not. `source_url` remains present in frontmatter
+either way, so a reader can always reach the source regardless of what was
+copied in. Per-attachment detail such as name, approximate size, or why it was
+skipped belongs in the Markdown body as deterministic evidence; frontmatter
+deliberately stores neither, because re-collection re-evaluates each reference
+against whatever policy is current when it runs.
+
 ## Derived public records
 
 Extractions, Observations, entities, relationships, and generated proposals are

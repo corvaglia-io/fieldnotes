@@ -79,8 +79,8 @@ fn every_transcript_in_the_corpus_parses() {
     let loaded = transcripts();
     assert_eq!(
         loaded.len(),
-        14,
-        "the corpus README lists fourteen transcripts"
+        16,
+        "the corpus README lists sixteen transcripts"
     );
     for transcript in &loaded {
         let header = transcript

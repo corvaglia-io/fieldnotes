@@ -281,6 +281,117 @@ pub fn mail_message(run_id: &str, seq: u64) -> Value {
     })
 }
 
+/// A mail record with one retained text attachment and one video attachment
+/// the Field declines to retain, per the run's default media-type retention
+/// policy (ADR 0007). `attachment_ref` is the only stable identity a declined
+/// artifact carries, since it has no bytes and no digest.
+#[must_use]
+pub fn standup_recording_declined(run_id: &str, seq: u64) -> Value {
+    json!({
+        "v": 1,
+        "type": "record",
+        "run_id": run_id,
+        "seq": seq,
+        "change": "upsert",
+        "source": {
+            "scope": MAIL_SCOPE,
+            "identity": "mail-message/AAMkAGI2TQABAAAF",
+            "version": "CQAAABYAAAC5",
+            "url": "https://outlook.office.com/mail/id/AAMkAGI2TQABAAAF"
+        },
+        "object_kind": "mail-message",
+        "note_type": "mail",
+        "occurred_at": "2026-08-22T11:20:00+02:00",
+        "properties": {
+            "subject": "Team standup recording",
+            "from": "alice@example.com",
+            "to": ["joe@example.net"],
+            "participants": ["alice@example.com", "joe@example.net"],
+            "conversation_id": "AAQkAGI2TS",
+            "thread_id": "outlook-thread/AAQkAGI2TS",
+            "outlook_mail_importance": "normal",
+            "outlook_mail_internet_message_id": "<standup-recording@example.com>",
+            "outlook_mail_folder_path": "Inbox",
+            "outlook_mail_has_attachments": true
+        },
+        "body": {
+            "format": "markdown",
+            "text": "# Team standup recording\n\nHi Joe,\n\nSharing this week's standup notes and the recording.\n\nAlice\n"
+        },
+        "artifacts": [
+            {
+                "kind": "staged",
+                "handle": "a0021",
+                "sha256": ARTIFACT_DIGEST,
+                "byte_length": ARTIFACT_BYTES.len(),
+                "media_type": "text/plain",
+                "role": "attachment",
+                "source_filename": "notes.txt"
+            },
+            {
+                "kind": "not_retained",
+                "byte_length": 641_728_512,
+                "media_type": "video/mp4",
+                "role": "attachment",
+                "source_filename": "team-standup-recording.mp4",
+                "attachment_ref": "mail-attachment/AAMkAGI2TQABAAACattach02"
+            }
+        ],
+        "integrity": { "damaged": false, "truncated": false }
+    })
+}
+
+/// The same message, misbehaving: a hostile Field stages the excluded video
+/// type anyway instead of declining it. Core must reject this before it
+/// fails for any other reason.
+#[must_use]
+pub fn standup_recording_hostile_staged_video(run_id: &str, seq: u64) -> Value {
+    json!({
+        "v": 1,
+        "type": "record",
+        "run_id": run_id,
+        "seq": seq,
+        "change": "upsert",
+        "source": {
+            "scope": MAIL_SCOPE,
+            "identity": "mail-message/AAMkAGI2TQABAAAG",
+            "version": "CQAAABYAAAC6",
+            "url": "https://outlook.office.com/mail/id/AAMkAGI2TQABAAAG"
+        },
+        "object_kind": "mail-message",
+        "note_type": "mail",
+        "occurred_at": "2026-08-22T11:25:00+02:00",
+        "properties": {
+            "subject": "Second copy of the recording",
+            "from": "alice@example.com",
+            "to": ["joe@example.net"],
+            "participants": ["alice@example.com", "joe@example.net"],
+            "conversation_id": "AAQkAGI2TS",
+            "thread_id": "outlook-thread/AAQkAGI2TS",
+            "outlook_mail_importance": "normal",
+            "outlook_mail_internet_message_id": "<standup-recording-2@example.com>",
+            "outlook_mail_folder_path": "Inbox",
+            "outlook_mail_has_attachments": true
+        },
+        "body": {
+            "format": "markdown",
+            "text": "# Second copy of the recording\n\nA hostile Field stages the same excluded type instead of declining it.\n"
+        },
+        "artifacts": [
+            {
+                "kind": "staged",
+                "handle": "a0022",
+                "sha256": ARTIFACT_DIGEST,
+                "byte_length": ARTIFACT_BYTES.len(),
+                "media_type": "video/mp4",
+                "role": "attachment",
+                "source_filename": "team-standup-recording-2.mp4"
+            }
+        ],
+        "integrity": { "damaged": false, "truncated": false }
+    })
+}
+
 /// A checkpoint offering a resume point.
 #[must_use]
 pub fn checkpoint(

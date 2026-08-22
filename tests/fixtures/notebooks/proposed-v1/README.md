@@ -101,12 +101,37 @@ for that requirement.
 arbitrary-byte artifact vector called for by that corpus's own README; see
 that file for the exact bytes, digest, and derived artifact ID.
 
+## ADR 0007 corpus expansion
+
+The A1 amendment approving the new shared property `skipped_attachments`
+(see [ADR 0007](../../../../docs/decisions/0007-attachment-retention-policy.md)
+and the A1 approval's amendment block) required registry review with
+fixtures. This batch adds one normative fixture:
+
+- `20260822T092000Z_outlook_mail_work_mail_note_01a028c6-eac0-7000-8000-00000000000f.md` —
+  a mail Note with **one retained attachment and one skipped attachment on
+  the same Note**, demonstrating that `artifacts`/`attachments` and
+  `skipped_attachments` are independent flat lists rather than parallel or
+  correlated ones. `notes.txt` is retained and appears in `artifacts` and
+  `attachments` under its illustrative `artifact_sha256_333…3` ID;
+  `team-standup-recording.mp4` is not retained (video is outside the default
+  media-type include set) and its stable connector-namespaced reference
+  appears only in `skipped_attachments`. Per-attachment human detail — name,
+  approximate size, and why each was (or was not) retained — appears in the
+  Markdown body as deterministic evidence rather than in frontmatter, and the
+  body's attachment links follow the retention outcome: a relative artifact
+  path for the retained file, the source URL for the skipped one.
+  `source_url` remains present in frontmatter regardless. Its `content_hash`
+  is a verified vector produced by the `fieldnotes-format` crate's own
+  `RecordBuilder` and `content_hash_value`, matching the process the corpus's
+  own fixture limits section describes below.
+
 ## Gate classification
 
 | Corpus area | A1 approval meaning | Later gate work |
 |---|---|---|
 | `.fieldnotes/instance.yaml` | Normative for the A1 operational instance-metadata exception and exact bytes | IG1 adds parser/write tests |
-| Notes, entities, relationships, proposal, and conflict files | Normative for the represented A1 envelope, naming, property ordering, scalar/list form, and exact bytes | IG1 has added the previously omitted `meeting`, `call`, and `document` Note types and UTC-boundary-crossing/`+00:00` datetime cases (see "IG1 corpus expansion" above) |
+| Notes, entities, relationships, proposal, and conflict files | Normative for the represented A1 envelope, naming, property ordering, scalar/list form, and exact bytes | IG1 has added the previously omitted `meeting`, `call`, and `document` Note types and UTC-boundary-crossing/`+00:00` datetime cases (see "IG1 corpus expansion" above); the ADR 0007 amendment pass has added the `skipped_attachments` Note (see "ADR 0007 corpus expansion" above) |
 | Extraction and Observation | Normative only for the generic A1 derived-record envelope | `0.1.8` approves capability-specific types, evidence units, properties, and generators |
 | Package manifest | Normative for `pkg_`, directory/name, and generic flat manifest envelope only | `0.1.7` approves selection, closure, checksums, encryption, and lifecycle semantics |
 | Artifact IDs and paths embedded in Notes | Normative syntax examples; the absent payloads and their illustrative IDs are not end-to-end vectors | IG1 adds matching stored payload fixtures; `0.1.7` approves rendition layout |

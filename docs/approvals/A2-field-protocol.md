@@ -377,8 +377,9 @@ revision; the configured `field_id`; the `mode`, either `incremental` or
 stored at, when one is replayable; an optional bounded `window`; the
 `snapshot_scope` in snapshot mode; non-secret `config` as flat scalars and
 homogeneous scalar lists; at most a credential *reference* and channel
-descriptor; the `artifact_staging_dir`; the effective `limits`; and the
-`deadline`.
+descriptor; the `artifact_staging_dir`; the effective `limits`; the required
+`artifact_media_types` retention policy; an optional `recollect_targets`; and
+the `deadline`.
 
 Two omissions are deliberate. The request carries no credential material — see
 section 12. It also carries no `instance_id`: producer provenance is core's,
@@ -387,6 +388,44 @@ a cursor, a diagnostic, or an upstream request.
 
 `config` is non-secret by construction, because core never puts credential
 material there. A Field must not treat any value in `config` as a secret.
+
+**`artifact_media_types` (ADR 0007) is required, for the same reason `limits`
+is.** It states the effective media-type retention include set — an exact
+`type/subtype` media type or a subtype wildcard such as `image/*` — in
+addition to the size threshold `limits.max_artifact_bytes` already states. A
+Field compares a known attachment's declared media type against this set
+*before* staging it, exactly as it already compares size against
+`max_artifact_bytes`: included, stage normally; excluded, emit a
+`not_retained` reference instead of bytes core would otherwise have to
+reject. This is orthogonal to A1's frozen media-type-to-extension registry,
+which governs how a *retained* original is named rather than whether it is
+retained at all; a type may be included here and still have no canonical
+extension, falling back to `.bin` per A1 section 2. The default v1 include
+set (documents and text, images, and audio; video, archives, disk images, and
+installers/executables excluded) is fixed in
+`fieldnotes_field_protocol::limits::default_artifact_media_types`, and, like
+`max_artifact_bytes`, is a per-run/settings-configurable default rather than
+a ceiling: there is no absolute media type list that protects core from a
+hostile child, only a sane bound on how long the list may be.
+
+**`recollect_targets` (ADR 0007) is optional and orthogonal to `mode`.** It
+names a bounded list of previously-collected source objects, each by its
+portable exact-source key alone, that core asks the Field to explicitly
+recollect: refetch current metadata and re-evaluate every known attachment
+against the *currently* effective retention policy, regardless of the last
+committed cursor. It exists because normal incremental sync moves forward
+from a cursor and never revisits settled objects, so raising
+`max_artifact_bytes` or widening `artifact_media_types` could otherwise never
+reach an attachment a Field already reported and declined. When present,
+`cursor` and `window` are absent — recollection is scoped exactly to its
+named targets, not to a cursor-bounded or windowed range — and it is never
+combined with `snapshot` mode, which already reconciles everything inside its
+declared scope. No new manifest capability was added for it: whether a
+configured Field can honor a recollection request at all is exactly what its
+existing `collection.refetch` declaration (`supported` / `bounded` /
+`unsupported`) already governs. A2 specifies this request shape; it does not
+build the re-collection *operation* that issues it, which is `0.1.1`
+sync-command scope (see `docs/roadmap.md`'s `0.1.1` entry).
 
 ### 6. The record envelope: a normalized source envelope
 
@@ -618,7 +657,25 @@ deduplicate storage; they never collapse Notes from different source objects.
 A third reference kind, `not_retained`, lets a Field say "I saw this artifact
 at the source and chose not to retain it." See section 14's retention
 threshold for when and why a Field does this, and why it is a policy decision
-rather than a failure.
+rather than a failure. As of ADR 0007, retention is filtered by declared media
+type as well as by size — see section 5's `artifact_media_types` — and a
+type-excluded attachment produces exactly the same `not_retained` outcome as
+an oversize one.
+
+**A `not_retained` reference carries `attachment_ref` (ADR 0007), required
+exactly for this kind and forbidden for `staged` or `digest_only`.** A staged
+or digest-only reference already has an A1 artifact ID derived from a digest;
+a declined artifact has no bytes and computes no digest, so `attachment_ref`
+— a stable connector-namespaced upstream attachment reference, following the
+same object-kind-namespace convention `source_identity` uses — is the only
+stable identity it carries. Core projects it onto the shared
+`skipped_attachments` Note property (see the
+[property registry](../property-registry.md)), which A1 was amended to
+register for exactly this purpose. A2 does not otherwise interpret
+`attachment_ref`: it stores no byte size and no skip reason, because
+re-collection (below) re-evaluates each reference against whichever policy is
+current when it runs, and a stored size or reason would only be a stale copy
+of something the source, or the policy, has since superseded.
 
 #### Alternatives considered
 
@@ -1150,7 +1207,7 @@ The v1 rejection codes are closed and grouped by what went wrong:
 - `artifact.invalid_handle`, `artifact.not_regular_file`,
   `artifact.digest_mismatch`, `artifact.length_mismatch`,
   `artifact.missing_staged_file`, `artifact.unknown_digest`,
-  `artifact.oversized`;
+  `artifact.oversized`, `artifact.type_excluded`;
 - `deletion.unauthorized`, `snapshot.completeness_contradicted`,
   `snapshot.scope_widened`;
 - `credential.unknown_grant`, `credential.grant_expired`,
@@ -1168,6 +1225,12 @@ overloaded `protocol.unexpected_order`); `artifact.not_regular_file` (section
 capability slice's declared `note_type` as a bound rather than decoration);
 and `record.invalid_date` (section 6, distinguishing a malformed date-only
 value from a malformed datetime).
+
+**One further code was added by the ADR 0007 attachment-retention-policy
+pass**: `artifact.type_excluded` (section 5 and section 8), mirroring
+`artifact.oversized` for the media-type retention gate rather than the size
+gate, and kept distinct from it so the two kinds of retention refusal remain
+distinguishable in logs, metrics, and tests.
 
 **Path safety is structural, not defensive.** No Field-supplied string is ever
 a path component:
@@ -1282,6 +1345,13 @@ A2 is approved, IG2 must produce, before `0.1.1` closes:
   reserved device name (including `com0` and `lpt0`), a `not_retained`
   reference that neither stages nor fails, and a hard-link and
   check-versus-use race case;
+- media-type retention tests (ADR 0007): a Field declining a type-excluded
+  attachment as `not_retained` with `attachment_ref`, alongside a retained
+  attachment on the same record; a hostile Field staging a type-excluded
+  attachment anyway, rejected as `artifact.type_excluded` and distinguished
+  from `artifact.oversized`; and a round-trip/validation test for
+  `recollect_targets`, including that it is rejected together with `cursor`,
+  together with `window`, and under `mode: "snapshot"`;
 - secret-canary tests with a unique canary granted on the protected channel and
   asserted absent from argv, the inherited environment, standard output,
   standard error, logs, diagnostics, cursors, Notes, artifacts, and any crash
@@ -1399,6 +1469,21 @@ accept, reject, or amend.
   and the handle grammar applied by the implementation as an artifact-
   validation step distinct from wire-schema validity, never folded into the
   DTO type used for decoding.
+- [ ] A required `artifact_media_types` retention policy on the collection
+  request (ADR 0007), mirroring `max_artifact_bytes` in shape and default-
+  versus-configurable behavior, orthogonal to A1's frozen media-type-to-
+  extension registry, with `artifact.type_excluded` as its own rejection code
+  distinct from `artifact.oversized`.
+- [ ] `attachment_ref`, required exactly for `not_retained` and forbidden for
+  `staged` or `digest_only`, projected by core onto the new A1 shared
+  property `skipped_attachments` (see the A1 amendment and
+  [ADR 0007](../decisions/0007-attachment-retention-policy.md)) rather than
+  interpreted by A2 itself.
+- [ ] An optional `recollect_targets` request shape naming previously-
+  collected source objects by their portable exact-source key alone,
+  orthogonal to `mode`, excluding `cursor` and `window` when present, never
+  combined with `snapshot` mode, and gated by the manifest's existing
+  `collection.refetch` declaration rather than a new manifest member.
 
 ### Cursors, checkpoints, and crash safety
 

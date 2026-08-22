@@ -140,6 +140,10 @@
           "type": "string",
           "minLength": 1,
           "maxLength": 255
+        },
+        "attachment_ref": {
+          "description": "A stable connector-namespaced upstream attachment reference (ADR 0007). Required exactly for 'not_retained' and forbidden otherwise: a staged or digest-only reference already has an A1 artifact ID, but a declined artifact has no bytes and no digest, so this is the only stable identity it carries. Core projects it onto the shared skipped_attachments Note property.",
+          "$ref": "common.schema.json#/$defs/attachmentRef"
         }
       },
       "required": ["kind", "role"],
@@ -149,19 +153,27 @@
           "if": { "properties": { "kind": { "const": "staged" } }, "required": ["kind"] },
           "then": {
             "required": ["handle", "byte_length"],
-            "properties": { "byte_length": { "maximum": 536870912 } }
+            "properties": { "byte_length": { "maximum": 536870912 } },
+            "not": { "required": ["attachment_ref"] }
           }
         },
         {
           "if": { "properties": { "kind": { "const": "digest_only" } }, "required": ["kind"] },
           "then": {
             "required": ["sha256"],
-            "not": { "anyOf": [{ "required": ["handle"] }, { "required": ["byte_length"] }] }
+            "not": {
+              "anyOf": [
+                { "required": ["handle"] },
+                { "required": ["byte_length"] },
+                { "required": ["attachment_ref"] }
+              ]
+            }
           }
         },
         {
           "if": { "properties": { "kind": { "const": "not_retained" } }, "required": ["kind"] },
           "then": {
+            "required": ["attachment_ref"],
             "not": { "anyOf": [{ "required": ["handle"] }, { "required": ["sha256"] }] }
           }
         }

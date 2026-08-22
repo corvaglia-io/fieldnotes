@@ -54,7 +54,21 @@
       "maxLength": 4096
     },
     "limits": { "$ref": "common.schema.json#/$defs/limits" },
-    "deadline": { "$ref": "common.schema.json#/$defs/deadline" }
+    "deadline": { "$ref": "common.schema.json#/$defs/deadline" },
+    "artifact_media_types": {
+      "description": "The effective media-type retention include set (ADR 0007), in addition to the size threshold 'limits.max_artifact_bytes' already states. Required for the same reason 'limits' is: a well-behaved Field self-polices against a bound it is told rather than discovering it by being rejected. Never derived from a source filename, and orthogonal to A1's frozen media-type-to-extension registry.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "common.schema.json#/$defs/mediaTypeMatcher" }
+    },
+    "recollect_targets": {
+      "description": "A bounded list of previously-collected source objects, named by their portable exact-source key alone, that core asks the Field to explicitly recollect (ADR 0007): refetch current metadata and re-evaluate every known attachment against the currently effective retention policy, regardless of the last committed cursor. Present only for an explicit maintenance re-collection run, never for an ordinary incremental or snapshot sync.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": { "$ref": "common.schema.json#/$defs/recollectTarget" }
+    }
   },
   "required": [
     "v",
@@ -67,7 +81,8 @@
     "config",
     "artifact_staging_dir",
     "limits",
-    "deadline"
+    "deadline",
+    "artifact_media_types"
   ],
   "additionalProperties": false,
   "allOf": [
@@ -84,6 +99,21 @@
       },
       "then": { "required": ["snapshot_scope"] },
       "else": { "not": { "required": ["snapshot_scope"] } }
+    },
+    {
+      "description": "recollect_targets is scoped exactly to its named targets, not to a cursor-bounded or windowed range, so cursor and window must be absent when it is present.",
+      "if": { "required": ["recollect_targets"] },
+      "then": {
+        "not": { "anyOf": [{ "required": ["cursor"] }, { "required": ["window"] }] }
+      }
+    },
+    {
+      "description": "recollect_targets is never combined with snapshot mode, which already reconciles everything inside its declared scope.",
+      "if": {
+        "properties": { "mode": { "const": "snapshot" } },
+        "required": ["mode"]
+      },
+      "then": { "not": { "required": ["recollect_targets"] } }
     }
   ],
   "$defs": {

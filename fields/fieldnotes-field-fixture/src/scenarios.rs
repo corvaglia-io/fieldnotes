@@ -154,6 +154,8 @@ scenarios! {
     NoteTypeNotDeclared => "note-type-not-declared", Local;
     CapabilityUndeclared => "capability-undeclared", Local;
     ArtifactNotRetained => "artifact-not-retained", Local;
+    ArtifactTypeExcludedDeclined => "artifact-type-excluded-declined", Mail;
+    ArtifactTypeExcludedHostile => "artifact-type-excluded-hostile", Mail;
     Cancel => "cancel", Local;
     CrashBeforeCheckpoint => "crash-before-checkpoint", Local;
     CrashAfterCheckpoint => "crash-after-checkpoint", Local;
@@ -682,7 +684,8 @@ pub fn collect<R: BufRead>(
                     "byte_length": 1_073_741_824_u64,
                     "media_type": "application/zip",
                     "role": "attachment",
-                    "source_filename": "full-export.zip"
+                    "source_filename": "full-export.zip",
+                    "attachment_ref": "file-attachment/full-export-zip-01"
                 }),
             ));
             out.frame(records::checkpoint(
@@ -694,6 +697,35 @@ pub fn collect<R: BufRead>(
                 true,
             ));
             ScenarioOutcome::completed()
+        }
+        Scenario::ArtifactTypeExcludedDeclined => {
+            // A well-behaved Field: video/mp4 is outside the run's default
+            // media-type include set, so it declines the attachment rather
+            // than have core reject a staged copy, while a plain-text
+            // attachment on the same record is staged and retained.
+            if !stage(staging, "a0021", ARTIFACT_BYTES) {
+                return ScenarioOutcome::failed(ProtocolExit::Internal);
+            }
+            out.frame(records::standup_recording_declined(run_id, 1));
+            out.frame(records::checkpoint(
+                run_id,
+                2,
+                "graph-delta:v1:eyJ0b2tlbiI6IjA2In0",
+                1,
+                1,
+                true,
+            ));
+            ScenarioOutcome::completed()
+        }
+        Scenario::ArtifactTypeExcludedHostile => {
+            // A hostile Field stages the excluded type anyway instead of
+            // declining it. Core must reject this before anything else about
+            // the record matters.
+            if !stage(staging, "a0022", ARTIFACT_BYTES) {
+                return ScenarioOutcome::failed(ProtocolExit::Internal);
+            }
+            out.frame(records::standup_recording_hostile_staged_video(run_id, 1));
+            ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::CapabilityUndeclared => {
             let mut record = records::readme(run_id, 1);

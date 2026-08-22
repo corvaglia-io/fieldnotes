@@ -34,14 +34,15 @@ use crate::artifact::ArtifactHandle;
 use crate::codes::{DiagnosticCode, RejectionCode};
 use crate::declared::{Cardinality, ListSemantics, ScalarType};
 use crate::grammar::{
-    CancelTag, CheckpointTag, CollectRequestTag, ConstFalse, ConstTrue, CredentialRequestTag,
-    CredentialResponseTag, Cursor, DescribeRequestTag, DiagnosticTag, DriverName, DriverVersion,
-    FieldIdToken, FieldStemToken, GrantId, IdentityNamespace, ManifestTag, MarkdownTag, MediaType,
-    MediumText, MessageText, NoteTypeToken, ObjectKind, OffsetDatetime, ProfileRef,
-    PropertyNameToken, PropertyPrefix, ProtocolV1, RecordTag, RuleName, RunId, Sha256Hex,
-    ShortText, SnapshotScope, SourceIdentity, SourceScope, SourceVersion, TombstoneTag,
+    AttachmentRef, CancelTag, CheckpointTag, CollectRequestTag, ConstFalse, ConstTrue,
+    CredentialRequestTag, CredentialResponseTag, Cursor, DescribeRequestTag, DiagnosticTag,
+    DriverName, DriverVersion, FieldIdToken, FieldStemToken, GrantId, IdentityNamespace,
+    ManifestTag, MarkdownTag, MediaType, MediaTypeMatcher, MediumText, MessageText, NoteTypeToken,
+    ObjectKind, OffsetDatetime, ProfileRef, PropertyNameToken, PropertyPrefix, ProtocolV1,
+    RecordTag, RuleName, RunId, Sha256Hex, ShortText, SnapshotScope, SourceIdentity, SourceScope,
+    SourceVersion, TombstoneTag,
 };
-use crate::limits::{Deadline, Limits};
+use crate::limits::{Deadline, Limits, MAX_ARTIFACT_MEDIA_TYPES};
 use crate::value::{ConfigMap, DiagnosticDetail, RecordProperties};
 use crate::version::{MAX_PROTOCOL_REVISION, MAX_PROTOCOL_VERSION, ProtocolRevision};
 
@@ -660,6 +661,17 @@ impl Manifest {
             .find(|slice| slice.object_kind.as_str() == object_kind)
             .map(|slice| &slice.note_type)
     }
+
+    /// Whether this Field's manifest declares enough refetch capability to
+    /// honor a `collect_request.recollect_targets` request at all.
+    ///
+    /// No new manifest member was added for recollection: "can this Field
+    /// refetch material it already reported" is exactly the question
+    /// [`CollectionDeclaration::refetch`] already answers, per ADR 0007.
+    #[must_use]
+    pub fn supports_recollect(&self) -> bool {
+        self.collection.refetch != RefetchSupport::Unsupported
+    }
 }
 
 impl Validate for Manifest {
@@ -817,6 +829,24 @@ impl Validate for CredentialGrant {
     }
 }
 
+/// One previously-collected source object, named by its portable exact-source
+/// key alone, that core asks a Field to explicitly recollect.
+///
+/// Deliberately minimal: recollection is a maintenance operation over objects
+/// the Field already reported, so nothing beyond the key that identifies them
+/// is needed. The Field re-evaluates every attachment of the named object
+/// against the *currently* effective retention policy and re-emits an
+/// ordinary upsert record, which core installs in place under the object's
+/// existing Note ID (A1 section 7's current-state update rule).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecollectTarget {
+    /// The upstream authority or account scope.
+    pub scope: SourceScope,
+    /// The object identity within that scope.
+    pub identity: SourceIdentity,
+}
+
 /// The single frame core writes to a Field's standard input during a collect
 /// run.
 ///
@@ -865,6 +895,26 @@ pub struct CollectRequest {
     pub limits: Limits,
     /// The run's wall-clock, idle, and grace bounds.
     pub deadline: Deadline,
+    /// The effective media-type retention include set, in addition to the
+    /// size threshold `limits.max_artifact_bytes` already states. Required
+    /// for the same reason `limits` is: a well-behaved Field self-polices
+    /// against a bound it is told rather than discovering it by being
+    /// rejected. Never derived from a source filename, and orthogonal to
+    /// A1's frozen media-type-to-extension registry, which governs naming a
+    /// retained original rather than whether it is retained at all.
+    pub artifact_media_types: Vec<MediaTypeMatcher>,
+    /// A bounded list of previously-collected source objects, named by their
+    /// portable exact-source key alone, that core asks the Field to
+    /// explicitly recollect: refetch current metadata and re-evaluate every
+    /// known attachment against the currently effective retention policy,
+    /// regardless of the last committed cursor. Present only for an explicit
+    /// maintenance re-collection run (ADR 0007), never for an ordinary
+    /// incremental or snapshot sync. When present, `cursor` and `window` are
+    /// absent: recollection is scoped exactly to the named targets, not to a
+    /// cursor-bounded incremental range, and it is never combined with
+    /// `snapshot` mode, which already reconciles everything in its scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recollect_targets: Option<Vec<RecollectTarget>>,
 }
 
 impl Validate for CollectRequest {
@@ -898,6 +948,16 @@ impl Validate for CollectRequest {
                 "artifact_staging_dir is 1 to 4096 bytes",
             ));
         }
+        if self.artifact_media_types.is_empty() {
+            return Err(SchemaError::invalid(
+                "artifact_media_types names at least one included media type or wildcard",
+            ));
+        }
+        if self.artifact_media_types.len() > MAX_ARTIFACT_MEDIA_TYPES {
+            return Err(SchemaError::invalid(format!(
+                "artifact_media_types names at most {MAX_ARTIFACT_MEDIA_TYPES} entries"
+            )));
+        }
         if let Some(credential) = &self.credential {
             credential.validate()?;
         }
@@ -907,6 +967,31 @@ impl Validate for CollectRequest {
             return Err(SchemaError::invalid(
                 "the replayed cursor exceeds the run's cursor bound",
             ));
+        }
+        if let Some(targets) = &self.recollect_targets {
+            if targets.is_empty() {
+                return Err(SchemaError::invalid(
+                    "recollect_targets, when present, names at least one target",
+                ));
+            }
+            if targets.len() > MAX_ARTIFACT_MEDIA_TYPES {
+                return Err(SchemaError::invalid(format!(
+                    "recollect_targets names at most {MAX_ARTIFACT_MEDIA_TYPES} entries in one \
+                     run; a larger backlog is split across multiple runs"
+                )));
+            }
+            if self.cursor.is_some() || self.window.is_some() {
+                return Err(SchemaError::invalid(
+                    "recollect_targets is scoped exactly to its named targets, not to a \
+                     cursor-bounded or windowed range, so cursor and window must be absent",
+                ));
+            }
+            if self.mode == CollectionMode::Snapshot {
+                return Err(SchemaError::invalid(
+                    "recollect_targets is never combined with snapshot mode, which already \
+                     reconciles everything inside its declared scope",
+                ));
+            }
         }
         self.limits
             .validate()
@@ -1081,6 +1166,15 @@ pub struct ArtifactRef {
     /// extension.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_filename: Option<String>,
+    /// A stable connector-namespaced upstream attachment reference. Required
+    /// exactly for [`ArtifactKind::NotRetained`] and forbidden otherwise: a
+    /// staged or digest-only reference already has an A1 artifact ID, but a
+    /// declined artifact has no bytes and no digest, so this is the only
+    /// stable identity it carries. Core projects it onto the shared
+    /// `skipped_attachments` Note property; A2 does not otherwise interpret
+    /// it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachment_ref: Option<AttachmentRef>,
 }
 
 impl ArtifactRef {
@@ -1124,6 +1218,12 @@ impl Validate for ArtifactRef {
                         "byte_length exceeds the frozen single-artifact transfer ceiling",
                     ));
                 }
+                if self.attachment_ref.is_some() {
+                    return Err(SchemaError::invalid(
+                        "a staged reference already has an A1 artifact ID from core's own \
+                         digest, so it carries no attachment_ref",
+                    ));
+                }
                 Ok(())
             }
             ArtifactKind::DigestOnly => {
@@ -1139,6 +1239,12 @@ impl Validate for ArtifactRef {
                          and no byte length",
                     ));
                 }
+                if self.attachment_ref.is_some() {
+                    return Err(SchemaError::invalid(
+                        "a digest-only reference already has an A1 artifact ID from its digest, \
+                         so it carries no attachment_ref",
+                    ));
+                }
                 Ok(())
             }
             ArtifactKind::NotRetained => {
@@ -1146,6 +1252,13 @@ impl Validate for ArtifactRef {
                     return Err(SchemaError::invalid(
                         "a not_retained reference transfers no bytes and computes no digest, so \
                          it carries no handle and no declared digest",
+                    ));
+                }
+                if self.attachment_ref.is_none() {
+                    return Err(SchemaError::invalid(
+                        "a not_retained reference carries no bytes and no digest, so \
+                         attachment_ref is the only stable identity it has; core needs it to \
+                         record the declined attachment in skipped_attachments",
                     ));
                 }
                 // byte_length is deliberately unbounded here: it is the
@@ -1993,6 +2106,7 @@ impl CredentialFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn json(text: &str) -> Result<serde_json::Value, serde_json::Error> {
         serde_json::from_str(text)
@@ -2173,6 +2287,179 @@ mod tests {
                 "grant_id":"9f14c0a3b7e25d68","outcome":"granted"}"#,
         )?;
         assert!(CredentialFrame::decode(value).is_err());
+        Ok(())
+    }
+
+    fn not_retained_artifact_ref(attachment_ref: Option<&str>) -> serde_json::Value {
+        let mut value = json!({
+            "kind": "not_retained",
+            "byte_length": 1_073_741_824_u64,
+            "media_type": "video/mp4",
+            "role": "attachment",
+            "source_filename": "team-standup-recording.mp4"
+        });
+        if let Some(reference) = attachment_ref
+            && let Some(object) = value.as_object_mut()
+        {
+            object.insert("attachment_ref".to_owned(), json!(reference));
+        }
+        value
+    }
+
+    #[test]
+    fn a_not_retained_reference_requires_an_attachment_ref() -> Result<(), serde_json::Error> {
+        let without: ArtifactRef = serde_json::from_value(not_retained_artifact_ref(None))?;
+        assert_eq!(
+            without.validate(),
+            Err(SchemaError::invalid(
+                "a not_retained reference carries no bytes and no digest, so attachment_ref is \
+                 the only stable identity it has; core needs it to record the declined \
+                 attachment in skipped_attachments"
+            ))
+        );
+
+        let with: ArtifactRef = serde_json::from_value(not_retained_artifact_ref(Some(
+            "mail-attachment/AAMkAGI2TQABAAACattach02",
+        )))?;
+        assert!(with.validate().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn a_staged_or_digest_only_reference_forbids_attachment_ref() -> Result<(), serde_json::Error> {
+        let staged: ArtifactRef = serde_json::from_value(json!({
+            "kind": "staged",
+            "handle": "a0001",
+            "byte_length": 40,
+            "role": "original",
+            "attachment_ref": "mail-attachment/should-not-be-here"
+        }))?;
+        assert!(staged.validate().is_err());
+
+        let digest_only: ArtifactRef = serde_json::from_value(json!({
+            "kind": "digest_only",
+            "sha256": "449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17",
+            "role": "attachment",
+            "attachment_ref": "mail-attachment/should-not-be-here"
+        }))?;
+        assert!(digest_only.validate().is_err());
+        Ok(())
+    }
+
+    fn base_collect_request_json() -> serde_json::Value {
+        json!({
+            "v": 1, "type": "collect_request", "run_id": "1a4c9f2e-0000-4000-8000-00000000000f",
+            "protocol_version": 1, "protocol_revision": 0, "field_id": "local_work",
+            "mode": "incremental", "config": {},
+            "artifact_staging_dir": "/tmp/staging",
+            "artifact_media_types": ["application/pdf", "image/*"],
+            "limits": serde_json::to_value(Limits::ceilings())
+                .unwrap_or_else(|error| panic!("limits must encode: {error}")),
+            "deadline": {
+                "not_after": "2099-01-01T00:00:00+00:00",
+                "idle_seconds": 120,
+                "cancel_grace_seconds": 10
+            }
+        })
+    }
+
+    #[test]
+    fn collect_request_requires_a_non_empty_artifact_media_types_list()
+    -> Result<(), serde_json::Error> {
+        let mut without = base_collect_request_json();
+        if let Some(object) = without.as_object_mut() {
+            object.insert("artifact_media_types".to_owned(), json!([]));
+        }
+        let request: CollectRequest = serde_json::from_value(without)?;
+        assert!(request.validate().is_err());
+
+        let request: CollectRequest = serde_json::from_value(base_collect_request_json())?;
+        assert!(request.validate().is_ok());
+        Ok(())
+    }
+
+    #[test]
+    fn recollect_targets_forbids_a_cursor_a_window_and_snapshot_mode()
+    -> Result<(), serde_json::Error> {
+        let targets =
+            json!([{"scope": "microsoft-graph:tenant/x", "identity": "mail-message/AAA"}]);
+
+        let mut with_cursor = base_collect_request_json();
+        if let Some(object) = with_cursor.as_object_mut() {
+            object.insert("cursor".to_owned(), json!("walk:v1:seq=2"));
+            object.insert("cursor_format_version".to_owned(), json!(1));
+            object.insert("recollect_targets".to_owned(), targets.clone());
+        }
+        let request: CollectRequest = serde_json::from_value(with_cursor)?;
+        assert!(
+            request.validate().is_err(),
+            "recollect_targets must not combine with a cursor"
+        );
+
+        let mut with_snapshot = base_collect_request_json();
+        if let Some(object) = with_snapshot.as_object_mut() {
+            object.insert("mode".to_owned(), json!("snapshot"));
+            object.insert("snapshot_scope".to_owned(), json!("everything"));
+            object.insert("recollect_targets".to_owned(), targets.clone());
+        }
+        let request: CollectRequest = serde_json::from_value(with_snapshot)?;
+        assert!(
+            request.validate().is_err(),
+            "recollect_targets must not combine with snapshot mode"
+        );
+
+        let mut alone = base_collect_request_json();
+        if let Some(object) = alone.as_object_mut() {
+            object.insert("recollect_targets".to_owned(), targets);
+        }
+        let request: CollectRequest = serde_json::from_value(alone)?;
+        assert!(
+            request.validate().is_ok(),
+            "recollect_targets alone, with no cursor or window and in incremental mode, is legal"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn manifest_supports_recollect_mirrors_the_refetch_declaration() -> Result<(), serde_json::Error>
+    {
+        let supported: Manifest = serde_json::from_value(json!({
+            "v": 1, "type": "manifest", "run_id": "1a4c9f2e-0000-4000-8000-000000000001",
+            "protocol_version": 1, "protocol_revision": 0, "supported_protocol_versions": [1],
+            "driver": "local-reference", "driver_version": "0.1.1", "field_stem": "local",
+            "declared_properties": [],
+            "capabilities": [{"object_kind": "file", "note_type": "file", "emits_artifacts": true,
+                "emits_identity_anchors": false, "description": "d"}],
+            "source_key": {
+                "scope_rule": "local_root_id", "scope_rule_version": 1,
+                "scope_shape": "s", "scope_depends_on_field_label": false,
+                "identity_shape": "i", "identity_includes_object_kind": true,
+                "source_version_ordering": "unsupported", "stable_across_instances": true
+            },
+            "auth": {
+                "kind": "none", "credential_profile_required": false,
+                "protected_channel_required": false, "refresh_owner": "not_applicable",
+                "writes_to_source": false
+            },
+            "collection": {
+                "incremental": true, "cursor_format_version": 1,
+                "supported_modes": ["incremental"], "window_supported": false,
+                "refetch": "supported",
+                "deletion": { "tombstones": "unsupported", "snapshot": "unsupported" }
+            }
+        }))?;
+        assert!(supported.supports_recollect());
+
+        let mut json_value = serde_json::to_value(&supported)
+            .unwrap_or_else(|error| panic!("manifest must encode: {error}"));
+        if let Some(collection) = json_value
+            .get_mut("collection")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            collection.insert("refetch".to_owned(), json!("unsupported"));
+        }
+        let unsupported: Manifest = serde_json::from_value(json_value)?;
+        assert!(!unsupported.supports_recollect());
         Ok(())
     }
 }

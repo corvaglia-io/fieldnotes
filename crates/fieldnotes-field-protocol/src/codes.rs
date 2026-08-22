@@ -101,6 +101,11 @@ pub enum RejectionCode {
     ArtifactUnknownDigest,
     /// A staged artifact exceeds the effective artifact ceiling.
     ArtifactOversized,
+    /// A staged artifact's declared media type is excluded by the effective
+    /// media-type retention policy. Distinct from
+    /// [`RejectionCode::ArtifactOversized`] so the two kinds of retention
+    /// refusal remain distinguishable in logs, metrics, and tests.
+    ArtifactTypeExcluded,
     /// A deletion signal the manifest declared no authority for.
     DeletionUnauthorized,
     /// A completeness claim contradicted by the run's own evidence.
@@ -123,7 +128,7 @@ pub enum RejectionCode {
 
 impl RejectionCode {
     /// Every v1 rejection code, in declaration order.
-    pub const ALL: [RejectionCode; 42] = [
+    pub const ALL: [RejectionCode; 43] = [
         RejectionCode::ProtocolInvalidUtf8,
         RejectionCode::ProtocolNotJson,
         RejectionCode::ProtocolOversizedFrame,
@@ -157,6 +162,7 @@ impl RejectionCode {
         RejectionCode::ArtifactMissingStagedFile,
         RejectionCode::ArtifactUnknownDigest,
         RejectionCode::ArtifactOversized,
+        RejectionCode::ArtifactTypeExcluded,
         RejectionCode::DeletionUnauthorized,
         RejectionCode::SnapshotCompletenessContradicted,
         RejectionCode::SnapshotScopeWidened,
@@ -205,6 +211,7 @@ impl RejectionCode {
             RejectionCode::ArtifactMissingStagedFile => "artifact.missing_staged_file",
             RejectionCode::ArtifactUnknownDigest => "artifact.unknown_digest",
             RejectionCode::ArtifactOversized => "artifact.oversized",
+            RejectionCode::ArtifactTypeExcluded => "artifact.type_excluded",
             RejectionCode::DeletionUnauthorized => "deletion.unauthorized",
             RejectionCode::SnapshotCompletenessContradicted => "snapshot.completeness_contradicted",
             RejectionCode::SnapshotScopeWidened => "snapshot.scope_widened",

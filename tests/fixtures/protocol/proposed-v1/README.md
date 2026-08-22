@@ -146,6 +146,8 @@ wire schema itself has an opinion about.
 | `12-crash-before-checkpoint.ndjson` | durable write, commit, durable write, crash, resume, idempotent replay | failed then complete, exit 137 then 0 |
 | `13-undeclared-prefixed-property-rejection.ndjson` | ruling 4 enforcement: undeclared, foreign-prefixed, unknown unprefixed, mistyped, and core-owned properties | failed, exit 10 |
 | `14-cancellation-and-deadline.ndjson` | cooperative cancellation of a snapshot run; partial, so nothing is removed | partial, exit 8 |
+| `15-attachment-retention-policy.ndjson` | the media-type retention policy (ADR 0007): a well-behaved decline carrying `attachment_ref` alongside a retained attachment on the same record, then a hostile Field staging an excluded type anyway (`artifact.type_excluded`, distinct from `artifact.oversized`) | failed, exit 10 |
+| `16-explicit-recollection.ndjson` | the explicit re-collection request shape (ADR 0007): `recollect_targets` names a known source object with no cursor and no window, and the Field re-emits it with a previously declined attachment now staged under a widened policy | complete, exit 0 |
 
 ## Reused approved material
 
@@ -174,8 +176,8 @@ or vendor payload appears here.
 |---|---|---|
 | `schemas/common.schema.json` grammars, limits, deadline, closed diagnostic vocabulary | Normative for protocol v1 transport well-formedness and for the frozen limit ceilings — absolute bounds no configuration may cross | Configuring within a ceiling is `sync`-command scope, including the single-artifact bound's and the run wall clock's configurable defaults; raising a ceiling or adding a diagnostic code is an additive protocol revision |
 | `schemas/describe-manifest.schema.json` envelope, `declared_properties`, `source_key`, `identity_anchors`, `auth`, `collection` | Normative for the manifest envelope and for prefixed-property declaration and enforcement, closing the gap [ruling 4](../../../../docs/decisions/0006-a1-implementation-rulings.md) assigned to A2 | Each Field's actual declared property names, capability slices, and scopes are approved with that Field's release: `local_` at `0.1.1`, `outlook_mail_` at `0.1.3` |
-| `schemas/collect-request.schema.json`, `cancel-control.schema.json` | Normative for the request envelope, mode, window, snapshot scope, staging directory, and cooperative cancellation | The CLI's own exit-code table and multi-Field summary remain a CLI-contract decision |
-| `schemas/record-event.schema.json` | Normative for the normalized-source-envelope boundary, the upsert/delete split, deletion authority, the three artifact reference kinds including `not_retained`, the retention threshold's protocol-level effect, the Note-applicable registry subset, and the core-owned property exclusion | Property names inside `properties` remain governed by the A1 registry; new shared names need registry review, including a possible future name for "an attachment was seen but is not retained," which A2 does not propose |
+| `schemas/collect-request.schema.json`, `cancel-control.schema.json` | Normative for the request envelope, mode, window, snapshot scope, staging directory, cooperative cancellation, the required `artifact_media_types` retention policy, and the `recollect_targets` re-collection request shape (ADR 0007) | The CLI's own exit-code table and multi-Field summary remain a CLI-contract decision; the re-collection *operation* that issues `recollect_targets` is `0.1.1` sync-command scope and is not built by A2 |
+| `schemas/record-event.schema.json` | Normative for the normalized-source-envelope boundary, the upsert/delete split, deletion authority, the three artifact reference kinds including `not_retained`, the retention threshold's and the media-type policy's protocol-level effect, `attachment_ref`, the Note-applicable registry subset, and the core-owned property exclusion | Property names inside `properties` remain governed by the A1 registry; the "attachment was seen but is not retained" name this row previously left as a possible future gap is now `skipped_attachments`, approved by A1 amendment via [ADR 0007](../../../../docs/decisions/0007-attachment-retention-policy.md) |
 | `schemas/checkpoint-event.schema.json` | Normative for cursor commit eligibility, coverage accounting, and the snapshot completeness claim | Retry classification and backoff policy are implementation policy inside these bounds |
 | `schemas/diagnostic-event.schema.json` | Normative for the diagnostic envelope, the closed code vocabulary, severity semantics, and the redaction obligation | `0.1.5` Teams and `0.1.6` Jira may need additional codes, which is an additive revision |
 | `schemas/credential-channel.schema.json` | Normative for the shape of protected delivery and for the rule that `material` is the only secret-bearing member in the protocol | The exact per-platform channel mechanism, refresh ownership, and memory-clearing behavior close at the `0.1.3` authentication gate |
@@ -244,3 +246,33 @@ deliberately not committed, and still not a substitute for the Rust
 conformance kit, which by this point exists and is the real evidence — this
 second check exists only to keep the schemas and transcripts honest while they
 were being hand-edited alongside the code.
+
+### Re-verification after the attachment-retention-policy pass
+
+[ADR 0007](../../../../docs/decisions/0007-attachment-retention-policy.md)
+added a required `artifact_media_types` member to `collect_request` (every
+existing transcript's `collect_request` frame gained it), an optional
+`recollect_targets` member and its `recollectTarget` shape, an optional
+`attachment_ref` member on `artifactRef` (required exactly for
+`not_retained`, forbidden otherwise), the `mediaTypeMatcher` and
+`attachmentRef` shared definitions, and two new transcripts,
+`15-attachment-retention-policy.ndjson` and
+`16-explicit-recollection.ndjson`. This pass re-verified every schema and
+transcript the same way as before, again with `python3` and `jsonschema`
+4.26.0 in a throwaway virtual environment outside the repository: every
+schema still parses, is UTF-8, and ends with exactly one final LF; every
+schema still validates against the 2020-12 meta-schema; every `$ref` still
+resolves inside this set; every transcript line still parses and validates
+against `transcript.schema.json`; every `frame` line's payload still
+validates against the wire schema its `type` selects, with every
+`valid: false` line still failing that schema; and the two new transcripts'
+internal sequence, checkpoint-coverage, and header/exit consistency hold.
+Targeted probes additionally confirmed that `image/*` and `application/pdf`
+are accepted as `mediaTypeMatcher` values while `image/`, `Image/*`, and a
+bare `image` are rejected, that a `not_retained` reference without
+`attachment_ref` is rejected while one with it validates, that a `staged` or
+`digest_only` reference carrying `attachment_ref` is rejected, and that
+`recollect_targets` together with `cursor`, together with `window`, or under
+`mode: "snapshot"` is rejected in each case. This is still scratch tooling,
+deliberately not committed, and still not a substitute for the Rust
+conformance kit.

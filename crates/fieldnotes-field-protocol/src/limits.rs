@@ -30,7 +30,7 @@ use core::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::grammar::OffsetDatetime;
+use crate::grammar::{GrammarError, MediaTypeMatcher, OffsetDatetime};
 
 /// Why an effective limit was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -347,6 +347,102 @@ impl Deadline {
     }
 }
 
+/// The most entries `CollectRequest.artifact_media_types` admits.
+///
+/// A technical bound on the list length, not a policy ceiling: unlike
+/// [`Limits::max_artifact_bytes`], there is no absolute number of media types
+/// that protects core from a hostile child, only a sane upper bound on how
+/// long the list a well-behaved caller sends can be.
+pub const MAX_ARTIFACT_MEDIA_TYPES: usize = 128;
+
+/// The default v1 artifact media-type retention include set: what a run
+/// retains by default, in addition to clearing the size threshold
+/// [`Limits::max_artifact_bytes`] already governs.
+///
+/// Approved by `docs/decisions/0007-attachment-retention-policy.md`.
+/// Documents and text, images, and audio are included; video, archives, disk
+/// images, and installers/executables are excluded, because voice is a
+/// first-class Note type but a first-class Note type does not need every
+/// container format a source system might send.
+///
+/// This is a **default**, not a ceiling: a notebook may configure a
+/// different include set entirely, in either direction, exactly like
+/// [`Limits::max_artifact_bytes`]'s configurable default. Ten of these twenty
+/// media types have no entry in A1's canonical extension registry today and
+/// so fall back to the `.bin` extension if retained; that is a real gap the
+/// extension registry does not close, tracked by the ADR rather than solved
+/// here, because retention policy and extension naming are deliberately
+/// orthogonal.
+///
+/// # Panics
+///
+/// Never, in practice: every literal below is a fixed, reviewed constant.
+/// Should one ever be malformed, this function panics rather than silently
+/// shipping a shorter default set than the one actually approved.
+#[must_use]
+pub fn default_artifact_media_types() -> Vec<MediaTypeMatcher> {
+    const DEFAULT: [&str; 20] = [
+        // Documents and text.
+        "application/pdf",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "application/vnd.oasis.opendocument.text",
+        "application/vnd.oasis.opendocument.spreadsheet",
+        "application/vnd.oasis.opendocument.presentation",
+        "text/plain",
+        "text/markdown",
+        "text/csv",
+        "application/rtf",
+        // Images.
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/heic",
+        // Audio: voice is a first-class Note type.
+        "audio/mp4",
+        "audio/mpeg",
+        "audio/wav",
+        "audio/ogg",
+    ];
+    DEFAULT
+        .iter()
+        .map(|text| {
+            MediaTypeMatcher::parse(text)
+                .unwrap_or_else(|error| panic_on_default_media_type(text, error))
+        })
+        .collect()
+}
+
+/// Isolated so the `unwrap_or_else` closure above stays a one-line call, which
+/// keeps the panic message assembly out of the hot path and out of the
+/// closure clippy would otherwise flag as doing too much.
+fn panic_on_default_media_type(text: &str, error: GrammarError) -> MediaTypeMatcher {
+    panic!("the default artifact media type {text:?} must be a valid matcher: {error}")
+}
+
+/// Whether `essence` -- the artifact's declared media type, already
+/// parameter-stripped and ASCII-lowercased -- is included by `policy`,
+/// honoring a subtype wildcard such as `image/*`.
+#[must_use]
+pub fn artifact_media_type_included(policy: &[MediaTypeMatcher], essence: &str) -> bool {
+    policy.iter().any(|matcher| matcher.matches(essence))
+}
+
+/// Strips media-type parameters and lowercases, matching A1's extension-
+/// registry lookup rule, so a declared `Text/Plain; charset=utf-8` compares
+/// equal to the registered `text/plain`.
+#[must_use]
+pub fn media_type_essence(declared: &str) -> String {
+    declared
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,6 +559,51 @@ mod tests {
         };
         assert!(zero.validate().is_err());
         Ok(())
+    }
+
+    #[test]
+    fn the_default_media_types_parse_and_include_the_approved_twenty() {
+        let defaults = default_artifact_media_types();
+        assert_eq!(defaults.len(), 20);
+        assert!(defaults.len() <= MAX_ARTIFACT_MEDIA_TYPES);
+        for included in [
+            "application/pdf",
+            "text/plain",
+            "text/markdown",
+            "text/csv",
+            "application/rtf",
+            "image/png",
+            "image/heic",
+            "audio/mp4",
+            "audio/ogg",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.oasis.opendocument.text",
+        ] {
+            assert!(
+                artifact_media_type_included(&defaults, included),
+                "{included} must be in the default include set"
+            );
+        }
+        for excluded in [
+            "video/mp4",
+            "application/zip",
+            "application/x-msdownload",
+            "application/x-iso9660-image",
+        ] {
+            assert!(
+                !artifact_media_type_included(&defaults, excluded),
+                "{excluded} must not be in the default include set"
+            );
+        }
+    }
+
+    #[test]
+    fn media_type_essence_strips_parameters_and_lowercases() {
+        assert_eq!(
+            media_type_essence("Text/Plain; charset=utf-8"),
+            "text/plain"
+        );
+        assert_eq!(media_type_essence("image/PNG"), "image/png");
     }
 
     #[test]

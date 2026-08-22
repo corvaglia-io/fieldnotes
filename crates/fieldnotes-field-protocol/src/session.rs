@@ -64,7 +64,7 @@ use fieldnotes_domain::{FieldStemRegistry, NoteType};
 use crate::artifact::{ArtifactDigestIndex, ArtifactOutcome, ArtifactRejection, resolve_artifact};
 use crate::codes::{ExitCode, RejectionCode, RunOutcome};
 use crate::declared::{DeclaredPropertyIndex, PropertyRejection};
-use crate::grammar::Cursor;
+use crate::grammar::{Cursor, MediaTypeMatcher};
 use crate::limits::Limits;
 use crate::message::{
     Change, CheckpointEvent, CollectRequest, CollectionMode, DiagnosticEvent, FieldEvent, Manifest,
@@ -449,6 +449,7 @@ pub struct CollectSession<'a> {
     snapshot_scope: Option<String>,
     windowed: bool,
     limits: Limits,
+    media_type_policy: Vec<MediaTypeMatcher>,
     run_id: String,
     last_seq: u64,
     record_count: u64,
@@ -489,6 +490,7 @@ impl<'a> CollectSession<'a> {
                 .map(|scope| scope.as_str().to_owned()),
             windowed: request.window.is_some(),
             limits: request.limits,
+            media_type_policy: request.artifact_media_types.clone(),
             run_id: request.run_id.as_str().to_owned(),
             last_seq: 0,
             record_count: 0,
@@ -1001,7 +1003,13 @@ impl<'a> CollectSession<'a> {
             return Ok(resolved);
         };
         for reference in references {
-            match resolve_artifact(staging_dir, reference, &self.limits, index) {
+            match resolve_artifact(
+                staging_dir,
+                reference,
+                &self.limits,
+                &self.media_type_policy,
+                index,
+            ) {
                 Ok(ArtifactOutcome::Resolved(artifact)) => {
                     if !artifact.reused {
                         self.staged_bytes = self.staged_bytes.saturating_add(artifact.byte_length);
@@ -1216,6 +1224,7 @@ mod tests {
             "protocol_version": 1, "protocol_revision": 0, "field_id": "local_work",
             "mode": mode, "config": {},
             "artifact_staging_dir": "/tmp/staging",
+            "artifact_media_types": ["application/pdf", "image/*"],
             "limits": serde_json::to_value(Limits::ceilings())
                 .unwrap_or_else(|error| panic!("limits must encode: {error}")),
             "deadline": {

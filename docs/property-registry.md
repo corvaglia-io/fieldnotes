@@ -61,6 +61,20 @@ External Notes also require `source_scope` and `source_identity` whenever a stab
 | `damaged` | boolean | Known content loss or corruption |
 | `truncated` | boolean | Source or rendered content is incomplete |
 | `lost_characters` | number | Measurable detected character loss |
+| `skipped_attachments` | list[text] | Stable connector-namespaced references to attachments the Note had that were deliberately not retained |
+
+`skipped_attachments` was added by
+[ADR 0007](decisions/0007-attachment-retention-policy.md), amending
+[A1](approvals/A1-notebook-contract.md). It deliberately stores neither a
+byte size nor a skip reason: re-collection re-evaluates each reference
+against the retention policy in force *at re-collection time* and refetches
+metadata from the source then, so a stored size or reason would only be a
+stale copy of something the source, or the current policy, already
+supersedes. Per-attachment human detail belongs in the Markdown body as
+deterministic evidence, which the flat-frontmatter rule does not constrain. A
+Note may have several attachments with some retained and some skipped; two
+index-correlated parallel lists were rejected because A1 sorts and
+deduplicates set-like lists, which would destroy that correlation.
 
 `source_version` and `collected_by` arise from current-state reconciliation and
 cross-instance exact deduplication. When `collected_by` is present it is
@@ -166,7 +180,7 @@ envelopes without approving every enhancement property or generator.
 Canonical serialization needs to know whether list order carries meaning.
 
 - Sort and deduplicate set-like lists: `collected_by`, `identities`, `entities`,
-  `related`, `artifacts`, `channels`, `supported_by`,
+  `related`, `artifacts`, `skipped_attachments`, `channels`, `supported_by`,
   `candidate_fingerprints`, `involved_note_ids`, `producer_references`,
   `source_identities`, and `source_scopes`.
 - Preserve source/role order for `to`, `cc`, `bcc`, `participants`, and

@@ -460,14 +460,15 @@ use std::time::Duration;
 use crate::artifact::ArtifactDigestIndex;
 use crate::codes::RunOutcome;
 use crate::grammar::{
-    CancelTag, CollectRequestTag, Cursor, DescribeRequestTag, FieldIdToken, OffsetDatetime,
-    PropertyPrefix, ProtocolV1, RunId, SnapshotScope,
+    CancelTag, CollectRequestTag, Cursor, DescribeRequestTag, FieldIdToken, MediaTypeMatcher,
+    OffsetDatetime, PropertyPrefix, ProtocolV1, RunId, SnapshotScope,
 };
 use crate::host::{FieldProcess, FieldSpawn, Operation};
-use crate::limits::{Deadline, Limits};
+use crate::limits::{Deadline, Limits, default_artifact_media_types};
 use crate::message::{
     Cancel, CancelReason, CollectRequest, CollectionMode, CoreFrame, CredentialGrant,
-    DescribeRequest, FieldEvent, Manifest, RecordEvent, Severity, VersionList, Window,
+    DescribeRequest, FieldEvent, Manifest, RecollectTarget, RecordEvent, Severity, VersionList,
+    Window,
 };
 use crate::redact::Redactor;
 use crate::session::{
@@ -549,6 +550,8 @@ pub enum CoreObservation {
     DeclinedArtifact {
         /// The declined artifact's role.
         role: crate::message::ArtifactRole,
+        /// The stable reference core would project onto `skipped_attachments`.
+        attachment_ref: String,
     },
     /// Core installed or updated the current Note for a source key.
     WroteNote {
@@ -623,6 +626,11 @@ pub struct CollectPlan {
     pub credential: Option<CredentialGrant>,
     /// Non-secret connector configuration.
     pub config: ConfigMap,
+    /// The effective media-type retention include set.
+    pub artifact_media_types: Vec<MediaTypeMatcher>,
+    /// A bounded list of previously-collected source objects core asks the
+    /// Field to explicitly recollect. `None` for an ordinary sync.
+    pub recollect_targets: Option<Vec<RecollectTarget>>,
     /// The current state core already holds for this Field, keyed by portable
     /// exact-source key.
     ///
@@ -654,6 +662,8 @@ impl CollectPlan {
             cancel_after_records: None,
             credential: None,
             config: ConfigMap::new(),
+            artifact_media_types: default_artifact_media_types(),
+            recollect_targets: None,
             current_state: BTreeMap::new(),
         })
     }
@@ -686,6 +696,25 @@ impl CollectPlan {
     #[must_use]
     pub fn with_known_digest(mut self, digest: &str) -> Self {
         self.known_digests.insert(digest.to_owned());
+        self
+    }
+
+    /// Overrides the effective media-type retention include set, in place of
+    /// [`default_artifact_media_types`].
+    #[must_use]
+    pub fn with_artifact_media_types(mut self, media_types: Vec<MediaTypeMatcher>) -> Self {
+        self.artifact_media_types = media_types;
+        self
+    }
+
+    /// Turns this into an explicit re-collection plan naming the given
+    /// portable exact-source keys, per ADR 0007. Clears `cursor` and `window`,
+    /// which recollection is scoped exactly to its named targets instead of.
+    #[must_use]
+    pub fn recollecting(mut self, targets: Vec<RecollectTarget>) -> Self {
+        self.cursor = None;
+        self.window = None;
+        self.recollect_targets = Some(targets);
         self
     }
 
@@ -1228,6 +1257,7 @@ impl FieldUnderTest {
                 crate::artifact::ArtifactOutcome::Declined(declined) => {
                     actions.push(CoreObservation::DeclinedArtifact {
                         role: declined.role,
+                        attachment_ref: declined.attachment_ref,
                     });
                 }
             }
@@ -1278,6 +1308,8 @@ impl FieldUnderTest {
             artifact_staging_dir: staging,
             limits: self.limits,
             deadline: self.deadline()?,
+            artifact_media_types: plan.artifact_media_types.clone(),
+            recollect_targets: plan.recollect_targets.clone(),
         })
     }
 }

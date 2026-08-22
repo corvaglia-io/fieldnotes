@@ -251,6 +251,61 @@ guarded_string! {
 }
 
 guarded_string! {
+    /// One entry of a media-type retention include set: an exact `type/subtype`
+    /// media type, or a subtype wildcard such as `image/*`. Never an extension,
+    /// and never derived from a source filename -- A1 section 2's rule that a
+    /// source filename never selects the stored extension applies equally to
+    /// retention. Matching this grammar says nothing about whether the type has
+    /// a canonical extension in A1's separate, frozen extension registry: the
+    /// two questions are orthogonal by design.
+    MediaTypeMatcher, min = 3, max = 255, check = |text: &str| {
+        let Some((kind, subtype)) = text.split_once('/') else {
+            return false;
+        };
+        let token = |part: &str| {
+            let mut bytes = part.bytes();
+            match bytes.next() {
+                Some(byte) if byte.is_ascii_lowercase() || byte.is_ascii_digit() => {}
+                _ => return false,
+            }
+            part.len() <= 127
+                && bytes.all(|byte| {
+                    byte.is_ascii_lowercase()
+                        || byte.is_ascii_digit()
+                        || matches!(byte, b'!' | b'#' | b'$' | b'&' | b'^' | b'_' | b'.' | b'+' | b'-')
+                })
+        };
+        token(kind) && (subtype == "*" || token(subtype))
+    }
+}
+
+impl MediaTypeMatcher {
+    /// Whether `essence` -- an already parameter-stripped, ASCII-lowercased
+    /// `type/subtype` media type -- matches this entry, honoring a subtype
+    /// wildcard such as `image/*`.
+    #[must_use]
+    pub fn matches(&self, essence: &str) -> bool {
+        if self.as_str() == essence {
+            return true;
+        }
+        match self.as_str().split_once('/') {
+            Some((kind, "*")) => essence
+                .split_once('/')
+                .is_some_and(|(essence_kind, _)| essence_kind == kind),
+            _ => false,
+        }
+    }
+}
+
+guarded_string! {
+    /// A stable connector-namespaced upstream attachment reference, following
+    /// the same object-kind-namespace convention `SourceIdentity` uses. Carried
+    /// only on a `not_retained` artifact reference, and projected by core onto
+    /// the shared `skipped_attachments` Note property.
+    AttachmentRef, min = 1, max = 1024, check = is_printable
+}
+
+guarded_string! {
     /// An identity-anchor namespace.
     IdentityNamespace, min = 1, max = 63, check = |text: &str| {
         let mut bytes = text.bytes();
@@ -590,6 +645,37 @@ mod tests {
         assert!(MediaType::parse("text").is_err());
         assert!(MediaType::parse("Text/Markdown").is_err());
         assert!(MediaType::parse("text/").is_err());
+    }
+
+    #[test]
+    fn media_type_matcher_admits_an_exact_type_or_a_subtype_wildcard() {
+        assert!(MediaTypeMatcher::parse("application/pdf").is_ok());
+        assert!(MediaTypeMatcher::parse("image/*").is_ok());
+        assert!(MediaTypeMatcher::parse("image/").is_err());
+        assert!(MediaTypeMatcher::parse("Image/*").is_err());
+        assert!(MediaTypeMatcher::parse("image").is_err());
+    }
+
+    #[test]
+    fn media_type_matcher_matching_honours_the_wildcard_and_nothing_else() {
+        let exact = MediaTypeMatcher::parse("application/pdf")
+            .unwrap_or_else(|error| panic!("must parse: {error}"));
+        assert!(exact.matches("application/pdf"));
+        assert!(!exact.matches("application/zip"));
+
+        let wildcard = MediaTypeMatcher::parse("image/*")
+            .unwrap_or_else(|error| panic!("must parse: {error}"));
+        assert!(wildcard.matches("image/png"));
+        assert!(wildcard.matches("image/heic"));
+        assert!(!wildcard.matches("video/mp4"));
+        assert!(!wildcard.matches("image"));
+    }
+
+    #[test]
+    fn attachment_ref_guard_matches_source_identity_style_printable_text() {
+        assert!(AttachmentRef::parse("mail-attachment/AAMkAGI2TQABAAACattach02").is_ok());
+        assert!(AttachmentRef::parse("").is_err());
+        assert!(AttachmentRef::parse("with\nnewline").is_err());
     }
 
     #[test]

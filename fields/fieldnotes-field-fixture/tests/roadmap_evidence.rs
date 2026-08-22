@@ -709,6 +709,65 @@ fn an_artifact_too_large_to_retain_stays_at_source_without_failing_the_run() {
 }
 
 #[test]
+fn a_type_excluded_attachment_is_declined_with_a_stable_reference_alongside_a_retained_one() {
+    // ADR 0007: the run's default media-type retention policy excludes
+    // video/mp4, so a well-behaved Field declines it while a plain-text
+    // attachment on the same record is staged and retained.
+    let case = Case::new("artifact-type-excluded-declined");
+    let run = case.incremental(MAIL_FIELD);
+
+    assert_eq!(run.report.outcome, RunOutcome::Complete);
+    assert!(run.rejection.is_none());
+    let declined = run
+        .actions
+        .iter()
+        .find_map(|action| match action {
+            CoreObservation::DeclinedArtifact { attachment_ref, .. } => {
+                Some(attachment_ref.clone())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the run must decline the video attachment: {:?}",
+                run.actions
+            )
+        });
+    assert_eq!(
+        declined, "mail-attachment/AAMkAGI2TQABAAACattach02",
+        "the declined artifact's stable reference is what core would project onto \
+         skipped_attachments"
+    );
+    assert!(
+        run.actions
+            .iter()
+            .any(|action| matches!(action, CoreObservation::InstalledArtifact { .. })),
+        "the plain-text attachment on the same record is retained independently of the \
+         declined one: {:?}",
+        run.actions
+    );
+    assert_eq!(run.committed_cursors.len(), 1);
+}
+
+#[test]
+fn a_hostile_field_staging_a_type_excluded_attachment_is_rejected_distinctly_from_oversized() {
+    let case = Case::new("artifact-type-excluded-hostile");
+    let run = case.incremental(MAIL_FIELD);
+
+    assert_eq!(
+        run.rejection_code(),
+        Some(RejectionCode::ArtifactTypeExcluded),
+        "a Field that stages an excluded type anyway must be rejected with its own code, \
+         distinct from artifact.oversized"
+    );
+    assert_eq!(run.report.outcome, RunOutcome::Failed);
+    assert!(
+        run.committed_cursors.is_empty(),
+        "a rejected record commits no further checkpoint"
+    );
+}
+
+#[test]
 fn an_artifact_past_the_run_bound_is_refused_before_anything_is_read() {
     let mut limits = fieldnotes_field_protocol::limits::Limits::ceilings();
     limits.max_artifact_bytes = 1024;

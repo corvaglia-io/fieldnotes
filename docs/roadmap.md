@@ -134,7 +134,13 @@ Deliver:
 - source-identity reconciliation that updates current state under a stable Note ID;
 - authoritative tombstone/snapshot deletion handling without revision or tombstone Notes;
 - diagnostic and credential-redaction infrastructure;
-- a connector conformance kit used by every later Field.
+- a connector conformance kit used by every later Field;
+- an explicit re-collection operation (ADR 0007) that finds Notes carrying
+  `skipped_attachments` and asks the owning Field to recollect exactly those
+  known source objects via `collect_request.recollect_targets`, re-evaluating
+  their attachments against the currently effective retention policy; this is
+  distinct from `sync`'s ordinary cursor-forward incremental pass, which never
+  revisits settled objects.
 
 The local Field is both useful and the executable reference implementation. It must exercise the same child-process boundary as live Fields.
 
