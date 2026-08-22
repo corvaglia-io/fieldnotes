@@ -1,0 +1,162 @@
+//! The approved v1 property registry: shared property names, scalar types,
+//! and list semantics.
+//!
+//! A property name has one meaning and one type everywhere in a notebook.
+//! Set-like lists are deduplicated and sorted by normalized text value;
+//! ordered lists preserve their registered role/generator order.
+
+use std::collections::BTreeMap;
+use std::sync::LazyLock;
+
+use fieldnotes_domain::ScalarKind;
+
+/// Whether a registered list's order carries meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListSemantics {
+    /// Deduplicated and sorted by normalized text value at serialization.
+    Set,
+    /// Source/role/generator order is preserved.
+    Ordered,
+}
+
+/// The registered shape of one property.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PropertyType {
+    /// A single scalar of the given kind.
+    Scalar(ScalarKind),
+    /// A homogeneous list of the given kind with the given order semantics.
+    List(ScalarKind, ListSemantics),
+}
+
+/// The frozen A1 registry of shared and derived-record property types.
+#[derive(Debug)]
+pub struct PropertyRegistry {
+    map: BTreeMap<&'static str, PropertyType>,
+}
+
+impl PropertyRegistry {
+    /// Looks up the registered type of a property name.
+    #[must_use]
+    pub fn lookup(&self, name: &str) -> Option<PropertyType> {
+        self.map.get(name).copied()
+    }
+
+    /// The frozen v1 registry.
+    #[must_use]
+    pub fn v1() -> &'static PropertyRegistry {
+        static REGISTRY: LazyLock<PropertyRegistry> = LazyLock::new(build_v1);
+        &REGISTRY
+    }
+}
+
+fn build_v1() -> PropertyRegistry {
+    use ListSemantics::{Ordered, Set};
+    use PropertyType::{List, Scalar};
+    use ScalarKind::{Bool, Datetime, Number, Text};
+
+    let mut map: BTreeMap<&'static str, PropertyType> = BTreeMap::new();
+    // Required Note properties (id/type are shared with every public record).
+    map.insert("id", Scalar(Text));
+    map.insert("instance_id", Scalar(Text));
+    map.insert("field_id", Scalar(Text));
+    map.insert("type", Scalar(Text));
+    map.insert("occurred_at", Scalar(Datetime));
+    // Shared Note properties.
+    map.insert("captured_at", Scalar(Datetime));
+    map.insert("started_at", Scalar(Datetime));
+    map.insert("ended_at", Scalar(Datetime));
+    map.insert("duration_seconds", Scalar(Number));
+    map.insert("source_scope", Scalar(Text));
+    map.insert("source_identity", Scalar(Text));
+    map.insert("source_parent_id", Scalar(Text));
+    map.insert("source_url", Scalar(Text));
+    map.insert("source_version", Scalar(Text));
+    map.insert("collected_by", List(Text, Set));
+    map.insert("content_hash", Scalar(Text));
+    map.insert("from", Scalar(Text));
+    map.insert("to", List(Text, Ordered));
+    map.insert("cc", List(Text, Ordered));
+    map.insert("bcc", List(Text, Ordered));
+    map.insert("organizer", Scalar(Text));
+    map.insert("participants", List(Text, Ordered));
+    map.insert("subject", Scalar(Text));
+    map.insert("title", Scalar(Text));
+    map.insert("thread_id", Scalar(Text));
+    map.insert("conversation_id", Scalar(Text));
+    map.insert("reply_to", Scalar(Text));
+    map.insert("related", List(Text, Set));
+    map.insert("attachments", List(Text, Ordered));
+    map.insert("artifacts", List(Text, Set));
+    map.insert("audio_duration_seconds", Scalar(Number));
+    map.insert("audio_media_type", Scalar(Text));
+    map.insert("identities", List(Text, Set));
+    map.insert("entities", List(Text, Set));
+    map.insert("damaged", Scalar(Bool));
+    map.insert("truncated", Scalar(Bool));
+    map.insert("lost_characters", Scalar(Number));
+    // Derived-record properties.
+    map.insert("generated_at", Scalar(Datetime));
+    map.insert("generator_version", Scalar(Text));
+    map.insert("source_note_id", Scalar(Text));
+    map.insert("evidence_spans", List(Text, Ordered));
+    map.insert("supported_by", List(Text, Set));
+    map.insert("confidence", Scalar(Number));
+    map.insert("subject_entity_id", Scalar(Text));
+    map.insert("from_entity_id", Scalar(Text));
+    map.insert("to_entity_id", Scalar(Text));
+    map.insert("first_seen", Scalar(Datetime));
+    map.insert("last_seen", Scalar(Datetime));
+    map.insert("channels", List(Text, Set));
+    map.insert("evidence_count", Scalar(Number));
+    map.insert("evidence", List(Text, Ordered));
+    map.insert("binding_status", Scalar(Text));
+    map.insert("entity_id", Scalar(Text));
+    map.insert("subject_identity", Scalar(Text));
+    map.insert("target_field_id", Scalar(Text));
+    map.insert("target_source_id", Scalar(Text));
+    map.insert("status", Scalar(Text));
+    map.insert("detected_at", Scalar(Datetime));
+    map.insert("candidate_fingerprints", List(Text, Set));
+    map.insert("involved_note_ids", List(Text, Set));
+    map.insert("producer_references", List(Text, Set));
+    map.insert("source_identities", List(Text, Set));
+    map.insert("source_scopes", List(Text, Set));
+    PropertyRegistry { map }
+}
+
+/// The bookkeeping properties excluded from `fn-record-v1` semantic encoding,
+/// in ascending ASCII order.
+pub const SEMANTIC_EXCLUSIONS: [&str; 9] = [
+    "captured_at",
+    "collected_by",
+    "content_hash",
+    "entities",
+    "field_id",
+    "id",
+    "instance_id",
+    "related",
+    "source_version",
+];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn registry_types_and_semantics() {
+        let registry = PropertyRegistry::v1();
+        assert_eq!(
+            registry.lookup("occurred_at"),
+            Some(PropertyType::Scalar(ScalarKind::Datetime))
+        );
+        assert_eq!(
+            registry.lookup("participants"),
+            Some(PropertyType::List(ScalarKind::Text, ListSemantics::Ordered))
+        );
+        assert_eq!(
+            registry.lookup("identities"),
+            Some(PropertyType::List(ScalarKind::Text, ListSemantics::Set))
+        );
+        assert_eq!(registry.lookup("chat_id"), None);
+    }
+}

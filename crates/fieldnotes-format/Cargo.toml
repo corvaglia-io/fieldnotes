@@ -7,6 +7,10 @@ publish = false
 
 [dependencies]
 fieldnotes-domain.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

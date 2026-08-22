@@ -35,6 +35,8 @@ fieldnotes-graph = { path = "crates/fieldnotes-graph" }
 fieldnotes-msgraph = { path = "crates/fieldnotes-msgraph" }
 fieldnotes-store = { path = "crates/fieldnotes-store" }
 fieldnotes-test-support = { path = "crates/fieldnotes-test-support" }
+# SHA-256 for the A1 hash domains (artifact bytes, fn-content-v1, fn-record-v1).
+sha2 = "0.10.9"
 
 [workspace.lints.rust]
 missing_docs = "warn"
