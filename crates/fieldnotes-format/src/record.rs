@@ -29,6 +29,15 @@ pub struct ParsedRecord {
 }
 
 impl ParsedRecord {
+    /// Assembles a record from already-typed values.
+    ///
+    /// Crate-internal on purpose: [`crate::build::RecordBuilder`] is the only
+    /// supported construction path, because it re-parses and validates the
+    /// emitted canonical bytes before any caller can persist them.
+    pub(crate) fn from_typed(id: RecordId, entries: Vec<(String, Value)>, body: String) -> Self {
+        ParsedRecord { id, entries, body }
+    }
+
     /// The record's kind-prefixed logical ID.
     #[must_use]
     pub fn id(&self) -> &RecordId {

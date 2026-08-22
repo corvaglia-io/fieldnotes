@@ -11,6 +11,15 @@ path = "src/main.rs"
 
 [dependencies]
 fieldnotes-app.workspace = true
+fieldnotes-domain.workspace = true
+fieldnotes-format.workspace = true
+fieldnotes-store.workspace = true
+clap.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+# Temporary notebooks for end-to-end binary tests.
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

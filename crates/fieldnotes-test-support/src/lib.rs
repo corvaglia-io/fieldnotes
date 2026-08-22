@@ -3,9 +3,13 @@
 //! Injected clocks and random sources for deterministic ID generation, plus
 //! helpers for locating the frozen golden fixture corpus.
 
+pub mod tempdir;
+
 use std::path::PathBuf;
 
 use fieldnotes_domain::{Clock, RandomSource};
+
+pub use tempdir::TempDir;
 
 /// The absolute path of the repository's `tests/fixtures` directory.
 #[must_use]

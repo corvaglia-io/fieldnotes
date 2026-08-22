@@ -9,8 +9,13 @@ publish = false
 fieldnotes-credentials.workspace = true
 fieldnotes-domain.workspace = true
 fieldnotes-field-protocol.workspace = true
+fieldnotes-format.workspace = true
 fieldnotes-graph.workspace = true
 fieldnotes-store.workspace = true
+
+[dev-dependencies]
+# Injected clocks/ID sources and temporary notebooks for use-case tests.
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

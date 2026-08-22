@@ -9,5 +9,9 @@ publish = false
 fieldnotes-domain.workspace = true
 fieldnotes-format.workspace = true
 
+[dev-dependencies]
+# Temporary directories and injected clocks/IDs for filesystem tests.
+fieldnotes-test-support.workspace = true
+
 [lints]
 workspace = true

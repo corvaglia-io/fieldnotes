@@ -229,6 +229,17 @@ pub enum ValidationError {
         /// The rejected value.
         value: String,
     },
+    /// A record was assembled with an empty Markdown body, which has no
+    /// canonical serialization: the blank line after the closing delimiter is a
+    /// file separator, so there would be no first body byte.
+    EmptyBody,
+    /// A record assembled from typed values did not survive its own canonical
+    /// round trip: re-parsing the emitted bytes produced a different typed
+    /// value for this property.
+    RoundTripMismatch {
+        /// The property whose value changed.
+        key: String,
+    },
     /// The instance metadata file violates the exact three-key schema.
     InvalidInstanceMetadata {
         /// A short reason.
@@ -290,6 +301,8 @@ impl ValidationError {
             ValidationError::FilenameMismatch { .. } => "filename.mismatch",
             ValidationError::BindingStatusViolation => "proposal.binding_status",
             ValidationError::UnknownProposalStatus { .. } => "proposal.unknown_status",
+            ValidationError::EmptyBody => "record.empty_body",
+            ValidationError::RoundTripMismatch { .. } => "record.round_trip_mismatch",
             ValidationError::InvalidInstanceMetadata { .. } => "instance.invalid_metadata",
         }
     }
@@ -432,6 +445,16 @@ impl fmt::Display for ValidationError {
             ValidationError::UnknownProposalStatus { value } => {
                 write!(f, "unknown proposal status `{value}`")
             }
+            ValidationError::EmptyBody => {
+                write!(
+                    f,
+                    "record body is empty; a record requires Markdown content"
+                )
+            }
+            ValidationError::RoundTripMismatch { key } => write!(
+                f,
+                "property `{key}` did not survive the canonical round trip"
+            ),
             ValidationError::InvalidInstanceMetadata { reason } => {
                 write!(f, "invalid instance metadata: {reason}")
             }

@@ -241,6 +241,40 @@ impl Datetime {
         })
     }
 
+    /// Builds a datetime from a Unix-epoch millisecond instant rendered in an
+    /// explicit numeric UTC offset.
+    ///
+    /// This is how an injected clock instant becomes a canonical
+    /// explicit-offset value: the kernel never formats datetimes by hand and
+    /// never depends on a platform timezone database. `offset_minutes` is the
+    /// source-local or client-local offset at that instant, in minutes east of
+    /// UTC; zero renders as `+00:00`, so the invalid `-00:00` spelling is
+    /// unrepresentable.
+    pub fn from_unix_millis(unix_millis: i64, offset_minutes: i16) -> Result<Self, DatetimeError> {
+        if !(-1439..=1439).contains(&offset_minutes) {
+            return Err(DatetimeError::OutOfRange);
+        }
+        let local_millis = unix_millis
+            .checked_add(i64::from(offset_minutes) * 60_000)
+            .ok_or(DatetimeError::OutOfRange)?;
+        let seconds = local_millis.div_euclid(1000);
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let millis = local_millis.rem_euclid(1000) as u32;
+        let days = seconds.div_euclid(86_400);
+        let seconds_of_day = seconds.rem_euclid(86_400);
+        let (year, month, day) = civil_from_days(days);
+        let year = u16::try_from(year).map_err(|_| DatetimeError::OutOfRange)?;
+        #[allow(clippy::cast_possible_truncation)]
+        Ok(Datetime {
+            date: Date { year, month, day },
+            hour: (seconds_of_day / 3600) as u8,
+            minute: (seconds_of_day % 3600 / 60) as u8,
+            second: (seconds_of_day % 60) as u8,
+            nanos: millis * 1_000_000,
+            offset_minutes,
+        })
+    }
+
     /// The calendar date in the datetime's own offset.
     #[must_use]
     pub fn date(&self) -> Date {
@@ -430,6 +464,27 @@ mod tests {
     fn unix_millis_matches_fixture_instance() -> Result<(), DatetimeError> {
         let created = Datetime::parse("2026-08-22T08:45:00+02:00")?;
         assert_eq!(created.unix_millis(), 1_787_381_100_000);
+        Ok(())
+    }
+
+    #[test]
+    fn builds_canonical_values_from_an_injected_clock_instant() -> Result<(), DatetimeError> {
+        // The same instant in two offsets, and the UTC spelling of zero.
+        let utc = Datetime::from_unix_millis(1_787_381_100_000, 0)?;
+        assert_eq!(utc.to_string(), "2026-08-22T06:45:00+00:00");
+        let local = Datetime::from_unix_millis(1_787_381_100_000, 120)?;
+        assert_eq!(local.to_string(), "2026-08-22T08:45:00+02:00");
+        assert!(utc.same_instant(&local));
+        // Sub-second precision is retained to the millisecond.
+        let fraction = Datetime::from_unix_millis(1_787_381_100_250, -300)?;
+        assert_eq!(fraction.to_string(), "2026-08-22T01:45:00.25-05:00");
+        // A negative instant stays on the correct civil day.
+        let epoch = Datetime::from_unix_millis(-1, 0)?;
+        assert_eq!(epoch.to_string(), "1969-12-31T23:59:59.999+00:00");
+        assert_eq!(
+            Datetime::from_unix_millis(0, 1440),
+            Err(DatetimeError::OutOfRange)
+        );
         Ok(())
     }
 
