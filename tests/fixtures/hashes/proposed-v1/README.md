@@ -115,6 +115,49 @@ Unicode-normalized before hashing — unlike the separate, deliberately
 different `fn-content-v1-sha256` Markdown-body algorithm below, which does
 require valid UTF-8 and does convert line endings.
 
+### Canonical extension registry additions (ADR 0008)
+
+[ADR 0008](../../../../docs/decisions/0008-extend-canonical-extension-registry.md)
+added nine rows to the canonical media-type-to-extension registry
+(`crates/fieldnotes-format/src/extension.rs`,
+`docs/artifacts.md#initial-canonical-extension-registry`). The artifact ID is
+a hash of bytes alone and never depends on media type (`docs/artifacts.md`
+"Original byte identity"), so these are media-type-to-extension and
+artifact-path vectors, not new hash inputs: they reuse the exact digest
+already established above for `artifact-input.bin`
+(`artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17`)
+and simply vary the *assumed detected or declared media type*, to show what
+`artifacts/<artifact-id>.<canonical-extension>` resolves to for each of the
+nine additions. No new byte payload is introduced by this vector, exactly
+like the existing `.bin`-fallback vector above.
+
+| Media type | Extension | Artifact path |
+|---|---|---|
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | `.docx` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.docx` |
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | `.xlsx` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.xlsx` |
+| `application/vnd.openxmlformats-officedocument.presentationml.presentation` | `.pptx` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.pptx` |
+| `application/vnd.oasis.opendocument.text` | `.odt` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.odt` |
+| `application/vnd.oasis.opendocument.spreadsheet` | `.ods` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.ods` |
+| `application/vnd.oasis.opendocument.presentation` | `.odp` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.odp` |
+| `text/csv` | `.csv` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.csv` |
+| `application/rtf` | `.rtf` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.rtf` |
+| `image/heic` | `.heic` | `artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.heic` |
+
+Two of these nine media types are also reliably content-detected (not merely
+declared): `application/rtf` from a fixed `{\rtf1` header, and `image/heic`
+from the ISO base media `ftyp` box's brand field. The other seven — the six
+Office Open XML/OpenDocument formats and `text/csv` — resolve to `.bin` under
+content sniffing alone even after this registry addition, because the Office
+Open XML and OpenDocument formats are ZIP containers indistinguishable from a
+plain `application/zip` by magic bytes without inspecting an internal archive
+member (deliberately not implemented, see ADR 0008), and CSV has no content
+signature at all. The extension-lookup rule itself (parameter-stripping,
+ASCII-lowercasing) applies identically to these nine rows and the original
+fifteen; `crates/fieldnotes-format/src/extension.rs`'s own test suite
+verifies both the mapping and that rule for each addition, plus the still-
+`.bin` outcome for the seven undetectable types and for a still-unregistered
+type such as the legacy binary Office formats.
+
 ## Normalized Markdown content hash
 
 Candidate public form:

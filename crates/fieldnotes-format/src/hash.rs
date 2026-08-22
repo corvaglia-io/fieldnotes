@@ -96,6 +96,65 @@ mod tests {
         );
     }
 
+    /// The known artifact ID for `tests/fixtures/hashes/proposed-v1/artifact-input.bin`,
+    /// reused (per that corpus's README) to demonstrate the ADR 0008
+    /// registry additions without introducing a new byte payload: the
+    /// artifact ID depends only on bytes, never on media type, so varying
+    /// the assumed media type here only changes the resolved extension.
+    const KNOWN_ARTIFACT_ID: &str =
+        "artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17";
+
+    #[test]
+    fn adr_0008_artifact_path_vectors_match_the_documented_corpus_table()
+    -> Result<(), fieldnotes_domain::IdError> {
+        let id = ArtifactId::parse(KNOWN_ARTIFACT_ID)?;
+        for (media_type, expected_path) in [
+            (
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.docx",
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.xlsx",
+            ),
+            (
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.pptx",
+            ),
+            (
+                "application/vnd.oasis.opendocument.text",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.odt",
+            ),
+            (
+                "application/vnd.oasis.opendocument.spreadsheet",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.ods",
+            ),
+            (
+                "application/vnd.oasis.opendocument.presentation",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.odp",
+            ),
+            (
+                "text/csv",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.csv",
+            ),
+            (
+                "application/rtf",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.rtf",
+            ),
+            (
+                "image/heic",
+                "artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc558b91aab17.heic",
+            ),
+        ] {
+            assert_eq!(
+                artifact_relative_path(&id, Some(media_type)),
+                expected_path,
+                "{media_type} must resolve to {expected_path}"
+            );
+        }
+        Ok(())
+    }
+
     #[test]
     fn domain_prefixes_separate_the_hash_spaces() {
         let body = "x\n";

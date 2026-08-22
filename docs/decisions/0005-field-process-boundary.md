@@ -1,6 +1,8 @@
 # ADR 0005: Minimal trusted Field process boundary
 
-- **Status:** Proposed; protocol schema requires a dedicated follow-up
+- **Status:** Accepted. The dedicated protocol-schema follow-up this ADR
+  called for is the [A2 Field protocol package](../approvals/A2-field-protocol.md),
+  approved on 2026-08-23.
 - **Date:** 2026-08-22
 
 ## Context

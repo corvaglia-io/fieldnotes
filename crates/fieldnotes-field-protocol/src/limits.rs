@@ -367,12 +367,13 @@ pub const MAX_ARTIFACT_MEDIA_TYPES: usize = 128;
 ///
 /// This is a **default**, not a ceiling: a notebook may configure a
 /// different include set entirely, in either direction, exactly like
-/// [`Limits::max_artifact_bytes`]'s configurable default. Ten of these twenty
-/// media types have no entry in A1's canonical extension registry today and
-/// so fall back to the `.bin` extension if retained; that is a real gap the
-/// extension registry does not close, tracked by the ADR rather than solved
-/// here, because retention policy and extension naming are deliberately
-/// orthogonal.
+/// [`Limits::max_artifact_bytes`]'s configurable default. ADR 0008 gave all
+/// twenty of these media types a canonical extension, so a retained original
+/// is named correctly whenever its media type is known. Content detection
+/// alone still cannot identify seven of them — the Office and OpenDocument
+/// formats share ZIP magic bytes, and CSV has no signature at all — so those
+/// resolve to `.bin` until a Field supplies the media type from upstream
+/// metadata. Retention policy and extension naming remain orthogonal.
 ///
 /// # Panics
 ///

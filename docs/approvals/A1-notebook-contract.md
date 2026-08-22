@@ -58,6 +58,31 @@ and consequences in
    are not. `source_url` remains present in frontmatter in both cases, so
    provenance never depends on a retention outcome that can later change.
 
+**2026-08-23:** The owner approved extending A1's frozen canonical
+media-type-to-extension registry, recorded with rationale, rejected
+alternatives, and consequences in
+[ADR 0008](../decisions/0008-extend-canonical-extension-registry.md):
+
+8. Nine media types ADR 0007's default artifact-retention include set names
+   but A1's registry could not name gain a canonical extension: the three
+   Office Open XML formats (`.docx`, `.xlsx`, `.pptx`), the three
+   OpenDocument formats (`.odt`, `.ods`, `.odp`), `text/csv` (`.csv`),
+   `application/rtf` (`.rtf`), and `image/heic` (`.heic`). Section 2 is
+   amended to state the extended table
+   ([Artifacts and renditions](../artifacts.md#initial-canonical-extension-registry)).
+   The addition is a pure extension: no existing row's extension changes,
+   and content-addressed reuse is by artifact-ID filename stem, not
+   extension, so a byte sequence already stored under `.bin` before this
+   amendment stays reused under that name rather than being duplicated.
+   Content detection reliably identifies two of the nine (`application/rtf`
+   and `image/heic`); the other seven still resolve to `.bin` under content
+   sniffing alone, because the six Office/OpenDocument types are ZIP
+   containers indistinguishable from a plain archive by magic bytes without
+   inspecting an internal archive member (deliberately not implemented here)
+   and `text/csv` has no content signature at all. A golden fixture and hash
+   vectors covering the new mappings are added to the review corpus (see the
+   fixture-evidence list below).
+
 Ruling 6 adds one new registered property with fixture evidence, per the
 change policy's requirement that a new shared property go through registry
 review with fixtures. Ruling 7 states explicitly a body-rendering
@@ -794,6 +819,8 @@ release to cover at least:
 - damaged/truncated material;
 - exact artifact bytes, canonical extension, artifact ID, relative link, and
   byte hash;
+- media-type-to-extension and artifact-path vectors for the nine rows ADR
+  0008 added to the canonical extension registry;
 - a Note carrying `skipped_attachments` alongside a retained attachment,
   demonstrating that the two lists are independent and that the retained
   attachment's link targets the local artifact path while the skipped one's

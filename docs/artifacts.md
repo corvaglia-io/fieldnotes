@@ -61,22 +61,33 @@ must use a separate approved logical record rather than changing byte identity.
 ## Initial canonical extension registry
 
 Strip media-type parameters and ASCII-lowercase the type/subtype before exact
-lookup. The v0.1 A1 mapping is:
+lookup. The v0.1 A1 mapping, extended by
+[ADR 0008](decisions/0008-extend-canonical-extension-registry.md) with the
+nine document/image rows marked below, is:
 
 | Media type | Extension |
 |---|---|
 | `application/json` | `.json` |
 | `application/pdf` | `.pdf` |
+| `application/rtf` (ADR 0008) | `.rtf` |
+| `application/vnd.oasis.opendocument.presentation` (ADR 0008) | `.odp` |
+| `application/vnd.oasis.opendocument.spreadsheet` (ADR 0008) | `.ods` |
+| `application/vnd.oasis.opendocument.text` (ADR 0008) | `.odt` |
+| `application/vnd.openxmlformats-officedocument.presentationml.presentation` (ADR 0008) | `.pptx` |
+| `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` (ADR 0008) | `.xlsx` |
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (ADR 0008) | `.docx` |
 | `application/zip` | `.zip` |
 | `audio/mp4` | `.m4a` |
 | `audio/mpeg` | `.mp3` |
 | `audio/ogg` | `.ogg` |
 | `audio/wav` | `.wav` |
 | `image/gif` | `.gif` |
+| `image/heic` (ADR 0008) | `.heic` |
 | `image/jpeg` | `.jpg` |
 | `image/png` | `.png` |
 | `image/svg+xml` | `.svg` |
 | `image/webp` | `.webp` |
+| `text/csv` (ADR 0008) | `.csv` |
 | `text/markdown` | `.md` |
 | `text/plain` | `.txt` |
 | `video/mp4` | `.mp4` |
@@ -84,7 +95,19 @@ lookup. The v0.1 A1 mapping is:
 An unlisted, unavailable, or conflicting detected media type uses `.bin`.
 Source filenames and source-declared types are labels and cannot override this
 result. Adding or changing a mapping is a notebook-format compatibility change;
-aliases do not create several stored paths for the same artifact ID.
+aliases do not create several stored paths for the same artifact ID. Adding a
+row never changes an existing row's extension, so it cannot invalidate an
+original already stored under that extension.
+
+Detection is content-based (see
+`crates/fieldnotes-format/src/extension.rs`), and it cannot identify every
+ADR 0008 addition: the three Office Open XML formats and the three
+OpenDocument formats are ZIP containers indistinguishable from a plain
+`application/zip` by magic bytes alone, so content detection alone never
+selects one of those six rows today; only a caller that supplies the media
+type explicitly can. `text/csv` has no content signature at all and reads as
+`text/plain`. `application/rtf` and `image/heic` are detected reliably (a
+fixed text header, and the ISO base media `ftyp` brand, respectively).
 
 ## Retention policy (proposed at A2)
 
@@ -106,12 +129,14 @@ An attachment excluded by either gate is never staged, hashed, or retained; it
 produces a `not_retained` artifact reference and its stable reference is
 recorded in the Note's `skipped_attachments` property instead. See
 [ADR 0007](decisions/0007-attachment-retention-policy.md) for the full
-rationale, including a cross-check showing that several of the default
-include set's media types (the Office and OpenDocument document formats, CSV,
-RTF, and HEIC) have no entry in the canonical extension registry above and so
-still fall back to `.bin` if retained — a real gap this policy does not close,
-left to a future extension-registry review. Nothing in this section is in
-force until A2 is approved.
+rationale, including a cross-check that originally showed nine of the default
+include set's twenty media types (the Office and OpenDocument document
+formats, CSV, RTF, and HEIC) had no entry in the canonical extension registry
+above and so fell back to `.bin` if retained. That naming gap is now closed by
+[ADR 0008](decisions/0008-extend-canonical-extension-registry.md); see the
+registry section above for the detection caveat that keeps six of those nine
+row additions from being selected by content sniffing alone. Nothing in this
+section is in force until A2 is approved.
 
 ## Import and collection
 
