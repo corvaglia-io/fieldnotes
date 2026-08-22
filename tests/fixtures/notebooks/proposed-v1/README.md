@@ -1,7 +1,8 @@
 # Proposed A1 notebook fixtures, version 1
 
-This directory is a byte-exact proposal for the A1 notebook contract. It is
-review material, not an approved compatibility corpus. Files use UTF-8, LF line
+This directory is a byte-exact proposal for the A1 notebook contract. The user
+approved A1 on 2026-08-22, so these bytes are now frozen as the approved IG1
+implementation target rather than review material. Files use UTF-8, LF line
 endings, deterministic property ordering, and exactly one blank line between
 frontmatter and Markdown body.
 
@@ -46,8 +47,8 @@ as inline code rather than a clickable link because payload files are not part
 of this notebook-shape corpus. Those three ID literals demonstrate reference
 syntax only; the independently reproducible exact-byte artifact vector is in
 `../../hashes/proposed-v1/`. Semantic-record conflict fingerprints are
-verified candidate vectors; they become normative only if A1 approves their
-canonical encoding.
+verified vectors whose canonical encoding was approved at A1 and is now
+normative.
 
 The package inventory is readable Markdown rather than nested frontmatter. The
 package schema and checksums remain a later approval, so the manifest uses only
@@ -68,4 +69,4 @@ ordered by ascending proposed semantic-record fingerprint.
 | Extraction and Observation | Normative only for the generic A1 derived-record envelope | `0.1.8` approves capability-specific types, evidence units, properties, and generators |
 | Package manifest | Normative for `pkg_`, directory/name, and generic flat manifest envelope only | `0.1.7` approves selection, closure, checksums, encryption, and lifecycle semantics |
 | Artifact IDs and paths embedded in Notes | Normative syntax examples; the absent payloads and their illustrative IDs are not end-to-end vectors | IG1 adds matching stored payload fixtures; `0.1.7` approves rendition layout |
-| Standalone artifact/hash corpus | Normative candidate algorithm vector if A1 is approved | IG1 adds arbitrary binary and normalization boundary vectors |
+| Standalone artifact/hash corpus | Normative algorithm vector approved at A1 | IG1 adds arbitrary binary and normalization boundary vectors |

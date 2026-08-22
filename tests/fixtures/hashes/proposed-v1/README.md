@@ -1,7 +1,7 @@
 # Proposed v1 hash and canonicalization vectors
 
-**Status:** A1 proposal; not an approved compatibility contract  
-**Implementation:** None. These files specify candidate byte inputs and expected digests for review.
+**Status:** Approved at A1 on 2026-08-22; frozen as the compatibility contract  
+**Implementation:** None yet. These files specify the approved byte inputs and expected digests; IG1 adds the executable implementation.
 
 ## Rules shared by these vectors
 

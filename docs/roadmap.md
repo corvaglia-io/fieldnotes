@@ -41,6 +41,8 @@ The approved tree, crate responsibility table, dependency rules, toolchain polic
 
 ## Approval milestone A1: public notebook contract
 
+**Status:** Approved on 2026-08-22; IG1 implementation in progress.
+
 Approve exact, byte-visible fixtures before multiple agents generate notebook content. The fixture set must cover:
 
 - instance metadata;

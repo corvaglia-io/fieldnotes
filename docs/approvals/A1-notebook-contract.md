@@ -1,15 +1,17 @@
 # A1 approval: public notebook contract
 
-**Status:** Ready for explicit user approval  
+**Status:** Approved by the user on 2026-08-22  
 **Scope:** Public file identities, filenames, frontmatter, hashes, merge behavior,
 artifact references, derived records, conflicts, proposals, and package envelopes
 
 ## Decision requested
 
 A1 freezes the byte-visible notebook contract that core writers, Fields,
-fixtures, generic readers, and later releases must share. The recommendation is
+fixtures, generic readers, and later releases must share. The recommendation was
 to approve the choices in this document together with the integrated candidate
-golden fixtures and hash vectors.
+golden fixtures and hash vectors. The user has explicitly approved every choice
+below, together with the integrated candidate fixture corpus and hash vectors,
+on 2026-08-22; the contract in this document is now frozen.
 
 The review corpus is attached as:
 
@@ -710,64 +712,64 @@ that reviewers can independently reproduce.
 
 ## Explicit approval checklist
 
-A1 is approved only if the user explicitly accepts each checked choice below
+A1 is approved because the user explicitly accepted each checked choice below,
 and the integrated fixtures match it.
 
 ### Identity and naming
 
-- [ ] Lowercase hyphenated UUIDv7 with `fn_`, `note_`, `ext_`, `obs_`, `ent_`,
+- [x] Lowercase hyphenated UUIDv7 with `fn_`, `note_`, `ext_`, `obs_`, `ent_`,
   `rel_`, `prop_`, `pkg_`, and `conf_` prefixes for logical records.
-- [ ] The `.fieldnotes/instance.yaml` operational metadata exception, exact
+- [x] The `.fieldnotes/instance.yaml` operational metadata exception, exact
   three-key schema/order, and creation-time agreement with its `fn_` UUIDv7.
-- [ ] Content-addressed `artifact_sha256_<hex>` as the exception for immutable
+- [x] Content-addressed `artifact_sha256_<hex>` as the exception for immutable
   original bytes, instead of UUIDv7 artifact metadata IDs.
-- [ ] Flat original path `artifacts/<artifact-id>.<canonical-extension>`, the
+- [x] Flat original path `artifacts/<artifact-id>.<canonical-extension>`, the
   initial media-type extension registry, and artifact-ID-only references in
   `artifacts`/`attachments`.
-- [ ] UTC Note filename grammar and explicit-offset RFC 3339 frontmatter.
-- [ ] Field stem/label, property name, primary type, byte-length, and registered
+- [x] UTC Note filename grammar and explicit-offset RFC 3339 frontmatter.
+- [x] Field stem/label, property name, primary type, byte-length, and registered
   prefix grammars exactly as recommended.
-- [ ] The eleven primary Note types and the mail/message, event/meeting,
+- [x] The eleven primary Note types and the mail/message, event/meeting,
   file/document, and voice/call distinctions.
 
 ### Serialization and hashes
 
-- [ ] UTF-8/LF/frontmatter/body boundary and the strict flat YAML subset.
-- [ ] Required structural keys first, then remaining keys in ascending ASCII
+- [x] UTF-8/LF/frontmatter/body boundary and the strict flat YAML subset.
+- [x] Required structural keys first, then remaining keys in ascending ASCII
   order; registered set-like lists sorted/deduplicated.
-- [ ] `fn-content-v1-sha256` over the exact recommended normalized body bytes
+- [x] `fn-content-v1-sha256` over the exact recommended normalized body bytes
   with the `fieldnotes-content-v1\0` domain separator.
-- [ ] Internal `fn-record-v1-sha256` canonical semantic comparison and vectors,
+- [x] Internal `fn-record-v1-sha256` canonical semantic comparison and vectors,
   with the approved bookkeeping exclusions.
-- [ ] Original artifact SHA-256 hashes exact bytes and is never compared as a
+- [x] Original artifact SHA-256 hashes exact bytes and is never compared as a
   Note/source/content identity.
-- [ ] Candidate fixtures and hash vectors are byte-for-byte correct within the
+- [x] Candidate fixtures and hash vectors are byte-for-byte correct within the
   A1-versus-later-gate classification stated by each corpus README.
 
 ### Current state, merge, and conflicts
 
-- [ ] Required Note properties and external `(source_scope, source_identity)`
+- [x] Required Note properties and external `(source_scope, source_identity)`
   identity.
-- [ ] Atomic current-state update under the same Note ID, authoritative deletion,
+- [x] Atomic current-state update under the same Note ID, authoritative deletion,
   no revision ledger/tombstone history, and refetch recovery.
-- [ ] Lexicographically smaller Note-ID survivor for exact-source duplicates,
+- [x] Lexicographically smaller Note-ID survivor for exact-source duplicates,
   reliable `source_version` selecting content, and conflicts when unordered.
-- [ ] `collected_by` contains all producers including the primary pair when
+- [x] `collected_by` contains all producers including the primary pair when
   emitted, and is omitted for a single producer.
-- [ ] Same Note ID with divergent content is always a conflict; content-hash
+- [x] Same Note ID with divergent content is always a conflict; content-hash
   equality alone never removes contextual Notes.
-- [ ] `conflicts/<conf-id>/` bundle layout, no active candidate while unresolved,
+- [x] `conflicts/<conf-id>/` bundle layout, no active candidate while unresolved,
   and durable private intent for human resolution.
 
 ### Derived and downstream-facing records
 
-- [ ] Non-timestamped derived filename forms and UUIDv7 projection IDs.
-- [ ] Proposal file envelope, `entity_update`, public projected status
+- [x] Non-timestamped derived filename forms and UUIDv7 projection IDs.
+- [x] Proposal file envelope, `entity_update`, public projected status
   vocabulary, closed binding-status states with no stale `entity_id`, stable
   subject-anchor rebinding, and private durable review intent.
-- [ ] `pkg_` package ID and `packages/<pkg-id>/manifest.md` envelope are reserved,
+- [x] `pkg_` package ID and `packages/<pkg-id>/manifest.md` envelope are reserved,
   while full handback schema remains deferred to `0.1.7`.
-- [ ] A1's compatibility/change policy and the explicit boundaries left for A2
+- [x] A1's compatibility/change policy and the explicit boundaries left for A2
   and later release gates.
 
 ## Approval effect

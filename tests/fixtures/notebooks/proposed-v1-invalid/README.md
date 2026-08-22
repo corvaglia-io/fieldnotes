@@ -1,6 +1,7 @@
 # Proposed v1 invalid notebook fixtures
 
-**Status:** Candidate negative corpus for A1 approval
+**Status:** Approved negative corpus at A1 on 2026-08-22; frozen as the IG1
+implementation target
 
 Every Note fixture listed below is intentionally invalid and should be rejected
 by the proposed v1 validator. Each fixture isolates one primary error; the
