@@ -61,10 +61,6 @@ const EXPECTED: [(&str, &str); 13] = [
         "property.unknown_unprefixed",
     ),
     (
-        "20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0a.md",
-        "security.secret_detected",
-    ),
-    (
         "20260822T093614Z_local_work_file_note_01a028d5-90c0-7248-a74b-c8bc1085ab0b.md",
         "source.scope_required",
     ),
@@ -75,6 +71,10 @@ const EXPECTED: [(&str, &str); 13] = [
     (
         "20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0d.md",
         "frontmatter.document_marker",
+    ),
+    (
+        "20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0e.md",
+        "property.foreign_prefix",
     ),
 ];
 
@@ -146,9 +146,9 @@ fn rejections_carry_specific_error_details() -> TestResult {
         other => return Err(format!("unexpected result: {other:?}").into()),
     }
     match check_fixture(
-        &root.join("20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0a.md"),
+        &root.join("20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0e.md"),
     ) {
-        Err(ValidationError::SecretDetected { key }) => assert_eq!(key, "source_url"),
+        Err(ValidationError::ForeignPrefix { key }) => assert_eq!(key, "teams_chat_id"),
         other => return Err(format!("unexpected result: {other:?}").into()),
     }
     Ok(())

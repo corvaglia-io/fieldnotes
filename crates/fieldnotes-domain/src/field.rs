@@ -1,10 +1,15 @@
-//! Field IDs, the registered Field-stem set, and connector property prefixes.
+//! Field IDs, the registered Field set, and connector property prefixes.
 //!
-//! `self` is the only one-part Field ID. External Field IDs are
+//! `self` is the registered built-in one-part Field ID; it contributes no
+//! property prefix. External Field IDs are
 //! `<registered-field-stem>_<user-label>`, where both parts match
 //! `[a-z][a-z0-9]*(?:_[a-z0-9]+)*`, each part is at most 31 ASCII bytes, and
 //! the complete ID is at most 63 bytes. The stem/label split is validated
 //! against the configured registered stem set, never guessed from underscores.
+//! [`FieldStemRegistry::property_prefix_for`] is the single place that maps a
+//! Field ID (or a candidate property name) to the property prefix it
+//! contributes; `self` yields `None` because it never matches a `<stem>_`
+//! pattern, not because of a literal-string special case.
 
 use core::fmt;
 use std::sync::LazyLock;
@@ -64,16 +69,18 @@ pub fn is_valid_field_part(part: &str) -> bool {
     })
 }
 
-/// The configured set of registered external Field stems.
-///
-/// `self` is not a stem: it is the reserved one-part built-in Field ID.
+/// The configured set of registered Fields: the built-in one-part `self`
+/// Field, which contributes no property prefix, plus external stems that
+/// pair with a user label and contribute `<stem>_` as their property prefix.
 #[derive(Debug, Clone)]
 pub struct FieldStemRegistry {
+    one_part: String,
     stems: Vec<String>,
 }
 
 impl FieldStemRegistry {
-    /// Builds a registry from external stems, rejecting invalid or over-long parts.
+    /// Builds a registry from external stems, rejecting invalid or over-long
+    /// parts. The built-in one-part Field (`self`) is always registered.
     pub fn new<I>(stems: I) -> Result<Self, FieldIdError>
     where
         I: IntoIterator,
@@ -90,14 +97,19 @@ impl FieldStemRegistry {
             }
             collected.push(stem);
         }
-        Ok(FieldStemRegistry { stems: collected })
+        Ok(FieldStemRegistry {
+            one_part: "self".to_owned(),
+            stems: collected,
+        })
     }
 
-    /// The approved v0.1 external stems: `local`, `outlook_mail`,
-    /// `outlook_calendar`, `outlook_contacts`, `teams`, and `jira`.
+    /// The approved v0.1 registry: the built-in `self` Field plus external
+    /// stems `local`, `outlook_mail`, `outlook_calendar`, `outlook_contacts`,
+    /// `teams`, and `jira`.
     #[must_use]
     pub fn v1() -> &'static Self {
         static REGISTRY: LazyLock<FieldStemRegistry> = LazyLock::new(|| FieldStemRegistry {
+            one_part: "self".to_owned(),
             stems: [
                 "local",
                 "outlook_mail",
@@ -113,7 +125,8 @@ impl FieldStemRegistry {
         &REGISTRY
     }
 
-    /// Iterates the registered external stems.
+    /// Iterates the registered external stems (excluding the built-in
+    /// one-part `self` Field, which contributes no stem).
     pub fn stems(&self) -> impl Iterator<Item = &str> {
         self.stems.iter().map(String::as_str)
     }
@@ -122,10 +135,23 @@ impl FieldStemRegistry {
     /// (`<stem>_` followed by at least one more byte).
     #[must_use]
     pub fn has_registered_prefix(&self, name: &str) -> bool {
-        self.stems.iter().any(|stem| {
-            name.strip_prefix(stem.as_str())
-                .and_then(|rest| rest.strip_prefix('_'))
-                .is_some_and(|rest| !rest.is_empty())
+        self.property_prefix_for(name).is_some()
+    }
+
+    /// The property prefix contributed by `field_id`: the matching registered
+    /// stem, or `None` when nothing matches — which includes the built-in
+    /// one-part Field (`self`), since it never begins with a `<stem>_`
+    /// pattern.
+    ///
+    /// This is the single place that maps a Field ID (or a candidate property
+    /// name) to its connector prefix, so callers never need to special-case
+    /// the literal `self` string themselves.
+    #[must_use]
+    pub fn property_prefix_for(&self, field_id: &str) -> Option<&str> {
+        self.stems.iter().find_map(|stem| {
+            let rest = field_id.strip_prefix(stem.as_str())?;
+            let label = rest.strip_prefix('_')?;
+            (!label.is_empty()).then_some(stem.as_str())
         })
     }
 }
@@ -135,9 +161,9 @@ impl FieldStemRegistry {
 pub struct FieldId(String);
 
 impl FieldId {
-    /// Validates `text` against the configured registered stem set.
+    /// Validates `text` against the configured registered Field set.
     pub fn parse(text: &str, registry: &FieldStemRegistry) -> Result<Self, FieldIdError> {
-        if text == "self" {
+        if text == registry.one_part {
             return Ok(FieldId(text.to_owned()));
         }
         if text.len() > 63 {
@@ -243,5 +269,19 @@ mod tests {
         assert!(registry.has_registered_prefix("local_media_type"));
         assert!(!registry.has_registered_prefix("outlook_mail_"));
         assert!(!registry.has_registered_prefix("chat_id"));
+    }
+
+    #[test]
+    fn property_prefix_for_yields_the_matching_stem_and_none_for_self() {
+        let registry = FieldStemRegistry::v1();
+        assert_eq!(
+            registry.property_prefix_for("outlook_mail_work"),
+            Some("outlook_mail")
+        );
+        assert_eq!(registry.property_prefix_for("teams_chat_id"), Some("teams"));
+        // `self` never matches a `<stem>_` pattern, so it naturally yields
+        // `None` without any special-cased literal comparison here.
+        assert_eq!(registry.property_prefix_for("self"), None);
+        assert_eq!(registry.property_prefix_for("chat_id"), None);
     }
 }

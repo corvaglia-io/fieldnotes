@@ -24,10 +24,23 @@ not accidentally depend on an unrelated rule.
 | `20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab07.md` | `occurred_at` has no UTC offset | `datetime.offset_required` |
 | `20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab08.md` | list-typed `participants` is emitted as a scalar | `property.list_required` |
 | `20260822T093614Z_teams_work_message_note_01a028d5-90c0-7248-a74b-c8bc1085ab09.md` | Teams Note uses unknown unprefixed `chat_id` | `property.unknown_unprefixed` |
-| `20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0a.md` | registered `source_url` contains an access-token canary | `security.secret_detected` |
 | `20260822T093614Z_local_work_file_note_01a028d5-90c0-7248-a74b-c8bc1085ab0b.md` | external Note has `source_identity` but no `source_scope` | `source.scope_required` |
 | `20260822T093615Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0c.md` | filename UTC second disagrees with valid frontmatter | `filename.mismatch` |
 | `20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0d.md` | frontmatter contains an explicit YAML document-end marker | `frontmatter.document_marker` |
+| `20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0e.md` | `self` Note carries a foreign `teams_` connector-prefixed property | `property.foreign_prefix` |
 
 Tests may report a more specific parse location in addition to the conceptual
 error. They must not accept, normalize, or silently discard the invalid value.
+
+## Withdrawn fixtures
+
+`20260822T093614Z_self_text_note_01a028d5-90c0-7248-a74b-c8bc1085ab0a.md`
+(`security.secret_detected`, a registered `source_url` containing an
+access-token canary) was withdrawn by approved amendment (ruling 3, 2026-08-22):
+Fieldnotes does not scan or reject notebook content for secrets, passwords,
+tokens, or credentials. A credential appearing in collected evidence was put
+there by a person or upstream system; rejecting it would discard evidence and
+be unfixable by the user. The real invariant — Fieldnotes never writes
+credentials it holds into notebooks — is enforced elsewhere (the
+CredentialProvider boundary, protected secret delivery, log redaction, and
+release-gate scanning of Fieldnotes' own output), not by content validation.

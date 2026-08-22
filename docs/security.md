@@ -172,6 +172,39 @@ Tests use unique secret canaries and verify their absence from argv, inherited
 environment, stdout, stderr, logs, diagnostics, cursors, Notes, artifacts,
 archives, handback packages, and crash-recovery files.
 
+## Credential handling is an internal boundary, not content scanning
+
+Credential protection is entirely about how Fieldnotes handles credentials it
+holds, never about scanning collected evidence for secret-looking text.
+Enforcement is by design and by release-gate scanning of Fieldnotes' own
+output:
+
+- the `CredentialProvider` abstraction and OS keychain integrations (`0.1.3`);
+- protected secret delivery to Field processes rather than command-line
+  arguments;
+- diagnostic and log redaction, described above;
+- release gates R3 and R9 scanning argv, logs, diagnostics, cursors, Notes,
+  and artifacts for credential leakage before release.
+
+Fieldnotes performs **no secret or password scanning of notebook content**,
+and never rejects a Note or other collected evidence for containing
+secret-looking text. A credential appearing in a Note body was put there by a
+person or upstream system, not by Fieldnotes; rejecting it would discard real
+evidence, be unfixable by the user (who cannot edit the upstream mail), and
+permanently break sync for that source — one colleague pasting an API key
+into an email must not brick a mail Field. Entropy-based detection is also
+rejected as a mechanism: `content_hash` values, artifact IDs, and UUIDs are
+legitimately high-entropy and would false-positive under an entropy
+heuristic, rejecting the approved fixtures themselves.
+
+The masking use case this might otherwise motivate is served, if ever
+approved, by a future, optional PII-detection capability at the `0.1.8`
+enhancement gate, modelled as an Extraction: evidence-backed spans over exact
+normalized-body offsets that point at text a user may choose to mask, never
+altering the Note. Any such capability must remain optional, outside the
+default build, and require no model download, GPU, or network by default. Its
+schema is not approved; see [ADR 0006](decisions/0006-a1-implementation-rulings.md).
+
 ## Source identity and privacy
 
 `source_scope` must be portable and stable across instances but non-secret. It

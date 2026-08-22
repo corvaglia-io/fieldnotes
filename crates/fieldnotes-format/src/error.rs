@@ -2,7 +2,7 @@
 //!
 //! Variants map onto the conceptual error names used by the approved invalid
 //! corpus (`frontmatter.nested_mapping`, `datetime.offset_required`,
-//! `security.secret_detected`, `filename.mismatch`, ...) via
+//! `property.foreign_prefix`, `filename.mismatch`, ...) via
 //! [`ValidationError::conceptual_label`].
 
 use core::fmt;
@@ -129,6 +129,13 @@ pub enum ValidationError {
         /// The offending property name.
         key: String,
     },
+    /// A Note carries a connector-prefixed property whose registered stem is
+    /// not the Note's own `field_id` stem (or the Note is `self`, which
+    /// contributes no prefix at all).
+    ForeignPrefix {
+        /// The offending property name.
+        key: String,
+    },
     /// A scalar does not have the registered type for its property.
     TypeMismatch {
         /// The offending property name.
@@ -207,11 +214,6 @@ pub enum ValidationError {
     },
     /// A `content_hash` value is not `fn-content-v1-sha256:<64-lowercase-hex>`.
     InvalidContentHash,
-    /// A frontmatter text value contains a secret indicator.
-    SecretDetected {
-        /// The property carrying the secret.
-        key: String,
-    },
     /// The actual filename disagrees with the name computed from frontmatter.
     FilenameMismatch {
         /// The expected canonical filename.
@@ -265,6 +267,7 @@ impl ValidationError {
             ValidationError::UnknownUnprefixed { .. } => "property.unknown_unprefixed",
             ValidationError::ListRequired { .. } => "property.list_required",
             ValidationError::ScalarRequired { .. } => "property.scalar_required",
+            ValidationError::ForeignPrefix { .. } => "property.foreign_prefix",
             ValidationError::TypeMismatch { .. } => "property.type_mismatch",
             ValidationError::OffsetRequired { .. } => "datetime.offset_required",
             ValidationError::NegativeZeroOffset { .. } => "datetime.negative_zero_offset",
@@ -284,7 +287,6 @@ impl ValidationError {
                 "record.attachment_not_in_artifacts"
             }
             ValidationError::InvalidContentHash => "record.invalid_content_hash",
-            ValidationError::SecretDetected { .. } => "security.secret_detected",
             ValidationError::FilenameMismatch { .. } => "filename.mismatch",
             ValidationError::BindingStatusViolation => "proposal.binding_status",
             ValidationError::UnknownProposalStatus { .. } => "proposal.unknown_status",
@@ -365,6 +367,12 @@ impl fmt::Display for ValidationError {
             ValidationError::ScalarRequired { key } => {
                 write!(f, "property `{key}` must be a scalar")
             }
+            ValidationError::ForeignPrefix { key } => {
+                write!(
+                    f,
+                    "property `{key}` uses a connector prefix that does not belong to this Note's field"
+                )
+            }
             ValidationError::TypeMismatch { key, expected } => {
                 write!(f, "property `{key}` must be {}", expected.as_str())
             }
@@ -409,9 +417,6 @@ impl fmt::Display for ValidationError {
                 write!(f, "attachment `{value}` does not appear in artifacts")
             }
             ValidationError::InvalidContentHash => write!(f, "invalid content_hash value form"),
-            ValidationError::SecretDetected { key } => {
-                write!(f, "secret indicator detected in `{key}`")
-            }
             ValidationError::FilenameMismatch { expected, actual } => {
                 write!(
                     f,

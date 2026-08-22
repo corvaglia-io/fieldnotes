@@ -1,6 +1,10 @@
 # A1 implementation findings from IG1
 
-**Status:** Open questions for the coordinator; no approved contract changed
+**Status:** Resolved. The coordinator ruled on all five findings on
+2026-08-22; the rulings are recorded in
+[ADR 0006](../decisions/0006-a1-implementation-rulings.md) and applied to
+[A1](A1-notebook-contract.md), [notebook format](../notebook-format.md), and
+[security](../security.md).
 **Scope:** Contradictions and under-specifications found while implementing the
 approved A1 notebook contract
 
@@ -11,9 +15,9 @@ rejected with its documented conceptual error, and every hash vector reproduces.
 
 Implementation followed the frozen fixture bytes wherever contract prose and
 corpus bytes could both be satisfied. The items below are cases where they
-could not, or where A1 left a rule open. Each is recorded rather than decided,
-because changing an approved shared contract requires a coordinator ruling and
-an explicit migration proposal.
+could not, or where A1 left a rule open. Each was recorded rather than decided
+at the time, because changing an approved shared contract requires a
+coordinator ruling and an explicit migration proposal.
 
 ## 1. Derived-record type length contradicts the frozen corpus
 
@@ -28,6 +32,12 @@ property-name limit. If the 32-byte bound was intended to apply to every record
 type, the frozen Observation fixture violates the contract it was approved
 alongside, and one of the two must change.
 
+**Ruling (ADR 0006 §1):** the 32-byte grammar applies only to the eleven
+primary Note types. Non-Note record types use `[a-z][a-z0-9_]{0,62}` (63
+bytes), matching the property-name bound, exactly as IG1 implemented.
+Renaming the fixture to fit 32 bytes was rejected. A1 sections 4 and 10 are
+amended accordingly. No approved byte changes; no format version bump.
+
 ## 2. Two distinct key-ordering rules
 
 The public canonical form orders the structural keys first, then remaining keys
@@ -38,6 +48,13 @@ sorts among the ordinary keys.
 Both are implemented as the fixtures require. A1 section 5 describes only the
 public rule and does not call out that the semantic encoding differs, so the
 difference currently lives in fixture bytes rather than contract prose.
+
+**Ruling (ADR 0006 §2):** the semantic encoding has two differences from the
+public emitter — UTC datetime normalization and unconditional ascending-key
+order with no structural-first exception — exactly as IG1 implemented. A1
+section 8 is amended to state both, and to state that the semantic encoding
+is a hash input and never a publishable notebook record. No approved byte
+changes; no format version bump.
 
 ## 3. Secret detection is under-specified
 
@@ -50,6 +67,18 @@ secret-pattern policy exists, so a credential pasted into body evidence is not
 rejected. Widening detection is a policy decision with false-rejection risk for
 legitimate collected evidence, so it needs its own registry or gate rather than
 an implementation guess.
+
+**Ruling (ADR 0006 §3): withdrawn.** Fieldnotes performs no secret or
+password scanning of notebook content. The `security.secret_detected`
+rejection and its negative fixture are withdrawn; entropy-based detection was
+also considered and rejected because it would false-positive on legitimately
+high-entropy values such as `content_hash`, artifact IDs, and UUIDs.
+Credential handling remains an internal concern (`CredentialProvider`,
+protected Field delivery, diagnostic/log redaction, release-gate scanning of
+Fieldnotes' own output), documented in [security](../security.md). A future,
+optional PII-span-detection capability is recorded as an unapproved candidate
+for the `0.1.8` enhancement gate in [the roadmap](../roadmap.md), pointing at
+text a user may choose to mask without ever altering the Note.
 
 ## 4. Connector-prefixed property typing has no registry entry
 
@@ -64,6 +93,17 @@ Separately, A1 does not bind a property prefix to the record's own `field_id`,
 and no fixture exercises the combination, so any registered prefix is currently
 accepted on any record.
 
+**Ruling (ADR 0006 §4):** a Note's prefixed properties must belong to its own
+`field_id`'s registered stem, plus unprefixed shared registry properties;
+derived and projection records may carry any registered prefix; the built-in
+`self` Field contributes no property prefix, exactly as A1 already required
+for one-part Field IDs, and does not gain a `self_` prefix. This adds an
+enforcement rule; A1 section 4 is amended. Spelling-based type inference
+remains the interim rule for connector-prefixed property typing; declaring
+and enforcing prefixed-property types from each Field's `describe` manifest
+is deferred to gate A2. Not urgent for `0.1.0`, since only `self` ships and
+carries no prefix.
+
 ## 5. A documentation example is not canonical
 
 The `collected_by` example in [notebook format](../notebook-format.md) uses
@@ -71,6 +111,10 @@ double-quoted list members, while the frozen `semantic-record-source.md` fixture
 uses plain style. Plain is what the A1 quoting rule produces for those values,
 so the prose example is non-canonical and should be corrected to match the
 approved bytes.
+
+**Ruling (ADR 0006 §5):** corrected. The `collected_by` example now uses plain
+style, matching the approved quoting rule and the frozen fixture. No approved
+byte changes.
 
 ## Defects found and fixed in IG1
 

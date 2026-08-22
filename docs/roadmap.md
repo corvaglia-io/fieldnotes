@@ -245,6 +245,16 @@ Deliver:
 - deterministic rejection of nonexistent spans, invalid times, missing evidence, wrong property types, and unsupported judgments;
 - no provider, endpoint, prompt, or bring-your-own-model surface.
 
+A candidate, not-yet-schema-approved optional capability for this gate: a
+PII/maskable-span Extraction that detects likely-sensitive text and points at
+it with evidence-backed spans over exact normalized-body offsets, so a user
+may choose to mask it, without ever altering the Note. Like every enhancement
+capability it must remain optional, outside the default build, and require no
+model download, GPU, or network by default — relevant because tools such as
+Microsoft Presidio pull Python and spaCy model assets. It is recorded as a
+candidate, not approved, in
+[ADR 0006](decisions/0006-a1-implementation-rulings.md).
+
 **Release gate R8:** default installation performs no inference or model download; deleting `extractions/` and `observations/` leaves Notes byte-for-byte unchanged; rebuilding uses pinned generator contracts; evaluation fixtures meet approved evidence-precision, language, CPU/memory, packaging, and licensing thresholds.
 
 ### 0.1.9 — Full v0.1 hardening and release closure

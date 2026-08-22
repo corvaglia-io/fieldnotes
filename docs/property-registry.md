@@ -10,7 +10,8 @@
 - Missing values are omitted. Lists remain lists even with one member.
 - Source-specific properties use the registered Field prefix.
 - Datetimes use RFC 3339 with an explicit numeric offset. Filename timestamps use UTC.
-- Frontmatter never contains secrets, nested objects, arrays of objects, arbitrary tags, or unbounded vendor payloads.
+- Frontmatter never contains nested objects, arrays of objects, arbitrary tags, or unbounded vendor payloads.
+- A Field must not map credentials or tokens into properties. That is a producer obligation, not a validated rejection: Fieldnotes does not scan collected content for secrets. See [security](security.md).
 
 ## Required Note properties
 
@@ -196,5 +197,5 @@ A1 freezes this registry together with representative exact-byte fixtures for
 Jira, damaged content, derived envelopes, handback packages, and conflicts.
 The corpus README marks later-gate semantics that remain illustrative. IG1
 parser tests must accept the normative fixtures, add the missing primary-type
-templates, and reject nested, mistyped, unprefixed, timezone-less,
-duplicate-key, and secret-bearing examples.
+templates, and reject nested, mistyped, unprefixed, timezone-less, and
+duplicate-key examples.

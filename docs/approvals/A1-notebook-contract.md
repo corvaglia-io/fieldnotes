@@ -4,6 +4,39 @@
 **Scope:** Public file identities, filenames, frontmatter, hashes, merge behavior,
 artifact references, derived records, conflicts, proposals, and package envelopes
 
+## Approved amendments
+
+**2026-08-22:** IG1 implementation surfaced five contradictions and
+under-specifications, recorded in
+[A1 implementation findings](A1-implementation-findings.md). The coordinator
+ruled on all five; the rulings, rationale, and rejected alternatives are
+recorded in [ADR 0006](../decisions/0006-a1-implementation-rulings.md):
+
+1. The 32-byte type grammar in section 4 applies only to the eleven primary
+   Note types. Non-Note record types (Extraction, Observation, entity,
+   relationship, proposal, conflict, package) use a separate 63-byte grammar
+   (sections 4 and 10).
+2. The semantic-record encoding used for `fn-record-v1-sha256` differs from
+   the public emitter in two ways, not one: UTC datetime normalization and
+   unconditional ascending-key order with no structural-keys-first exception.
+   It is a hash input, never a publishable notebook record (section 8).
+3. **Withdrawn.** Fieldnotes performs no secret or password scanning of
+   notebook content. The `security.secret_detected` rejection and its
+   negative fixture are withdrawn; credential handling remains an internal
+   concern of how Fieldnotes handles credentials it holds (section 4's
+   fixture-evidence list; see [security](../security.md)).
+4. A Note's prefixed properties must belong to its own `field_id`'s
+   registered stem, plus unprefixed shared registry properties; derived and
+   projection records may carry any registered prefix; the built-in `self`
+   Field is a registered Field that contributes no property prefix (section 4).
+5. The `collected_by` example in [notebook format](../notebook-format.md) is
+   corrected to plain style, matching the approved quoting rule and the
+   frozen `semantic-record-source.md` fixture.
+
+Rulings 1, 2, and 5 change no approved byte; every file valid under the
+prior contract prose remains valid. Ruling 3 withdraws an A1 requirement.
+Ruling 4 adds an enforcement rule A1 left unstated.
+
 ## Decision requested
 
 A1 freezes the byte-visible notebook contract that core writers, Fields,
@@ -256,11 +289,26 @@ Property names match `[a-z][a-z0-9_]*` and are at most 63 ASCII bytes. A source-
 specific property begins with its registered prefix. Shared properties are
 closed by the approved registry; a Field cannot invent an unprefixed property.
 
+A Note may carry prefixed properties only for its own `field_id`'s registered
+stem, plus unprefixed shared registry properties; a `teams_`-prefixed property
+on a mail Note is a connector-boundary violation. The built-in `self` Field is
+a registered Field like the others: its ID is one-part and it contributes no
+property prefix, so a `self` Note may carry only unprefixed registry
+properties. This does not introduce a `self_` prefix or permit `self_<label>`
+Field IDs. Derived and projection records (`ext_`, `obs_`, `ent_`, `rel_`,
+`prop_`, `conf_`, `pkg_`) may carry any registered prefix, because they
+legitimately aggregate evidence across Fields. See
+[ADR 0006](../decisions/0006-a1-implementation-rulings.md).
+
 A primary Note type matches `[a-z][a-z0-9_]{0,31}` and must be one of:
 
 ```text
 text message mail meeting call ticket document file contact event voice
 ```
+
+This 32-byte grammar and vocabulary bound only the eleven primary Note types
+above. Non-Note record types use a separate 63-byte grammar approved in
+section 10.
 
 Approve the semantic distinctions:
 
@@ -436,10 +484,18 @@ Implementations must not substitute language-specific map or debug
 serialization.
 
 The semantic-record encoding uses the public canonical emitter after removing
-excluded properties, except that datetime values are rendered as their instant
-in UTC with `+00:00`. Thus two source/client-local offsets for the same instant
-compare equally while the surviving public Note retains its meaningful local
-offset. Date-only values are unchanged.
+excluded properties, with two differences from the public form. First,
+datetime values are rendered as their instant in UTC with `+00:00`; thus two
+source/client-local offsets for the same instant compare equally while the
+surviving public Note retains its meaningful local offset, and date-only
+values are unchanged. Second, every retained key sorts in ascending ASCII
+byte order with no structural-keys-first exception, so `type` sorts among the
+ordinary keys rather than first; the public five-structural-keys-first rule in
+section 5 is a human-readability affordance for public files and does not
+apply to this machine-only hash input. The semantic encoding is a hash input
+and is never a publishable notebook record; the checked-in
+`semantic-record-canonical.md` vector is a hash-input fixture, not a notebook
+file. See [ADR 0006](../decisions/0006-a1-implementation-rulings.md).
 
 Approve this deterministic survivor rule:
 
@@ -541,9 +597,15 @@ proposals/<prop-id>_<type>.md
 packages/<pkg-id>/manifest.md
 ```
 
-The ID already carries the kind prefix. Types use the approved lowercase type
-grammar. Derived records use flat YAML, explicit-offset datetimes, the
-deterministic ordering rule, readable Markdown bodies, and evidence references.
+The ID already carries the kind prefix. Non-Note record types match
+`[a-z][a-z0-9_]{0,62}` — 63 ASCII bytes, matching the property-name bound —
+rather than the 32-byte primary-Note-type grammar in section 4. Derived types
+are an open, registry-reviewed vocabulary where descriptive multi-word names
+are the point; filename headroom stays ample (`obs_` plus a 36-byte UUID plus
+`_` plus a 63-byte type plus `.md` is 107 bytes, far under the 255-byte
+filesystem limit). See [ADR 0006](../decisions/0006-a1-implementation-rulings.md).
+Derived records use flat YAML, explicit-offset datetimes, the deterministic
+ordering rule, readable Markdown bodies, and evidence references.
 
 Extraction and Observation capability-specific types/properties are not all
 approved merely by reserving their envelopes. Each enhancement capability in
@@ -703,8 +765,13 @@ release to cover at least:
 - reliable newer `source_version`, unordered divergence, and same-ID conflict;
 - Extraction, Observation, entity, relationship, proposal, package manifest
   envelope, and conflict bundle;
-- rejected nested/mixed/null/tagged/duplicate-key/timezone-less/unprefixed/
-  secret-bearing inputs.
+- rejected nested/mixed/null/tagged/duplicate-key/timezone-less/unprefixed
+  inputs.
+
+Content secret-scanning is withdrawn per
+[ADR 0006](../decisions/0006-a1-implementation-rulings.md) ruling 3: a fixture
+or implementation must not reject collected evidence merely for containing
+secret-looking text, and no `security.secret_detected` rejection is required.
 
 Every fixture must identify whether it is normative at A1 or illustrative for
 a later capability gate. Hash vectors must state exact input bytes in a form

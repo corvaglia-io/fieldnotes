@@ -129,8 +129,8 @@ producer references are preserved in `collected_by`:
 
 ```yaml
 collected_by:
-  - "fn_01a02837-2de0-7a2b-8c41-f2481851192a/teams_wxs"
-  - "fn_01a02837-31c8-75ef-b4df-95d5cdcf09cc/teams_wxs"
+  - fn_01a02837-2de0-7a2b-8c41-f2481851192a/teams_wxs
+  - fn_01a02837-31c8-75ef-b4df-95d5cdcf09cc/teams_wxs
 ```
 
 `collected_by` is a list of `<instance_id>/<field_id>` strings. On a freshly

@@ -349,34 +349,6 @@ pub fn parse_record(bytes: &[u8]) -> Result<ParsedRecord, ValidationError> {
     })
 }
 
-const SECRET_INDICATORS: [&str; 2] = ["access_token=", "fn_test_secret_canary"];
-
-fn scan_for_secrets(record: &ParsedRecord) -> Result<(), ValidationError> {
-    for (key, value) in record.entries() {
-        let texts: Vec<&str> = match value {
-            Value::Scalar(Scalar::Text(text)) => vec![text.as_str()],
-            Value::List(items) => items
-                .iter()
-                .filter_map(|item| match item {
-                    Scalar::Text(text) => Some(text.as_str()),
-                    _ => None,
-                })
-                .collect(),
-            Value::Scalar(_) => Vec::new(),
-        };
-        for text in texts {
-            let lowered = text.to_ascii_lowercase();
-            if SECRET_INDICATORS
-                .iter()
-                .any(|indicator| lowered.contains(indicator))
-            {
-                return Err(ValidationError::SecretDetected { key: key.clone() });
-            }
-        }
-    }
-    Ok(())
-}
-
 fn is_valid_record_type(text: &str) -> bool {
     // Non-Note record types use the lowercase type grammar with the shared
     // 63-byte property-name-style bound; the frozen corpus includes a 34-byte
@@ -428,6 +400,27 @@ fn validate_note(record: &ParsedRecord) -> Result<(), ValidationError> {
     FieldId::parse(field_id, stems).map_err(|_| ValidationError::InvalidFieldId {
         value: field_id.to_owned(),
     })?;
+
+    // Connector-prefixed properties may only bind to this Note's own Field:
+    // a property carrying a different registered stem's prefix is a
+    // connector-boundary violation, not evidence this Note is entitled to
+    // carry. Unprefixed shared-registry properties are unaffected. `self`
+    // contributes no prefix, so a `self` Note may carry only unprefixed
+    // registry properties; that falls out of this general rule rather than
+    // needing a special case.
+    let own_prefix = stems.property_prefix_for(field_id);
+    let registry = PropertyRegistry::v1();
+    for (key, _) in record.entries() {
+        if registry.lookup(key).is_some() {
+            continue;
+        }
+        if let Some(prefix) = stems.property_prefix_for(key)
+            && Some(prefix) != own_prefix
+        {
+            return Err(ValidationError::ForeignPrefix { key: key.clone() });
+        }
+    }
+
     let note_type = require_text(record, "type")?;
     if NoteType::parse(note_type).is_none() {
         return Err(ValidationError::UnknownNoteType {
@@ -533,7 +526,6 @@ fn validate_proposal(record: &ParsedRecord) -> Result<(), ValidationError> {
 /// Filename agreement is a separate check because it needs the actual
 /// filename; see [`crate::filename::validate_note_filename`].
 pub fn validate_record(record: &ParsedRecord) -> Result<(), ValidationError> {
-    scan_for_secrets(record)?;
     let type_text = require_text(record, "type")?;
     match record.kind() {
         RecordKind::Note => validate_note(record)?,
@@ -644,14 +636,54 @@ occurred_at: 2026-08-22T11:36:14+02:00\n";
     }
 
     #[test]
-    fn rejects_secret_indicators() -> Result<(), ValidationError> {
-        let frontmatter =
-            format!("{MINIMAL}source_url: \"https://example.invalid/x?access_token=abc\"\n");
+    fn accepts_a_note_property_matching_its_own_field_prefix() -> Result<(), ValidationError> {
+        let frontmatter = MINIMAL
+            .replace("field_id: self", "field_id: outlook_mail_work")
+            .replace("type: text", "type: mail");
+        let frontmatter = format!("{frontmatter}outlook_mail_importance: normal\n");
         let record = parse_record(&note(&frontmatter, "b\n"))?;
-        assert!(matches!(
+        validate_record(&record)?;
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_note_property_using_a_different_fields_prefix() -> Result<(), ValidationError> {
+        let frontmatter = MINIMAL
+            .replace("field_id: self", "field_id: outlook_mail_work")
+            .replace("type: text", "type: mail");
+        let frontmatter = format!("{frontmatter}teams_chat_id: \"19:abc\"\n");
+        let record = parse_record(&note(&frontmatter, "b\n"))?;
+        assert_eq!(
             validate_record(&record),
-            Err(ValidationError::SecretDetected { .. })
-        ));
+            Err(ValidationError::ForeignPrefix {
+                key: "teams_chat_id".to_owned()
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_a_self_note_carrying_any_connector_prefixed_property() -> Result<(), ValidationError>
+    {
+        let frontmatter = format!("{MINIMAL}teams_chat_id: \"19:abc\"\n");
+        let record = parse_record(&note(&frontmatter, "b\n"))?;
+        assert_eq!(
+            validate_record(&record),
+            Err(ValidationError::ForeignPrefix {
+                key: "teams_chat_id".to_owned()
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_any_registered_prefix_on_non_note_records() -> Result<(), ValidationError> {
+        let frontmatter = "id: obs_01a028ee-48e0-7000-8000-000000000001\n\
+type: organization_affiliation_candidate\n\
+teams_chat_id: \"19:abc\"\n";
+        let record = parse_record(&note(frontmatter, "# Observation\n"))?;
+        validate_record(&record)?;
+        assert_eq!(record.kind(), RecordKind::Observation);
         Ok(())
     }
 }
