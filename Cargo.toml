@@ -44,6 +44,25 @@ clap = { version = "4.5", features = ["derive"] }
 # Supplied by the composition root only; library crates take an injected
 # `RandomSource`. CLI crate only.
 getrandom = "0.3"
+# IANA time-zone-database lookups for the persistent timezone setting (A1
+# section 3 requires the source/client-local offset "at that instant", which a
+# frozen numeric offset cannot give across a daylight-saving transition).
+# `jiff` was chosen over `time`'s `local-offset` feature because it resolves a
+# *named* zone (not just "the current system offset") for an arbitrary past or
+# future instant, on macOS, Linux, and Windows, with only itself and its own
+# tzdb helper crates in the dependency tree. CLI crate only; no other crate may
+# depend on it, per the rule that only the composition root touches real
+# timezone/environment data.
+jiff = "0.2"
+# Derive-based (de)serialization for the proposed A2 Field process protocol,
+# whose wire format is newline-delimited JSON. Field-protocol crate and the
+# fixture Field only; the notebook byte form stays hand-written in
+# `fieldnotes-format` because A1 defines those bytes itself.
+serde = { version = "1.0", features = ["derive"] }
+# JSON reader/writer for the same NDJSON frames. Default features only: the
+# `preserve_order` feature is deliberately not enabled so object keys stay in
+# `BTreeMap` order and frame handling is deterministic.
+serde_json = "1.0"
 
 [workspace.lints.rust]
 missing_docs = "warn"

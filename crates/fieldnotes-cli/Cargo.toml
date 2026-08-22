@@ -16,6 +16,7 @@ fieldnotes-format.workspace = true
 fieldnotes-store.workspace = true
 clap.workspace = true
 getrandom.workspace = true
+jiff.workspace = true
 
 [dev-dependencies]
 # Temporary notebooks for end-to-end binary tests.

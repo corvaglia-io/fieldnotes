@@ -37,23 +37,35 @@
 //! supplied through `--stdin` or `--body-file`, because a positional argument
 //! can be captured by shell history; only the Note's own declared content is
 //! ever persisted.
+//!
+//! # Persistent profile
+//!
+//! A user-level profile outside any notebook can record a default notebook
+//! path and a default timezone; see [`config`] for its file location and
+//! [`timezone`] for how a timezone setting becomes a numeric UTC offset. Every
+//! setting resolves through the same order: an explicit flag, then an
+//! environment variable, then the profile, then `0.1.0`'s existing behavior
+//! (working-directory discovery for the notebook, UTC for the offset).
 
+mod config;
 mod environment;
 mod json;
+mod timezone;
 
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fieldnotes_app::{
     AppError, InitOutcome, InspectReport, Kernel, NoteOutcome, NoteRequest, NoteSource,
     StatusReport, create_note, init, inspect, status,
 };
-use fieldnotes_domain::Datetime;
-use fieldnotes_store::{InitState, Notebook};
+use fieldnotes_domain::{Clock, Datetime};
+use fieldnotes_store::{InitState, Notebook, Profile};
 
-use crate::environment::{OsRandom, SystemClock, resolve_offset};
+use crate::environment::{OFFSET_ENV, OsRandom, SystemClock};
 use crate::json::Json;
+use crate::timezone::TimeZoneSpec;
 
 /// Success.
 const EXIT_OK: i32 = 0;
@@ -72,8 +84,10 @@ const EXIT_INTERNAL: i32 = 70;
 #[derive(Debug, Parser)]
 #[command(name = "fieldnotes", version, about, long_about = None)]
 struct Cli {
-    /// Notebook to operate on. Defaults to the notebook containing the working
-    /// directory.
+    /// Notebook to operate on. Highest-precedence source; then the
+    /// FIELDNOTES_NOTEBOOK environment variable; then the profile's
+    /// `notebook` setting (see `fieldnotes config`); then the notebook
+    /// containing the working directory.
     #[arg(long, global = true, value_name = "PATH")]
     notebook: Option<PathBuf>,
 
@@ -81,9 +95,12 @@ struct Cli {
     #[arg(long, global = true, value_enum, default_value_t = Format::Human)]
     format: Format,
 
-    /// UTC offset for generated datetimes, as +HH:MM, -HH:MM, or utc.
-    /// Defaults to the FIELDNOTES_UTC_OFFSET environment variable, then utc.
-    #[arg(long, global = true, value_name = "OFFSET")]
+    /// Timezone for generated datetimes: `system`, an IANA zone name such as
+    /// `Europe/Zurich`, or a fixed +HH:MM/-HH:MM/utc offset. Highest-
+    /// precedence source; then FIELDNOTES_TIMEZONE (or the legacy
+    /// FIELDNOTES_UTC_OFFSET); then the profile's `timezone` setting (see
+    /// `fieldnotes config`); then utc.
+    #[arg(long, global = true, value_name = "OFFSET|ZONE")]
     offset: Option<String>,
 
     #[command(subcommand)]
@@ -109,6 +126,12 @@ enum Command {
         /// Optional display-only notebook name.
         #[arg(long, value_name = "NAME")]
         name: Option<String>,
+        /// Record this notebook as the profile's default, even if one is
+        /// already recorded. Without this flag, `init` only records a
+        /// default when the profile has none yet, so it never silently
+        /// overwrites a default you or an earlier `init` already chose.
+        #[arg(long)]
+        set_default: bool,
     },
     /// Create a `self` Note.
     Note {
@@ -143,6 +166,42 @@ enum Command {
         #[arg(value_name = "RECORD")]
         target: Option<String>,
     },
+    /// Show or change the persistent user profile (default notebook and
+    /// timezone). Not part of any notebook: see the module documentation for
+    /// its file location.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+/// A `fieldnotes config` action.
+#[derive(Debug, Subcommand)]
+enum ConfigAction {
+    /// Show every recorded profile setting and the profile's file location.
+    Show,
+    /// Print one setting's recorded value.
+    Get {
+        /// Which setting to print.
+        key: ConfigKey,
+    },
+    /// Record one setting, after validating it.
+    Set {
+        /// Which setting to record.
+        key: ConfigKey,
+        /// The value to record: a notebook path, or a timezone (`system`, an
+        /// IANA zone name, or a fixed +HH:MM/-HH:MM/utc offset).
+        value: String,
+    },
+}
+
+/// A profile setting `fieldnotes config` can read or write.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ConfigKey {
+    /// The default notebook path.
+    Notebook,
+    /// The default timezone.
+    Timezone,
 }
 
 /// A failure, ready to render and exit with.
@@ -169,7 +228,8 @@ impl From<AppError> for Failure {
             "io" => EXIT_IO,
             "not_a_notebook" | "not_a_directory" | "unexpected_tree" => EXIT_NOTEBOOK,
             "invalid_record" | "invalid_file" | "artifact_corrupt" => EXIT_CONTRACT,
-            "empty_note" | "not_audio" | "invalid_offset" | "unknown_target" => EXIT_USAGE,
+            "empty_note" | "not_audio" | "invalid_offset" | "unknown_target"
+            | "invalid_profile" => EXIT_USAGE,
             _ => EXIT_INTERNAL,
         };
         Failure::new(error.kind(), error.to_string(), code)
@@ -232,16 +292,65 @@ fn print(text: &str) {
 }
 
 fn run(cli: Cli) -> Result<i32, Failure> {
-    let offset = resolve_offset(cli.offset.as_deref())
-        .map_err(|message| Failure::new("invalid_offset", message, EXIT_USAGE))?;
+    // The profile is loaded once, in this one place, and everything below
+    // resolves through the same flag-then-environment-then-profile order
+    // implemented in `config::resolve_notebook_start` and
+    // `config::resolve_timezone_text`. A malformed profile fails here for
+    // every command rather than being silently skipped.
+    let profile_path = config::resolve_profile_path();
+    let profile = match &profile_path {
+        Some(path) => fieldnotes_store::read_profile(path)
+            .map_err(|error| Failure::from(AppError::from(error)))?,
+        None => Profile::default(),
+    };
+
+    let notebook_start = config::resolve_notebook_start(
+        cli.notebook.clone(),
+        non_empty_env(config::NOTEBOOK_ENV),
+        profile.notebook.clone(),
+    );
+    let timezone_text = config::resolve_timezone_text(
+        cli.offset.clone(),
+        non_empty_env(config::TIMEZONE_ENV),
+        non_empty_env(OFFSET_ENV),
+        profile.timezone.clone(),
+    );
+    let timezone_spec = match &timezone_text {
+        Some(text) => TimeZoneSpec::parse(text)
+            .map_err(|error| Failure::new("invalid_offset", error.to_string(), EXIT_USAGE))?,
+        // Documented final fallback: UTC. A1 requires an explicit numeric
+        // offset on every datetime and forbids a timezone-less value, and
+        // guessing a local zone with no configuration at all would be a
+        // silent, unreviewable choice.
+        None => TimeZoneSpec::Fixed(0),
+    };
+    let now_millis = i64::try_from(SystemClock.unix_millis()).unwrap_or(i64::MAX);
+    let offset = timezone_spec
+        .resolve_minutes(now_millis)
+        .map_err(|error| Failure::new("invalid_offset", error.to_string(), EXIT_USAGE))?;
+
     match cli.command {
-        Command::Init { path, name } => {
+        Command::Init {
+            path,
+            name,
+            set_default,
+        } => {
             let root = path
                 .or_else(|| cli.notebook.clone())
                 .unwrap_or_else(|| PathBuf::from("."));
             let mut kernel = Kernel::new(SystemClock, OsRandom, offset)?;
             let outcome = init(&mut kernel, &root, name.as_deref())?;
-            print(&render_init(&outcome, cli.format));
+            let recorded_default = match &profile_path {
+                Some(path) => config::record_default_notebook_if_absent(
+                    path,
+                    &profile,
+                    &outcome.root,
+                    set_default,
+                )
+                .map_err(|error| Failure::from(AppError::from(error)))?,
+                None => false,
+            };
+            print(&render_init(&outcome, recorded_default, cli.format));
             Ok(EXIT_OK)
         }
         Command::Note {
@@ -253,7 +362,7 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             file,
             voice,
         } => {
-            let notebook = open_notebook(cli.notebook.as_deref())?;
+            let notebook = open_notebook(notebook_start)?;
             let source = match (file, voice) {
                 (Some(path), _) => NoteSource::File(path),
                 (None, Some(path)) => NoteSource::Voice(path),
@@ -282,13 +391,13 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             Ok(EXIT_OK)
         }
         Command::Status => {
-            let notebook = open_notebook(cli.notebook.as_deref())?;
+            let notebook = open_notebook(notebook_start)?;
             let report = status(&notebook)?;
             print(&render_status(&report, cli.format));
             Ok(EXIT_OK)
         }
         Command::Inspect { target } => {
-            let notebook = open_notebook(cli.notebook.as_deref())?;
+            let notebook = open_notebook(notebook_start)?;
             let report = inspect(&notebook, target.as_deref())?;
             print(&render_inspect(&report, cli.format));
             Ok(if report.healthy {
@@ -297,13 +406,26 @@ fn run(cli: Cli) -> Result<i32, Failure> {
                 EXIT_CONTRACT
             })
         }
+        Command::Config { action } => {
+            let text = run_config(action, profile_path.as_deref(), &profile, cli.format)?;
+            print(&text);
+            Ok(EXIT_OK)
+        }
     }
 }
 
-/// Locates the notebook to operate on.
-fn open_notebook(explicit: Option<&std::path::Path>) -> Result<Notebook, Failure> {
-    let start = match explicit {
-        Some(path) => path.to_path_buf(),
+/// Reads an environment variable, treating an unset or blank value as absent.
+fn non_empty_env(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+}
+
+/// Locates the notebook to operate on, falling back to the working directory
+/// when no flag, environment variable, or profile setting names a start path.
+fn open_notebook(start: Option<PathBuf>) -> Result<Notebook, Failure> {
+    let start = match start {
+        Some(path) => path,
         None => std::env::current_dir().map_err(|error| {
             Failure::new(
                 "io",
@@ -347,7 +469,7 @@ fn read_note_text(
     Ok(None)
 }
 
-fn render_init(outcome: &InitOutcome, format: Format) -> String {
+fn render_init(outcome: &InitOutcome, recorded_default: bool, format: Format) -> String {
     let created = outcome.state == InitState::Created;
     match format {
         Format::Human => {
@@ -361,6 +483,9 @@ fn render_init(outcome: &InitOutcome, format: Format) -> String {
             out.push_str(&format!("  created   {}\n", outcome.instance.created_at));
             if let Some(name) = &outcome.instance.name {
                 out.push_str(&format!("  name      {name}\n"));
+            }
+            if recorded_default {
+                out.push_str("  default   recorded in the Fieldnotes profile (see `fieldnotes config show`)\n");
             }
             out
         }
@@ -379,6 +504,7 @@ fn render_init(outcome: &InitOutcome, format: Format) -> String {
                     Json::text(outcome.instance.created_at.to_string()),
                 ),
                 ("name", Json::maybe_text(outcome.instance.name.clone())),
+                ("recorded_default", Json::Bool(recorded_default)),
             ]);
             format!("{}\n", value.render())
         }
@@ -663,6 +789,131 @@ fn problems_json(problems: &[fieldnotes_app::ReportedProblem]) -> Json {
             })
             .collect(),
     )
+}
+
+/// A failure produced when no profile location could be determined at all
+/// (neither `FIELDNOTES_CONFIG` nor the platform's home/config variable is
+/// set), for a `config` action that must write somewhere.
+fn no_profile_location_failure() -> Failure {
+    Failure::new(
+        "io",
+        "cannot determine the Fieldnotes profile location; set HOME (or APPDATA on \
+         Windows), or set FIELDNOTES_CONFIG explicitly",
+        EXIT_IO,
+    )
+}
+
+/// The offset a timezone setting resolves to right now, rendered as
+/// `+HH:MM`, or `None` if the setting no longer parses (for display only;
+/// `config set` already validates before writing).
+fn current_offset_display(timezone: &str) -> Option<String> {
+    let spec = TimeZoneSpec::parse(timezone).ok()?;
+    let now_millis = i64::try_from(SystemClock.unix_millis()).unwrap_or(i64::MAX);
+    let minutes = spec.resolve_minutes(now_millis).ok()?;
+    Some(TimeZoneSpec::Fixed(minutes).to_string())
+}
+
+/// Runs one `fieldnotes config` action and renders its result.
+fn run_config(
+    action: ConfigAction,
+    profile_path: Option<&Path>,
+    profile: &Profile,
+    format: Format,
+) -> Result<String, Failure> {
+    match action {
+        ConfigAction::Show => Ok(render_config_show(profile_path, profile, format)),
+        ConfigAction::Get { key } => Ok(render_config_get(key, profile, format)),
+        ConfigAction::Set { key, value } => {
+            let path = profile_path.ok_or_else(no_profile_location_failure)?;
+            let updated = match key {
+                ConfigKey::Notebook => config::set_notebook(path, profile, Path::new(&value))
+                    .map_err(|error| Failure::from(AppError::from(error)))?,
+                ConfigKey::Timezone => {
+                    let spec = TimeZoneSpec::parse(&value).map_err(|error| {
+                        Failure::new("invalid_offset", error.to_string(), EXIT_USAGE)
+                    })?;
+                    config::set_timezone(path, profile, &spec.to_string())
+                        .map_err(|error| Failure::from(AppError::from(error)))?
+                }
+            };
+            Ok(render_config_show(Some(path), &updated, format))
+        }
+    }
+}
+
+fn render_config_show(profile_path: Option<&Path>, profile: &Profile, format: Format) -> String {
+    let notebook = profile
+        .notebook
+        .as_ref()
+        .map(|path| path.display().to_string());
+    let timezone = profile.timezone.clone();
+    let resolved_offset = timezone.as_deref().and_then(current_offset_display);
+    match format {
+        Format::Human => {
+            let mut out = String::from("Fieldnotes profile\n");
+            out.push_str(&format!(
+                "  file       {}\n",
+                profile_path.map_or_else(
+                    || "(not determined)".to_owned(),
+                    |path| path.display().to_string()
+                )
+            ));
+            match &notebook {
+                Some(value) => out.push_str(&format!("  notebook   {value}\n")),
+                None => out.push_str("  notebook   (not set; using working-directory discovery)\n"),
+            }
+            match (&timezone, &resolved_offset) {
+                (Some(value), Some(offset)) => {
+                    out.push_str(&format!("  timezone   {value} (currently {offset})\n"));
+                }
+                (Some(value), None) => out.push_str(&format!("  timezone   {value}\n")),
+                (None, _) => out.push_str("  timezone   (not set; using utc)\n"),
+            }
+            out
+        }
+        Format::Json => {
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.config.v1")),
+                ("ok", Json::Bool(true)),
+                (
+                    "file",
+                    Json::maybe_text(profile_path.map(|path| path.display().to_string())),
+                ),
+                ("notebook", Json::maybe_text(notebook)),
+                ("timezone", Json::maybe_text(timezone)),
+                ("resolved_offset", Json::maybe_text(resolved_offset)),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
+fn render_config_get(key: ConfigKey, profile: &Profile, format: Format) -> String {
+    let (label, value) = match key {
+        ConfigKey::Notebook => (
+            "notebook",
+            profile
+                .notebook
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        ),
+        ConfigKey::Timezone => ("timezone", profile.timezone.clone()),
+    };
+    match format {
+        Format::Human => match &value {
+            Some(value) => format!("{value}\n"),
+            None => "(not set)\n".to_owned(),
+        },
+        Format::Json => {
+            let json = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.config.v1")),
+                ("ok", Json::Bool(true)),
+                ("key", Json::text(label)),
+                ("value", Json::maybe_text(value)),
+            ]);
+            format!("{}\n", json.render())
+        }
+    }
 }
 
 #[cfg(test)]

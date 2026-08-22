@@ -1,6 +1,6 @@
 //! End-to-end tests that run the real `fieldnotes` binary.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use fieldnotes_test_support::TempDir;
@@ -8,8 +8,23 @@ use fieldnotes_test_support::TempDir;
 /// A minimal PNG signature plus payload.
 const IMAGE_BYTES: &[u8] = b"\x89PNG\r\n\x1a\n-pretend-pixels-";
 
+/// The environment variable overriding the profile file location. Every
+/// invocation in this file sets it to a path inside the test's own
+/// [`TempDir`], so a test run never reads or writes a developer's real
+/// profile even though these tests predate the persistent-profile feature.
+const CONFIG_ENV: &str = "FIELDNOTES_CONFIG";
+
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_fieldnotes")
+}
+
+/// A profile path guaranteed to live inside the same temporary directory as
+/// `notebook`, and to not exist until (if ever) a command writes it.
+fn hermetic_config_path(notebook: &Path) -> PathBuf {
+    notebook
+        .parent()
+        .unwrap_or(notebook)
+        .join(".fieldnotes-test-profile")
 }
 
 fn run(notebook: &Path, args: &[&str]) -> std::io::Result<Output> {
@@ -17,6 +32,7 @@ fn run(notebook: &Path, args: &[&str]) -> std::io::Result<Output> {
         .arg("--notebook")
         .arg(notebook)
         .args(args)
+        .env(CONFIG_ENV, hermetic_config_path(notebook))
         .output()
 }
 
@@ -52,6 +68,7 @@ fn the_binary_initializes_writes_and_validates_a_notebook() -> std::io::Result<(
             "--format",
             "json",
         ])
+        .env(CONFIG_ENV, hermetic_config_path(&root))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -161,6 +178,7 @@ fn an_offset_can_come_from_the_environment() -> std::io::Result<()> {
         .arg(&root)
         .args(["init", "--format", "json"])
         .env("FIELDNOTES_UTC_OFFSET", "+02:00")
+        .env(CONFIG_ENV, hermetic_config_path(&root))
         .output()?;
     assert!(output.status.success(), "{}", stderr(&output));
     assert!(

@@ -1,14 +1,23 @@
-//! The composition root's real clock, real randomness, and offset resolution.
+//! The composition root's real clock, real randomness, and fixed-offset
+//! parsing.
 //!
 //! These are the only places in the workspace that touch the wall clock or an
 //! operating-system random source. Library code receives them as injected
-//! traits, which is what makes the kernel's output reproducible in tests.
+//! traits, which is what makes the kernel's output reproducible in tests. The
+//! full precedence chain that turns a flag, an environment variable, and a
+//! profile setting into a numeric offset lives in [`crate::config`] and
+//! [`crate::timezone`]; this module only supplies [`parse_offset`], the
+//! grammar for one fixed spelling, and the legacy [`OFFSET_ENV`] variable name.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use fieldnotes_domain::{Clock, RandomSource};
 
-/// The environment variable that supplies a default UTC offset.
+/// The legacy environment variable that supplies a fixed default UTC offset.
+///
+/// [`crate::config::TIMEZONE_ENV`] is the canonical environment variable for
+/// the broader timezone setting; this name is still honored when the newer
+/// one is unset, so a script that already sets it keeps working.
 pub const OFFSET_ENV: &str = "FIELDNOTES_UTC_OFFSET";
 
 /// The system wall clock.
@@ -65,22 +74,6 @@ pub fn parse_offset(text: &str) -> Result<i16, String> {
     }
     let magnitude = hours * 60 + minutes;
     Ok(if negative { -magnitude } else { magnitude })
-}
-
-/// Resolves the offset generated datetimes are rendered in.
-///
-/// `--offset` wins, then the [`OFFSET_ENV`] environment variable, then UTC.
-/// A1 requires an explicit numeric offset on every datetime and forbids a
-/// timezone-less value, and reading a platform timezone database would mean a
-/// new dependency, so UTC is the documented default rather than a guess.
-pub fn resolve_offset(flag: Option<&str>) -> Result<i16, String> {
-    if let Some(flag) = flag {
-        return parse_offset(flag);
-    }
-    match std::env::var(OFFSET_ENV) {
-        Ok(value) if !value.trim().is_empty() => parse_offset(&value),
-        _ => Ok(0),
-    }
 }
 
 #[cfg(test)]

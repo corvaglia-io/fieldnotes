@@ -49,6 +49,17 @@ pub enum StoreError {
         /// The stored file.
         path: PathBuf,
     },
+    /// The user profile file exists but does not parse.
+    ///
+    /// A profile is meant to be hand-edited, so a malformed file fails loudly
+    /// with the offending line rather than silently falling back to unset
+    /// settings, which would hide the user's own typo.
+    InvalidProfile {
+        /// The offending file.
+        path: PathBuf,
+        /// Why it was rejected.
+        message: String,
+    },
 }
 
 impl StoreError {
@@ -74,6 +85,7 @@ impl StoreError {
             StoreError::NotADirectory { .. } => "not_a_directory",
             StoreError::UnexpectedTree { .. } => "unexpected_tree",
             StoreError::ArtifactCorrupt { .. } => "artifact_corrupt",
+            StoreError::InvalidProfile { .. } => "invalid_profile",
         }
     }
 }
@@ -108,6 +120,9 @@ impl fmt::Display for StoreError {
                 "stored artifact `{}` no longer matches its content address",
                 path.display()
             ),
+            StoreError::InvalidProfile { path, message } => {
+                write!(f, "profile `{}` is malformed: {message}", path.display())
+            }
         }
     }
 }

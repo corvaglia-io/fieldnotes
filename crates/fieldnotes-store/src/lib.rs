@@ -23,6 +23,7 @@ pub mod error;
 pub mod instance;
 pub mod layout;
 pub mod note;
+pub mod profile;
 pub mod scan;
 
 pub use artifact::{StoredArtifact, store_artifact};
@@ -30,4 +31,5 @@ pub use error::StoreError;
 pub use instance::{read_instance, write_instance};
 pub use layout::{InitState, Notebook};
 pub use note::{NoteWrite, replace_note, write_note};
+pub use profile::{Profile, read_profile, write_profile};
 pub use scan::{NotebookScan, Problem, ScanOptions, ScannedArtifact, ScannedNote, scan};
