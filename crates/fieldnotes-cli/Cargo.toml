@@ -1,0 +1,16 @@
+[package]
+name = "fieldnotes-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[[bin]]
+name = "fieldnotes"
+path = "src/main.rs"
+
+[dependencies]
+fieldnotes-app.workspace = true
+
+[lints]
+workspace = true

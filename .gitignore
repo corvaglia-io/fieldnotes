@@ -1,0 +1,23 @@
+/target/
+/.idea/
+/.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Local Fieldnotes notebooks and credentials/state must never be committed.
+/.fieldnotes/
+/notes/
+/artifacts/
+/entities/
+/relationships/
+/extractions/
+/observations/
+/proposals/
+/packages/
+
+# Local environment overrides.
+.env
+.env.*
+!.env.example
+

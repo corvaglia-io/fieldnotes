@@ -1,0 +1,13 @@
+[package]
+name = "fieldnotes-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+fieldnotes-domain.workspace = true
+fieldnotes-format.workspace = true
+
+[lints]
+workspace = true

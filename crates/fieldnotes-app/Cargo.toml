@@ -1,0 +1,16 @@
+[package]
+name = "fieldnotes-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+fieldnotes-credentials.workspace = true
+fieldnotes-domain.workspace = true
+fieldnotes-field-protocol.workspace = true
+fieldnotes-graph.workspace = true
+fieldnotes-store.workspace = true
+
+[lints]
+workspace = true
