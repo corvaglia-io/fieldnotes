@@ -7,6 +7,13 @@ publish = false
 
 [dependencies]
 fieldnotes-field-protocol.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fieldnotes-domain.workspace = true
+fieldnotes-format.workspace = true
+fieldnotes-test-support.workspace = true
+serde.workspace = true
 
 [lints]
 workspace = true

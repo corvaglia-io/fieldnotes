@@ -7,6 +7,17 @@ publish = false
 
 [dependencies]
 fieldnotes-domain.workspace = true
+# The A1 shared property registry and SHA-256 helpers live here. The protocol
+# needs the registry to reject an unprefixed name A1 does not define, and it
+# needs SHA-256 to derive its own artifact digest rather than trusting a Field's
+# declared one. Neither is a second copy of A1 vocabulary.
+fieldnotes-format.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Core computes its own digest over staged artifact bytes rather than trusting a
+# Field's declared one, and does it streaming so a 512 MiB ceiling does not
+# become a 512 MiB allocation.
+sha2.workspace = true
 
 [lints]
 workspace = true
