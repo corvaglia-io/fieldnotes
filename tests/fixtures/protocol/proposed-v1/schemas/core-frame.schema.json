@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/core-frame.schema.json",
+  "title": "Field protocol v1 core-to-Field frame union",
+  "description": "Any single newline-delimited JSON frame core may write to a Field's standard input. A Field must fail closed on a frame it cannot validate rather than guessing.",
+  "oneOf": [
+    { "$ref": "describe-request.schema.json" },
+    { "$ref": "collect-request.schema.json" },
+    { "$ref": "cancel-control.schema.json" }
+  ]
+}

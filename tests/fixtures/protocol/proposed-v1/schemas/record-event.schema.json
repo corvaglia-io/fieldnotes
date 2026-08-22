@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/record-event.schema.json",
+  "title": "Field protocol v1 record event (Field to core)",
+  "description": "One collected source object as a normalized source envelope: post-mapping and pre-serialization. The Field has already mapped vendor structures onto A1 vocabulary; core still owns record IDs, producer provenance, canonical bytes, key ordering, filenames, hashes, capture time, projections, and every durable write. A record is never a rendered Note and never carries a notebook path. 'change' selects an upsert of current state or an explicit authoritative deletion.",
+  "type": "object",
+  "properties": {
+    "v": { "$ref": "common.schema.json#/$defs/protocolVersion" },
+    "type": { "const": "record" },
+    "run_id": { "$ref": "common.schema.json#/$defs/runId" },
+    "seq": { "$ref": "common.schema.json#/$defs/seq" },
+    "change": { "enum": ["upsert", "delete"] },
+    "source": { "$ref": "common.schema.json#/$defs/sourceRef" },
+    "object_kind": {
+      "description": "The capability slice this record belongs to. Must be a kind the manifest declared.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "note_type": { "$ref": "common.schema.json#/$defs/noteType" },
+    "occurred_at": { "$ref": "common.schema.json#/$defs/offsetDatetime" },
+    "properties": {
+      "description": "Flat property candidates keyed by A1 property names: unprefixed properties from the closed A1 shared registry, plus connector-prefixed properties this Field's manifest declared. Core-owned and hoisted names are structurally excluded here. Core still validates every name, type, prefix ownership, and list semantics against the A1 registry and the declaring manifest.",
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 63,
+        "pattern": "^(?!(?:id|instance_id|field_id|type|occurred_at|captured_at|collected_by|content_hash|source_scope|source_identity|source_version|source_url|source_parent_id|artifacts|attachments|identities|entities|related|damaged|truncated|lost_characters)$)[a-z][a-z0-9_]*$"
+      },
+      "additionalProperties": { "$ref": "common.schema.json#/$defs/propertyValue" },
+      "maxProperties": 256
+    },
+    "body": {
+      "description": "Deterministically normalized source evidence for the Note body, as source text rather than a model summary. Core applies the A1 body normalization and computes the content hash; a Field never supplies a content hash.",
+      "type": "object",
+      "properties": {
+        "format": { "const": "markdown" },
+        "text": { "type": "string", "maxLength": 1048576 }
+      },
+      "required": ["format", "text"],
+      "additionalProperties": false
+    },
+    "artifacts": {
+      "description": "Original bytes carried by this record, in role order. Core derives the A1 'attachments' list from the members with role 'attachment', preserving this order, and the set-like 'artifacts' list from all members.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/artifactRef" }
+    },
+    "identity_anchors": {
+      "description": "Person, account, organization, or artifact anchors this record supplies. Anchors may relate graph entities. They are never part of the portable exact-source key and core never reconciles Notes by them.",
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "common.schema.json#/$defs/identityAnchor" }
+    },
+    "integrity": {
+      "description": "Known content loss for this record, projected by core onto the A1 damage properties.",
+      "type": "object",
+      "properties": {
+        "damaged": { "type": "boolean" },
+        "truncated": { "type": "boolean" },
+        "lost_characters": { "type": "integer", "minimum": 0, "maximum": 1099511627776 }
+      },
+      "required": ["damaged", "truncated"],
+      "additionalProperties": false
+    },
+    "authority": {
+      "description": "Deletion authority. Present only on a delete. 'tombstone' requires the manifest to declare authoritative tombstones; core rejects the record otherwise. Absence of an object is never expressed as a delete record.",
+      "const": "tombstone"
+    },
+    "observed_at": {
+      "description": "When the Field observed the authoritative deletion. Present only on a delete.",
+      "$ref": "common.schema.json#/$defs/offsetDatetime"
+    }
+  },
+  "required": ["v", "type", "run_id", "seq", "change", "source"],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "description": "An upsert carries mapped current state and no deletion authority.",
+      "if": {
+        "properties": { "change": { "const": "upsert" } },
+        "required": ["change"]
+      },
+      "then": {
+        "required": ["object_kind", "note_type", "occurred_at", "body"],
+        "not": { "anyOf": [{ "required": ["authority"] }, { "required": ["observed_at"] }] }
+      }
+    },
+    {
+      "description": "A delete carries only the portable source key, its authority, and when it was observed. It never carries content, so a deletion can never be confused with an empty or partial collection result.",
+      "if": {
+        "properties": { "change": { "const": "delete" } },
+        "required": ["change"]
+      },
+      "then": {
+        "required": ["object_kind", "authority", "observed_at"],
+        "not": {
+          "anyOf": [
+            { "required": ["note_type"] },
+            { "required": ["occurred_at"] },
+            { "required": ["properties"] },
+            { "required": ["body"] },
+            { "required": ["artifacts"] },
+            { "required": ["identity_anchors"] },
+            { "required": ["integrity"] }
+          ]
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "artifactRef": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "'staged' means the Field wrote the exact original bytes into the run's staging directory under 'handle'. 'digest_only' means the Field knows the artifact by digest and did not transfer bytes; core accepts it only when it already stores that digest, and otherwise rejects the record so the Field retries with bytes.",
+          "enum": ["staged", "digest_only"]
+        },
+        "handle": { "$ref": "common.schema.json#/$defs/artifactHandle" },
+        "sha256": {
+          "description": "The Field's declared SHA-256 over the exact original bytes. Core always computes its own digest over staged bytes and derives the A1 artifact ID from that; a disagreement rejects the record. Required for 'digest_only', where it is the only thing core has to match against bytes it already stores.",
+          "$ref": "common.schema.json#/$defs/sha256Hex"
+        },
+        "byte_length": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "media_type": { "$ref": "common.schema.json#/$defs/mediaType" },
+        "role": {
+          "description": "'attachment' maps into the A1 role-ordered attachments list. 'original' is the source object's own bytes. Every role also appears in the set-like artifacts list.",
+          "enum": ["attachment", "original", "embedded", "other"]
+        },
+        "source_filename": {
+          "description": "Display metadata only. Never a path component and never the stored extension: core derives both the notebook path and the canonical extension itself.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        }
+      },
+      "required": ["kind", "role"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "staged" } }, "required": ["kind"] },
+          "then": { "required": ["handle", "byte_length"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "digest_only" } }, "required": ["kind"] },
+          "then": {
+            "required": ["sha256"],
+            "not": { "anyOf": [{ "required": ["handle"] }, { "required": ["byte_length"] }] }
+          }
+        }
+      ]
+    }
+  }
+}

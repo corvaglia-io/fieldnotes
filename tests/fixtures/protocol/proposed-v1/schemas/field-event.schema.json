@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/field-event.schema.json",
+  "title": "Field protocol v1 Field-to-core event union",
+  "description": "Any single newline-delimited JSON frame a Field may write to standard output. A frame that matches none of these is a protocol violation and fails the run; there is no permissive or forward-compatible branch, because an unknown event from an untrusted child process is exactly the case that must fail closed.",
+  "oneOf": [
+    { "$ref": "describe-manifest.schema.json" },
+    { "$ref": "record-event.schema.json" },
+    { "$ref": "checkpoint-event.schema.json" },
+    { "$ref": "diagnostic-event.schema.json" }
+  ]
+}

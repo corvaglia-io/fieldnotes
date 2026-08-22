@@ -1,0 +1,317 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/describe-manifest.schema.json",
+  "title": "Field protocol v1 describe manifest (Field to core)",
+  "description": "The single manifest frame a Field emits on standard output in response to a describe request. It is the Field's complete self-declaration: negotiated protocol, registered identity, capability slices, source-key derivation, identity anchors, deletion authority, cursor format, credential requirement, known limitations, and the exhaustive list of connector-prefixed properties the Field may emit. Core snapshots the manifest per configured Field; an incompatible change to a declared property or cursor format fails the next sync closed instead of silently retyping notebook data.",
+  "type": "object",
+  "properties": {
+    "v": { "$ref": "common.schema.json#/$defs/protocolVersion" },
+    "type": { "const": "manifest" },
+    "run_id": { "$ref": "common.schema.json#/$defs/runId" },
+    "protocol_version": {
+      "description": "The single version the Field selected from the versions core offered.",
+      "$ref": "common.schema.json#/$defs/protocolVersion"
+    },
+    "protocol_revision": { "$ref": "common.schema.json#/$defs/protocolRevision" },
+    "supported_protocol_versions": {
+      "$ref": "common.schema.json#/$defs/protocolVersionList"
+    },
+    "driver": {
+      "description": "Stable connector driver name, matching the configured Field's driver.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+    },
+    "driver_version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[0-9A-Za-z][0-9A-Za-z.+-]*$"
+    },
+    "field_stem": { "$ref": "common.schema.json#/$defs/fieldStem" },
+    "property_prefix": {
+      "oneOf": [
+        { "$ref": "common.schema.json#/$defs/propertyPrefix" },
+        { "type": "null" }
+      ]
+    },
+    "declared_properties": {
+      "description": "Exhaustive declaration of the connector-prefixed properties this Field may emit. Core rejects any prefixed property a record carries that is absent here, and rejects a value whose JSON shape contradicts the declared scalar type or cardinality. This replaces spelling-based type inference for declared properties. Unprefixed shared properties are never declared here: they belong to the closed A1 shared registry and take their type from it.",
+      "type": "array",
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/declaredProperty" }
+    },
+    "capabilities": {
+      "description": "The source-object slices this release actually supports. Narrowing is allowed and must be visible here and in status output; it is never an implicit claim of full vendor coverage.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/capabilitySlice" }
+    },
+    "source_key": { "$ref": "#/$defs/sourceKeyDeclaration" },
+    "identity_anchors": {
+      "description": "Identity-anchor namespaces this Field may emit. Declaring an anchor never makes it part of the exact-source key.",
+      "type": "array",
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/identityAnchorDeclaration" }
+    },
+    "auth": { "$ref": "#/$defs/authDeclaration" },
+    "collection": { "$ref": "#/$defs/collectionDeclaration" },
+    "limitations": {
+      "description": "Known permission, history, or coverage limits a user must be told about.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "properties": {
+          "code": { "$ref": "common.schema.json#/$defs/diagnosticCode" },
+          "message": { "type": "string", "minLength": 1, "maxLength": 1024 }
+        },
+        "required": ["code", "message"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "v",
+    "type",
+    "run_id",
+    "protocol_version",
+    "protocol_revision",
+    "supported_protocol_versions",
+    "driver",
+    "driver_version",
+    "field_stem",
+    "property_prefix",
+    "declared_properties",
+    "capabilities",
+    "source_key",
+    "auth",
+    "collection"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "declaredProperty": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "description": "Full prefixed property name, beginning with this manifest's property_prefix. Core verifies the prefix against the manifest and against the A1 registry.",
+          "$ref": "common.schema.json#/$defs/propertyName"
+        },
+        "value_type": { "$ref": "common.schema.json#/$defs/scalarType" },
+        "cardinality": { "enum": ["scalar", "list"] },
+        "list_semantics": {
+          "description": "Required for a list, forbidden for a scalar. 'set' is sorted and deduplicated by normalized value; 'ordered' preserves the source or role order the Field emits.",
+          "enum": ["set", "ordered"]
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "required": ["name", "value_type", "cardinality", "description"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "cardinality": { "const": "list" } },
+            "required": ["cardinality"]
+          },
+          "then": { "required": ["list_semantics"] },
+          "else": {
+            "not": { "required": ["list_semantics"] }
+          }
+        }
+      ]
+    },
+    "capabilitySlice": {
+      "type": "object",
+      "properties": {
+        "object_kind": {
+          "description": "Connector-local object-kind token, also used as the object-kind namespace inside source_identity.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
+        },
+        "note_type": {
+          "description": "Primary Note type this slice maps to. Must be one of A1's eleven approved primary Note types; the protocol does not restate that vocabulary and core validates against the A1 registry.",
+          "$ref": "common.schema.json#/$defs/noteType"
+        },
+        "emits_artifacts": { "type": "boolean" },
+        "emits_identity_anchors": { "type": "boolean" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "required": ["object_kind", "note_type", "emits_artifacts", "emits_identity_anchors", "description"],
+      "additionalProperties": false
+    },
+    "sourceKeyDeclaration": {
+      "description": "How this Field derives the portable exact-source key. The derivation is declared so two instances of the same connector against the same upstream authority produce identical keys, and so a reviewer can confirm the scope is non-secret and label-independent.",
+      "type": "object",
+      "properties": {
+        "scope_rule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "scope_rule_version": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "scope_shape": {
+          "description": "Non-secret illustrative shape of the scope this Field produces, for review.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "scope_depends_on_field_label": {
+          "description": "Must be false. A portable scope derives from the upstream authority or account, never from the user's local Field label.",
+          "const": false
+        },
+        "identity_shape": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "identity_includes_object_kind": { "const": true },
+        "source_version_ordering": {
+          "$ref": "common.schema.json#/$defs/sourceVersionOrdering"
+        },
+        "stable_across_instances": { "const": true }
+      },
+      "required": [
+        "scope_rule",
+        "scope_rule_version",
+        "scope_shape",
+        "scope_depends_on_field_label",
+        "identity_shape",
+        "identity_includes_object_kind",
+        "source_version_ordering",
+        "stable_across_instances"
+      ],
+      "additionalProperties": false
+    },
+    "identityAnchorDeclaration": {
+      "type": "object",
+      "properties": {
+        "namespace": { "$ref": "common.schema.json#/$defs/identityNamespace" },
+        "scope_class": { "$ref": "common.schema.json#/$defs/identityScopeClass" },
+        "normalization_rule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "normalization_version": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "substitutes_for_source_key": {
+          "description": "Must be false. An anchor may relate graph entities; it never identifies an upstream object for reconciliation.",
+          "const": false
+        },
+        "description": { "type": "string", "minLength": 1, "maxLength": 512 }
+      },
+      "required": ["namespace", "scope_class", "substitutes_for_source_key", "description"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "scope_class": { "const": "normalized_channel" } },
+            "required": ["scope_class"]
+          },
+          "then": { "required": ["normalization_rule", "normalization_version"] }
+        }
+      ]
+    },
+    "authDeclaration": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "enum": ["none", "api_token", "basic", "oauth_device_code", "oauth_authorization_code", "oauth_client_credentials"]
+        },
+        "credential_profile_required": { "type": "boolean" },
+        "protected_channel_required": {
+          "description": "Whether the Field needs the protected credential channel. A Field that declares 'none' must declare false and core delivers no grant.",
+          "type": "boolean"
+        },
+        "scopes": {
+          "description": "Least-privilege read-only scope tokens the Field needs.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 255 }
+        },
+        "refresh_owner": {
+          "description": "Which side renews expiring credential material.",
+          "enum": ["core", "field", "not_applicable"]
+        },
+        "writes_to_source": {
+          "description": "Must be false. Collection is read-only; no Field writes to its source system.",
+          "const": false
+        }
+      },
+      "required": ["kind", "credential_profile_required", "protected_channel_required", "refresh_owner", "writes_to_source"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "none" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "properties": {
+              "credential_profile_required": { "const": false },
+              "protected_channel_required": { "const": false },
+              "refresh_owner": { "const": "not_applicable" }
+            }
+          }
+        }
+      ]
+    },
+    "collectionDeclaration": {
+      "type": "object",
+      "properties": {
+        "incremental": { "type": "boolean" },
+        "cursor_format_version": { "$ref": "common.schema.json#/$defs/cursorFormatVersion" },
+        "supported_modes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["incremental", "snapshot"] }
+        },
+        "window_supported": {
+          "description": "Whether the Field honours a bounded time window in the collection request.",
+          "type": "boolean"
+        },
+        "refetch": { "enum": ["supported", "bounded", "unsupported"] },
+        "refetch_note": { "type": "string", "minLength": 1, "maxLength": 512 },
+        "deletion": {
+          "description": "Deletion authority. 'tombstones' authorizes explicit delete records; 'snapshot' authorizes removal by proven absence inside a declared scope after a complete snapshot run. Core rejects any deletion signal a Field has not declared authority for.",
+          "type": "object",
+          "properties": {
+            "tombstones": { "enum": ["authoritative", "unsupported"] },
+            "snapshot": { "enum": ["authoritative", "partial_only", "unsupported"] },
+            "note": { "type": "string", "minLength": 1, "maxLength": 512 }
+          },
+          "required": ["tombstones", "snapshot"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["incremental", "cursor_format_version", "supported_modes", "window_supported", "refetch", "deletion"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "Snapshot deletion authority requires the Field to actually support snapshot mode.",
+          "if": {
+            "properties": {
+              "deletion": {
+                "properties": { "snapshot": { "const": "authoritative" } },
+                "required": ["snapshot"]
+              }
+            },
+            "required": ["deletion"]
+          },
+          "then": {
+            "properties": {
+              "supported_modes": { "contains": { "const": "snapshot" } }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

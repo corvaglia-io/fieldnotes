@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/transcript.schema.json",
+  "title": "Field protocol v1 conformance transcript line",
+  "description": "The fixture format of this corpus's transcripts, not the wire format. Each transcript file is newline-delimited JSON where every line validates against this schema. The first line is a header stating which case the transcript demonstrates. Later lines are wire frames tagged with their direction and channel, deliberately invalid wire bytes, observable core actions, or the process exit. A 'frame' line's payload validates against the corresponding wire schema; the wrapper exists because a single file has to show both directions, two channels, core's own behavior, and invalid input that a pure wire capture could not represent.",
+  "oneOf": [
+    { "$ref": "#/$defs/header" },
+    { "$ref": "#/$defs/frameLine" },
+    { "$ref": "#/$defs/rawLine" },
+    { "$ref": "#/$defs/coreLine" },
+    { "$ref": "#/$defs/exitLine" }
+  ],
+  "$defs": {
+    "header": {
+      "type": "object",
+      "properties": {
+        "line": { "const": "header" },
+        "transcript": { "type": "string", "minLength": 1, "maxLength": 127 },
+        "demonstrates": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "gate": { "enum": ["a2-normative", "later-gate-illustrative"] },
+        "operation": { "enum": ["describe", "collect"] },
+        "mode": { "enum": ["incremental", "snapshot", "not_applicable"] },
+        "expected_outcome": { "enum": ["complete", "partial", "failed", "rejected"] },
+        "expected_exit_code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "notes": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      },
+      "required": ["line", "transcript", "demonstrates", "gate", "operation", "mode", "expected_outcome"],
+      "additionalProperties": false
+    },
+    "frameLine": {
+      "type": "object",
+      "properties": {
+        "line": { "const": "frame" },
+        "direction": { "enum": ["core->field", "field->core"] },
+        "channel": { "enum": ["stdin", "stdout", "credential"] },
+        "frame": { "type": "object" },
+        "valid": {
+          "description": "Whether this frame is expected to validate against its wire schema. False marks a schema-invalid frame that core must reject; the corpus README says which schema each transcript's frames are checked against.",
+          "type": "boolean"
+        },
+        "expect_reject": {
+          "description": "The code core is expected to reject this frame with. Present whenever the frame must be rejected, whether or not a single-frame schema can express why: a frame may be schema-valid in isolation and still violate an ordering, authority, registry, or filesystem rule. A frame rejected with a 'protocol.' code has an untrustworthy sequence number, so a checker must exclude it from per-run sequence continuity.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "note": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      },
+      "required": ["line", "direction", "channel", "frame", "valid"],
+      "additionalProperties": false
+    },
+    "rawLine": {
+      "type": "object",
+      "properties": {
+        "line": { "const": "raw" },
+        "direction": { "enum": ["core->field", "field->core"] },
+        "channel": { "enum": ["stdin", "stdout", "stderr", "credential"] },
+        "bytes_utf8": {
+          "description": "Literal wire text, when it is representable as a UTF-8 string. Used for output that is well-formed UTF-8 but not valid protocol.",
+          "type": "string",
+          "maxLength": 4096
+        },
+        "bytes_description": {
+          "description": "Description of wire bytes that cannot be embedded in a JSON string, such as invalid UTF-8 or a frame that exceeds the frame limit.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "expect_reject": {
+          "description": "The code core is expected to reject these bytes with.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "note": { "type": "string", "minLength": 1, "maxLength": 1024 }
+      },
+      "required": ["line", "direction", "channel", "note"],
+      "additionalProperties": false,
+      "oneOf": [
+        { "required": ["bytes_utf8"] },
+        { "required": ["bytes_description"] }
+      ]
+    },
+    "coreLine": {
+      "type": "object",
+      "properties": {
+        "line": { "const": "core" },
+        "action": {
+          "enum": [
+            "negotiate_protocol",
+            "abort_before_credential_delivery",
+            "start_field",
+            "stage_artifact",
+            "install_artifact",
+            "reuse_artifact",
+            "write_note",
+            "update_note",
+            "remove_note",
+            "no_change",
+            "no_deletion",
+            "commit_checkpoint",
+            "withhold_checkpoint",
+            "reject_record",
+            "reject_run",
+            "redact",
+            "terminate_child",
+            "simulated_crash",
+            "resume",
+            "report_outcome"
+          ]
+        },
+        "error_code": {
+          "description": "Core's rejection code, when the action is a rejection. The v1 code vocabulary is closed by the A2 package.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*(?:\\.[a-z][a-z0-9_]*)+$"
+        },
+        "detail": { "type": "string", "minLength": 1, "maxLength": 2048 }
+      },
+      "required": ["line", "action", "detail"],
+      "additionalProperties": false
+    },
+    "exitLine": {
+      "type": "object",
+      "properties": {
+        "line": { "const": "exit" },
+        "code": { "type": "integer", "minimum": 0, "maximum": 255 },
+        "meaning": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "outcome": { "enum": ["complete", "partial", "failed", "rejected"] }
+      },
+      "required": ["line", "code", "meaning", "outcome"],
+      "additionalProperties": false
+    }
+  }
+}

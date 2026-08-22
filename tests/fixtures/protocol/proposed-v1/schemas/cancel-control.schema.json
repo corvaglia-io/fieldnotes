@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/cancel-control.schema.json",
+  "title": "Field protocol v1 cancel control frame (core to Field)",
+  "description": "Core's cooperative cancellation request, written to the Field's standard input after a collection request. The Field should stop starting new work, may emit one final checkpoint for work it has already emitted, and should exit with the cancellation exit code within the grace period. Core terminates the process when the grace period expires. A cancelled run is never complete and never authorizes deletion by absence.",
+  "type": "object",
+  "properties": {
+    "v": { "$ref": "common.schema.json#/$defs/protocolVersion" },
+    "type": { "const": "cancel" },
+    "run_id": { "$ref": "common.schema.json#/$defs/runId" },
+    "reason": { "enum": ["user_requested", "deadline", "shutdown", "limit_exceeded", "core_error"] },
+    "grace_seconds": { "type": "integer", "minimum": 1, "maximum": 120 }
+  },
+  "required": ["v", "type", "run_id", "reason", "grace_seconds"],
+  "additionalProperties": false
+}

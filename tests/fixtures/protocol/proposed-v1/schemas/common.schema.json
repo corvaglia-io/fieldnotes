@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/common.schema.json",
+  "title": "Fieldnotes Field protocol v1 shared definitions",
+  "description": "Shared transport-level definitions for Field protocol v1. Grammars here are well-formedness guards for an untrusted child process, not a redefinition of the A1 notebook contract. Where a value also appears in a notebook record, A1 remains authoritative and Fieldnotes core performs the full A1 validation after these guards pass.",
+  "$defs": {
+    "protocolVersion": {
+      "description": "Major protocol version. v1 is the version frozen at A2.",
+      "const": 1
+    },
+    "protocolRevision": {
+      "description": "Additive-only revision within a major version. Both peers emit only members introduced at or below the negotiated revision, which is the minimum of the two declared revisions.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4095
+    },
+    "protocolVersionList": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 1, "maximum": 4095 },
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true
+    },
+    "runId": {
+      "description": "Core-generated identifier for one bounded Field process run. Opaque to the Field. Not a notebook record ID.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "seq": {
+      "description": "Per-run monotonic sequence number shared by every Field-to-core event. Starts at 1 and increases by exactly 1 with no gaps.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "offsetDatetime": {
+      "description": "RFC 3339 datetime with an explicit numeric offset. '-00:00' is rejected. Transport guard only; the A1 datetime contract is authoritative.",
+      "type": "string",
+      "maxLength": 40,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,9})?(?:\\+[0-9]{2}:[0-9]{2}|-(?!00:00)[0-9]{2}:[0-9]{2})$"
+    },
+    "dateOnly": {
+      "type": "string",
+      "maxLength": 10,
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "fieldId": {
+      "description": "Configured Field ID. 'self' does not use this protocol. Transport guard for the A1 Field-ID grammar.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    },
+    "fieldStem": {
+      "description": "Registered Field stem from the A1 registry. The protocol does not enumerate the registered stems; core validates the value against the A1 registry.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 31,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$"
+    },
+    "propertyPrefix": {
+      "description": "Registered connector property prefix, including its trailing underscore. Null means the Field contributes no prefix.",
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*_$"
+    },
+    "propertyName": {
+      "description": "A1 property-name grammar as a transport guard.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "noteType": {
+      "description": "Primary Note type candidate. The closed eleven-value vocabulary is frozen by A1 and is deliberately not enumerated here; core rejects any value the A1 registry does not contain.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "pattern": "^[a-z][a-z0-9_]{0,31}$"
+    },
+    "scalarType": {
+      "description": "A1 scalar type names, used by a manifest to declare a prefixed property's type.",
+      "enum": ["text", "number", "boolean", "date", "datetime"]
+    },
+    "textScalar": {
+      "type": "string",
+      "maxLength": 65536
+    },
+    "scalarValue": {
+      "description": "One A1-compatible scalar. JSON string carries text, date, and datetime values; the declaring manifest entry or the A1 shared registry supplies the type.",
+      "oneOf": [
+        { "$ref": "#/$defs/textScalar" },
+        { "type": "number" },
+        { "type": "boolean" }
+      ]
+    },
+    "scalarList": {
+      "description": "Homogeneous one-dimensional list of scalars, matching A1's flat list rule. An empty list is never emitted; core omits absent values.",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": { "$ref": "#/$defs/textScalar" },
+          "minItems": 1,
+          "maxItems": 1024
+        },
+        {
+          "type": "array",
+          "items": { "type": "number" },
+          "minItems": 1,
+          "maxItems": 1024
+        },
+        {
+          "type": "array",
+          "items": { "type": "boolean" },
+          "minItems": 1,
+          "maxItems": 1024
+        }
+      ]
+    },
+    "propertyValue": {
+      "oneOf": [
+        { "$ref": "#/$defs/scalarValue" },
+        { "$ref": "#/$defs/scalarList" }
+      ]
+    },
+    "sourceScope": {
+      "description": "Connector-namespaced, non-secret, cross-instance-stable upstream authority or account scope. Half of the portable exact-source key.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "sourceIdentity": {
+      "description": "Object identity stable within its source scope, including an object-kind namespace where upstream IDs are not unique across kinds. Half of the portable exact-source key.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "sourceVersion": {
+      "description": "Opaque source-supplied version token. Comparable only through the ordering rule the manifest declares.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "sourceVersionOrdering": {
+      "description": "How core may compare two source_version values for this Field. 'unsupported' means divergent content with no other ordering evidence is a conflict.",
+      "enum": [
+        "unsupported",
+        "numeric_ascending",
+        "lexicographic_ascending",
+        "rfc3339_instant_ascending"
+      ]
+    },
+    "sourceRef": {
+      "description": "Portable exact-source key plus optional non-identity source metadata.",
+      "type": "object",
+      "properties": {
+        "scope": { "$ref": "#/$defs/sourceScope" },
+        "identity": { "$ref": "#/$defs/sourceIdentity" },
+        "version": { "$ref": "#/$defs/sourceVersion" },
+        "url": { "type": "string", "maxLength": 4096 },
+        "parent_identity": { "$ref": "#/$defs/sourceIdentity" }
+      },
+      "required": ["scope", "identity"],
+      "additionalProperties": false
+    },
+    "sha256Hex": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "artifactHandle": {
+      "description": "Single-segment staging name chosen by the Field from a closed character set. It is never a path: it contains no separator, no dot, no traversal sequence, and no reserved Windows device name, and core resolves it only inside the run's staging directory.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(?!(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9][a-z0-9_-]{0,63}$"
+    },
+    "mediaType": {
+      "description": "Declared media type. Core maps it through the A1 canonical-extension registry; an unknown or conflicting type falls back to '.bin'. The media type is never artifact identity.",
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 255,
+      "pattern": "^[a-z0-9][a-z0-9!#$&^_.+-]{0,126}/[a-z0-9][a-z0-9!#$&^_.+-]{0,126}$"
+    },
+    "cursor": {
+      "description": "Opaque, non-secret, bounded Field-owned resume token. Core never parses, orders, or interprets it.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "cursorFormatVersion": {
+      "description": "Field-declared cursor encoding version. A stored cursor whose version differs from the manifest's is not replayed; core starts unbounded and reports a recovery gap.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 65535
+    },
+    "identityScopeClass": {
+      "description": "Matching scope class for an identity anchor, from the identity and graph contract.",
+      "enum": [
+        "source_global",
+        "authority_scoped",
+        "namespace_scoped",
+        "normalized_channel",
+        "weak_descriptive"
+      ]
+    },
+    "identityNamespace": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 63,
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "identityAnchor": {
+      "description": "A source-declared person, account, organization, or artifact anchor. An anchor may relate graph entities. It is never part of the portable exact-source key and core never reconciles Notes by it.",
+      "type": "object",
+      "properties": {
+        "namespace": { "$ref": "#/$defs/identityNamespace" },
+        "value": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "scope_class": { "$ref": "#/$defs/identityScopeClass" },
+        "scope": { "$ref": "#/$defs/sourceScope" },
+        "normalization_rule": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 63,
+          "pattern": "^[a-z][a-z0-9_]*$"
+        },
+        "normalization_version": { "type": "integer", "minimum": 1, "maximum": 65535 },
+        "role": {
+          "enum": ["subject", "sender", "recipient", "organizer", "attendee", "participant", "mentioned", "assignee", "reporter", "owner", "other"]
+        }
+      },
+      "required": ["namespace", "value", "scope_class"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "description": "An authority- or namespace-scoped anchor must name the scope it is exact within.",
+          "if": {
+            "properties": { "scope_class": { "enum": ["authority_scoped", "namespace_scoped"] } },
+            "required": ["scope_class"]
+          },
+          "then": { "required": ["scope"] }
+        },
+        {
+          "description": "A normalized channel identity must name its normalization rule and version.",
+          "if": {
+            "properties": { "scope_class": { "const": "normalized_channel" } },
+            "required": ["scope_class"]
+          },
+          "then": { "required": ["normalization_rule", "normalization_version"] }
+        }
+      ]
+    },
+    "redactionMarker": {
+      "description": "The only permitted replacement text for material a Field removed before emission.",
+      "const": "[redacted]"
+    },
+    "diagnosticCode": {
+      "description": "Closed v1 diagnostic vocabulary. Codes prefixed 'protocol.' are emitted by core about a Field, never by a Field. Adding a code is an additive protocol revision.",
+      "enum": [
+        "auth.reauth_required",
+        "auth.expired",
+        "auth.scope_insufficient",
+        "permission.denied",
+        "permission.admin_consent_required",
+        "rate_limit.throttled",
+        "source.unavailable",
+        "source.history_unavailable",
+        "content.truncated",
+        "content.damaged",
+        "content.unsupported_format",
+        "content.skipped",
+        "capability.unsupported_object",
+        "cursor.reset_required",
+        "cursor.format_changed",
+        "snapshot.partial",
+        "refetch.required",
+        "refetch.unsupported",
+        "run.cancelled",
+        "run.deadline_exceeded",
+        "config.invalid",
+        "internal.error"
+      ]
+    },
+    "diagnosticDetail": {
+      "description": "Bounded, already-redacted structured detail. Never a source payload, HTTP trace, credential, or protected-channel value.",
+      "type": "object",
+      "propertyNames": { "$ref": "#/$defs/propertyName" },
+      "additionalProperties": {
+        "oneOf": [
+          { "type": "string", "maxLength": 1024 },
+          { "type": "number" },
+          { "type": "boolean" }
+        ]
+      },
+      "maxProperties": 32
+    },
+    "limits": {
+      "description": "Effective bounds for this run so the Field can self-police. Core enforces them regardless of what the Field does. A notebook may lower a value; raising one above the A2 ceiling requires a protocol revision.",
+      "type": "object",
+      "properties": {
+        "max_frame_bytes": { "type": "integer", "minimum": 4096, "maximum": 1048576 },
+        "max_body_bytes": { "type": "integer", "minimum": 1024, "maximum": 1048576 },
+        "max_properties_per_record": { "type": "integer", "minimum": 1, "maximum": 256 },
+        "max_property_value_bytes": { "type": "integer", "minimum": 64, "maximum": 65536 },
+        "max_list_members": { "type": "integer", "minimum": 1, "maximum": 1024 },
+        "max_artifacts_per_record": { "type": "integer", "minimum": 0, "maximum": 64 },
+        "max_artifact_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "max_run_artifact_bytes": { "type": "integer", "minimum": 0, "maximum": 8589934592 },
+        "max_run_stdout_bytes": { "type": "integer", "minimum": 4096, "maximum": 1073741824 },
+        "max_run_records": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "max_run_diagnostics": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "max_stderr_bytes": { "type": "integer", "minimum": 0, "maximum": 262144 },
+        "max_cursor_bytes": { "type": "integer", "minimum": 1, "maximum": 4096 }
+      },
+      "required": [
+        "max_frame_bytes",
+        "max_body_bytes",
+        "max_properties_per_record",
+        "max_property_value_bytes",
+        "max_list_members",
+        "max_artifacts_per_record",
+        "max_artifact_bytes",
+        "max_run_artifact_bytes",
+        "max_run_stdout_bytes",
+        "max_run_records",
+        "max_run_diagnostics",
+        "max_stderr_bytes",
+        "max_cursor_bytes"
+      ],
+      "additionalProperties": false
+    },
+    "deadline": {
+      "type": "object",
+      "properties": {
+        "not_after": { "$ref": "#/$defs/offsetDatetime" },
+        "idle_seconds": { "type": "integer", "minimum": 1, "maximum": 3600 },
+        "cancel_grace_seconds": { "type": "integer", "minimum": 1, "maximum": 120 }
+      },
+      "required": ["not_after", "idle_seconds", "cancel_grace_seconds"],
+      "additionalProperties": false
+    }
+  }
+}

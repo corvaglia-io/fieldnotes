@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/checkpoint-event.schema.json",
+  "title": "Field protocol v1 checkpoint event (Field to core)",
+  "description": "A Field's offer of a resume point. The Field proposes; core commits. Core commits the cursor only after every record with a sequence number at or below 'covers_record_seq_through' has reached durable current state, artifacts first, and the store's durability barrier has returned. A checkpoint carries no credential and no source payload. In snapshot mode it also carries the completeness claim that is the only thing which can authorize removal by proven absence.",
+  "type": "object",
+  "properties": {
+    "v": { "$ref": "common.schema.json#/$defs/protocolVersion" },
+    "type": { "const": "checkpoint" },
+    "run_id": { "$ref": "common.schema.json#/$defs/runId" },
+    "seq": { "$ref": "common.schema.json#/$defs/seq" },
+    "cursor": { "$ref": "common.schema.json#/$defs/cursor" },
+    "cursor_format_version": { "$ref": "common.schema.json#/$defs/cursorFormatVersion" },
+    "covers_record_seq_through": {
+      "description": "Sequence number of the last record this cursor accounts for. Must be less than this checkpoint's own seq, and greater than or equal to the previous checkpoint's value in the same run. Zero means the cursor advances without any record in between, which a Field may emit when it has proven that a page contained nothing new.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "records_covered": {
+      "description": "Count of record events this checkpoint accounts for since the previous checkpoint. Core cross-checks it against what it actually received and fails the run on disagreement.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "snapshot": {
+      "description": "Present only in a snapshot-mode run. 'complete' is the Field's explicit claim that it enumerated the whole declared scope. Anything else, including a partial claim, a windowed run, an error diagnostic anywhere in the run, cancellation, a deadline, or a non-zero exit, leaves absence meaningless: core removes nothing.",
+      "type": "object",
+      "properties": {
+        "scope": {
+          "description": "The scope this claim covers. Must equal the request's snapshot_scope; a wider claim is rejected.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "state": { "enum": ["complete", "partial"] },
+        "objects_enumerated": { "type": "integer", "minimum": 0, "maximum": 1000000000 }
+      },
+      "required": ["scope", "state"],
+      "additionalProperties": false
+    },
+    "window": {
+      "description": "The portion of a requested window this checkpoint accounts for. A window is bounded evidence and never authorizes deletion.",
+      "type": "object",
+      "properties": {
+        "from": { "$ref": "common.schema.json#/$defs/offsetDatetime" },
+        "through": { "$ref": "common.schema.json#/$defs/offsetDatetime" }
+      },
+      "required": ["from", "through"],
+      "additionalProperties": false
+    },
+    "final": {
+      "description": "The Field's declaration that this is the last checkpoint of the run and it intends to exit normally. A run whose process exits non-zero is never treated as complete regardless of this flag.",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "v",
+    "type",
+    "run_id",
+    "seq",
+    "cursor",
+    "cursor_format_version",
+    "covers_record_seq_through",
+    "records_covered",
+    "final"
+  ],
+  "additionalProperties": false
+}

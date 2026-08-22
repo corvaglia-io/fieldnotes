@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.fieldnotes.invalid/field-protocol/v1/describe-request.schema.json",
+  "title": "Field protocol v1 describe request (core to Field)",
+  "description": "The single frame core writes to a Field's standard input during a describe run, invoked as '<field-executable> describe'. A describe run carries no credential grant, no cursor, and no staging directory: negotiation happens before any secret is delivered.",
+  "type": "object",
+  "properties": {
+    "v": { "$ref": "common.schema.json#/$defs/protocolVersion" },
+    "type": { "const": "describe_request" },
+    "run_id": { "$ref": "common.schema.json#/$defs/runId" },
+    "supported_protocol_versions": {
+      "$ref": "common.schema.json#/$defs/protocolVersionList"
+    },
+    "max_protocol_revision": {
+      "description": "Highest additive revision core understands for the highest version it supports.",
+      "$ref": "common.schema.json#/$defs/protocolRevision"
+    },
+    "field_id": { "$ref": "common.schema.json#/$defs/fieldId" },
+    "limits": { "$ref": "common.schema.json#/$defs/limits" },
+    "deadline": { "$ref": "common.schema.json#/$defs/deadline" }
+  },
+  "required": [
+    "v",
+    "type",
+    "run_id",
+    "supported_protocol_versions",
+    "max_protocol_revision",
+    "limits",
+    "deadline"
+  ],
+  "additionalProperties": false
+}
