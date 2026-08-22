@@ -1,12 +1,13 @@
 # Proposed A2 Field protocol corpus, version 1
 
-**Status:** Proposal material for approval gate A2. **Not an approved
-contract.** Nothing in this directory is frozen, and no implementation may
-treat it as settled until the user explicitly approves the
-[A2 package](../../../../docs/approvals/A2-field-protocol.md).
-**Implementation:** None yet, by design. A2 blocks all local and live Field
-work, so no conformance suite can exist to run these against. The verification
-that was possible is described under "How this corpus was checked" below.
+**Status:** Approved at A2 on 2026-08-23; frozen as the implementation target.
+The user approved the
+[A2 package](../../../../docs/approvals/A2-field-protocol.md), so these bytes
+are now frozen rather than review material.
+**Implementation:** None yet. IG2 adds the executable conformance suite,
+the fixture Field, and the DTOs that round-trip these schemas. The
+verification that was possible before an executable suite existed is
+described under "How this corpus was checked" below.
 
 This corpus makes the A2 recommendation reviewable as bytes rather than prose:
 exact JSON Schemas for every message that crosses the Field process boundary,

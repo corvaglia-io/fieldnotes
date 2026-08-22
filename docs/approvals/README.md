@@ -6,7 +6,7 @@ Fieldnotes freezes shared contracts before parallel feature implementation.
 |---|---|---|---|
 | A0 | [Repository scaffold](A0-repository-scaffold.md) | Approved and implemented | — |
 | A1 | [Notebook schema, naming, registry, and golden Markdown fixtures](A1-notebook-contract.md) | Approved 2026-08-22 | Notebook writer and all mappings |
-| A2 | [Field protocol JSON Schemas and conformance transcripts](A2-field-protocol.md) | Ready for review | Local and live Field implementation |
+| A2 | [Field protocol JSON Schemas and conformance transcripts](A2-field-protocol.md) | Approved 2026-08-23 | Local and live Field implementation |
 
 An approval package contains a recommendation, alternatives, consequences, and reviewable examples. Approval is explicit; implementation does not infer it from silence.
 

@@ -1,11 +1,10 @@
 # Field process protocol
 
-**Status:** Boundary proposed. Exact protocol v1 is approval milestone A2, whose
-package is now prepared and **ready for review**, not approved: see the
-[A2 approval package](approvals/A2-field-protocol.md) and its
-[candidate schemas and transcripts](../tests/fixtures/protocol/proposed-v1/README.md).
-This document remains the conceptual boundary; A2 is the exact contract being
-proposed for it.
+**Status:** Exact protocol v1 is approval milestone A2, approved by the user on
+2026-08-23: see the [A2 approval package](approvals/A2-field-protocol.md) and
+its [frozen schemas and transcripts](../tests/fixtures/protocol/proposed-v1/README.md).
+This document remains the conceptual boundary; A2 is the exact, now-frozen
+contract for it.
 
 ## Purpose
 
@@ -28,7 +27,7 @@ field -> process exit
 
 Logs use standard error. Protocol data uses standard input/output. No secret may enter arguments, environment inherited by default, event streams, logs, cursors, or notebook material.
 
-## Operations and events to freeze at A2
+## Operations and events frozen at A2
 
 ### `describe`
 
@@ -46,7 +45,7 @@ The A2 package adds three members this list did not anticipate: an explicit coll
 
 Carries a bounded normalized source envelope containing portable `source_scope`, `source_identity`, optional reliable source version, primary Note-type candidate, timestamps, flat shared/prefixed property candidates, body content, identity anchors, artifact descriptors, and damage/truncation information.
 
-The A2 package proposes that boundary as **post-mapping and pre-serialization**: the Field maps vendor structures onto A1 vocabulary and does none of the serialization, so core stays the single canonical serializer, the final validator, and the sole durable writer. Record IDs, producer provenance, capture time, hashes, canonical key order and scalar spelling, filenames, and rebuildable projection lists are core's and are structurally absent from the record envelope. A Field never emits a path that core trusts as a notebook destination and never writes a rendered Note directly. The rejected alternative, a nearly rendered Note candidate, is argued in [A2 section 6](approvals/A2-field-protocol.md).
+The A2 package approves that boundary as **post-mapping and pre-serialization**: the Field maps vendor structures onto A1 vocabulary and does none of the serialization, so core stays the single canonical serializer, the final validator, and the sole durable writer. Record IDs, producer provenance, capture time, hashes, canonical key order and scalar spelling, filenames, and rebuildable projection lists are core's and are structurally absent from the record envelope. A Field never emits a path that core trusts as a notebook destination and never writes a rendered Note directly. The rejected alternative, a nearly rendered Note candidate, is argued in [A2 section 6](approvals/A2-field-protocol.md).
 
 ### `checkpoint`
 
@@ -75,12 +74,11 @@ Protocol v1 must bound frame size, body size, artifact size/streaming, stderr ca
 
 ## A2 decisions
 
-The [A2 package](approvals/A2-field-protocol.md) now carries a recommendation
-for every item below, together with candidate schemas and transcripts. It is
-ready for review and not approved; nothing here is in force until the user says
-so.
+The [A2 package](approvals/A2-field-protocol.md) carries the approved decision
+for every item below, together with the frozen schemas and transcripts. The
+user approved A2 on 2026-08-23; everything here is now in force.
 
-A2 must approve:
+A2 approves:
 
 - exact JSON Schemas and examples for manifest, request, records, checkpoints, diagnostics, and authoritative deletion/snapshot signaling;
 - protocol negotiation and compatibility rules;
@@ -96,7 +94,7 @@ A2 must approve:
 
 The approval package includes example transcripts, generated schema validation, a fake Field, and tests for normal collection, duplicate replay, changed objects, authoritative deletion, partial snapshots, pagination checkpoints, crash before/after checkpoint, malformed/oversized/invalid output, version mismatch, stderr floods, hangs, malicious paths, cancellation, and secret canaries.
 
-The reviewable half of that — the schemas and the transcripts — is attached to the A2 package as [candidate protocol fixtures](../tests/fixtures/protocol/proposed-v1/README.md). The fixture Field and the executable conformance suite are IG2 implementation evidence listed in the package, not a prerequisite for choosing the contract.
+The reviewable half of that — the schemas and the transcripts — is attached to the A2 package as [frozen protocol fixtures](../tests/fixtures/protocol/proposed-v1/README.md), approved and now the IG2 implementation target. The fixture Field and the executable conformance suite are the subsequent IG2 implementation evidence.
 
 Every live Field must later pass this shared suite plus its vendor fixtures. Connector work cannot amend protocol v1 privately.
 

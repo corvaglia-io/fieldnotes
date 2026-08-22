@@ -77,7 +77,7 @@ and validator accept normative fixtures and reject invalid ones.
 
 ## Approval milestone A2: Field protocol
 
-**Status:** Package prepared and ready for review; not approved. See the
+**Status:** Approved on 2026-08-23. See the
 [A2 Field protocol package](approvals/A2-field-protocol.md).
 
 Approve the process boundary before implementing live Fields. The approval includes exact JSON Schemas for:

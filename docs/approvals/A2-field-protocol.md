@@ -1,7 +1,9 @@
 # A2 approval: Field process protocol
 
-**Status:** Ready for review. Not approved. Approval is explicit and is never
-inferred from silence or from implementation.  
+**Status:** Approved by the user on 2026-08-23, covering the package as it now
+stands, including the twenty corrections applied after the reference
+implementation was built against it, and the four attachment-retention
+decisions recorded in [ADR 0007](../decisions/0007-attachment-retention-policy.md).  
 **Scope:** The transport and process boundary between Fieldnotes core and an
 external Field process: framing, version negotiation, the `describe` manifest,
 the collection request, the `record`, `checkpoint`, and `diagnostic` events,
@@ -18,15 +20,15 @@ of the three explicit approval gates, and it blocks all local and live Field
 implementation: `0.1.1`'s Field SDK and `local` Field, and every Microsoft and
 Jira Field after it.
 
-The recommendation is to approve the choices in the numbered sections below
-together with the attached candidate schemas and transcripts. Nothing in this
-document is in force until the user says so.
+The user has explicitly approved every choice in the numbered sections below,
+together with the attached candidate schemas and transcripts, on 2026-08-23;
+the protocol in this document is now frozen.
 
 The review corpus is attached as:
 
 - [candidate protocol schemas and transcripts](../../tests/fixtures/protocol/proposed-v1/README.md).
 
-Those bytes make the proposal reviewable. A2 approval would freeze them as the
+Those bytes make the proposal reviewable. A2 approval freezes them as the
 implementation target; the Rust DTOs, the conformance kit, the fixture Field,
 and the executable crash, hostile-output, and secret-canary tests are the
 subsequent IG2 implementation evidence, not a prerequisite for choosing the
@@ -1278,7 +1280,7 @@ implicit discovery, recorded manifest, and confirmation on change.
 
 ## Compatibility and change policy
 
-If A2 is approved:
+After A2 approval:
 
 - protocol v1 is frozen. Every schema closes with
   `additionalProperties: false`, and an unknown member or event is a failed run
@@ -1312,8 +1314,8 @@ If A2 is approved:
 ## Evidence required for implementation
 
 The attached schemas and transcripts make the recommended choices concrete
-enough for contract review. They are not the executable conformance suite. If
-A2 is approved, IG2 must produce, before `0.1.1` closes:
+enough for contract review. They are not the executable conformance suite. Now
+that A2 is approved, IG2 must produce, before `0.1.1` closes:
 
 - protocol DTOs in `fieldnotes-field-protocol` that round-trip every attached
   schema, with the schemas checked in as the generation or validation source so
@@ -1378,108 +1380,108 @@ secret-looking text. The canary tests examine Fieldnotes' own output only.
 
 ## Explicit approval checklist
 
-Nothing below is approved. Each box records one choice the user is asked to
-accept, reject, or amend.
+A2 is approved because the user explicitly accepted each checked choice below,
+and the integrated schemas and transcripts match it.
 
 ### Transport and negotiation
 
-- [ ] Newline-delimited JSON on standard output, logs on standard error,
+- [x] Newline-delimited JSON on standard output, logs on standard error,
   credential material only on a separate protected channel.
-- [ ] Two argv-selected operations, `describe` and `collect`, each one bounded
+- [x] Two argv-selected operations, `describe` and `collect`, each one bounded
   short-lived child process.
-- [ ] A per-run monotonic `seq` shared by records, checkpoints, and
+- [x] A per-run monotonic `seq` shared by records, checkpoints, and
   diagnostics, with any gap, repeat, or regression failing the run.
-- [ ] Major version plus additive-only `protocol_revision`, negotiated as the
+- [x] Major version plus additive-only `protocol_revision`, negotiated as the
   minimum of the two declared revisions.
-- [ ] Negotiation entirely inside the describe run, before any credential grant
+- [x] Negotiation entirely inside the describe run, before any credential grant
   or staging directory exists, failing closed and actionably in both
   directions.
-- [ ] `additionalProperties: false` everywhere, with an unknown member or event
+- [x] `additionalProperties: false` everywhere, with an unknown member or event
   a failed run rather than a warning.
 
 ### Manifest and declared properties
 
-- [ ] The manifest as a Field's complete self-declaration: stem, prefix,
+- [x] The manifest as a Field's complete self-declaration: stem, prefix,
   capability slices, source-key derivation, identity anchors, authentication,
   collection behavior, deletion authority, cursor format, and limitations.
-- [ ] Capability, deletion authority, and snapshot authority must be declared
+- [x] Capability, deletion authority, and snapshot authority must be declared
   before they can be exercised, rather than inferred from behavior.
-- [ ] `writes_to_source: false`, `scope_depends_on_field_label: false`, and
+- [x] `writes_to_source: false`, `scope_depends_on_field_label: false`, and
   `substitutes_for_source_key: false` as schema constants rather than
   configurable values.
-- [ ] Every connector-prefixed property declared with name, scalar type,
+- [x] Every connector-prefixed property declared with name, scalar type,
   cardinality, and set-versus-ordered list semantics, closing the gap ruling 4
   assigned to A2.
-- [ ] Core rejects prefixed properties the declaring manifest does not list,
+- [x] Core rejects prefixed properties the declaring manifest does not list,
   values contradicting a declared type or cardinality, another Field's prefix,
   and unprefixed names outside A1's closed shared registry.
-- [ ] Spelling-based type inference retired for declared properties, and a
+- [x] Spelling-based type inference retired for declared properties, and a
   declared-type change, a declared-property removal, or a cursor-format change
   each treated as a migration that blocks sync rather than a silent retype or
   a silently forgotten type; adding a declared property needs no migration.
-- [ ] The Note-applicable subset of A1's shared registry named precisely and
+- [x] The Note-applicable subset of A1's shared registry named precisely and
   enforced, so a Field collecting a Note cannot emit a name the registry types
   for a derived record only.
-- [ ] A record's `note_type` enforced against its capability slice's declared
+- [x] A record's `note_type` enforced against its capability slice's declared
   `note_type`, closing the one manifest member "declare before exercise" had
   not yet been applied to.
 
 ### Record envelope and identity
 
-- [ ] **The normalized source envelope, rather than a nearly rendered Note
+- [x] **The normalized source envelope, rather than a nearly rendered Note
   candidate**, with core remaining the single canonical serializer, the final
   validator, and the sole durable writer.
-- [ ] Core-owned values — record IDs, producer provenance, capture time,
+- [x] Core-owned values — record IDs, producer provenance, capture time,
   hashes, canonical order and spelling, filenames, and rebuildable projections
   — structurally excluded from the record schema rather than merely overruled.
-- [ ] The `upsert` and `delete` split, with content structurally forbidden on a
+- [x] The `upsert` and `delete` split, with content structurally forbidden on a
   delete.
-- [ ] `(source_scope, source_identity)` as the only key that collapses
+- [x] `(source_scope, source_identity)` as the only key that collapses
   independently collected copies, with `(instance_id, field_id)` retained by
   core as producer provenance and never sent to the Field.
-- [ ] Declared source-key derivation, declared `source_version_ordering`, and
+- [x] Declared source-key derivation, declared `source_version_ordering`, and
   `unsupported` meaning divergence becomes a visible conflict rather than a
   silent overwrite.
-- [ ] Separately declared identity anchors with namespace, scope class, and
+- [x] Separately declared identity anchors with namespace, scope class, and
   normalization rule and version, which may relate graph entities and never
   substitute for the exact-source key or reconcile a Note.
-- [ ] A property number crossing the boundary in its wire spelling, verbatim,
+- [x] A property number crossing the boundary in its wire spelling, verbatim,
   with A1 alone owning canonical number spelling.
-- [ ] A malformed `date` value (`record.invalid_date`) distinguishable from a
+- [x] A malformed `date` value (`record.invalid_date`) distinguishable from a
   malformed `datetime` value (`record.invalid_datetime`), and the envelope's
   own instants guarded at decode so the latter can only fire for a declared or
   registered temporal property.
 
 ### Artifacts
 
-- [ ] Staged-file transfer into a core-created, core-named, per-run staging
+- [x] Staged-file transfer into a core-created, core-named, per-run staging
   directory, with a single-segment closed-character-set handle and no
   connector-supplied path anywhere.
-- [ ] Core always computing its own digest and deriving A1 artifact identity
+- [x] Core always computing its own digest and deriving A1 artifact identity
   and path from it, with a declared digest as a detection aid only.
-- [ ] The `digest_only` reference, accepted only for a digest the notebook
+- [x] The `digest_only` reference, accepted only for a digest the notebook
   already stores and otherwise rejected so the Field retries with bytes.
-- [ ] The `not_retained` reference, for an artifact the Field saw and declined
+- [x] The `not_retained` reference, for an artifact the Field saw and declined
   to retain per the single-artifact bound's default; never a rejection, and
   the record and its Note are still accepted without those bytes.
-- [ ] Artifacts durable before any Note that references them, and identical
+- [x] Artifacts durable before any Note that references them, and identical
   bytes deduplicating storage without ever collapsing Notes.
-- [ ] A grammar failure (`artifact.invalid_handle`) and a filesystem-shape
+- [x] A grammar failure (`artifact.invalid_handle`) and a filesystem-shape
   failure (`artifact.not_regular_file`) as distinguishable rejection codes,
   and the handle grammar applied by the implementation as an artifact-
   validation step distinct from wire-schema validity, never folded into the
   DTO type used for decoding.
-- [ ] A required `artifact_media_types` retention policy on the collection
+- [x] A required `artifact_media_types` retention policy on the collection
   request (ADR 0007), mirroring `max_artifact_bytes` in shape and default-
   versus-configurable behavior, orthogonal to A1's frozen media-type-to-
   extension registry, with `artifact.type_excluded` as its own rejection code
   distinct from `artifact.oversized`.
-- [ ] `attachment_ref`, required exactly for `not_retained` and forbidden for
+- [x] `attachment_ref`, required exactly for `not_retained` and forbidden for
   `staged` or `digest_only`, projected by core onto the new A1 shared
   property `skipped_attachments` (see the A1 amendment and
   [ADR 0007](../decisions/0007-attachment-retention-policy.md)) rather than
   interpreted by A2 itself.
-- [ ] An optional `recollect_targets` request shape naming previously-
+- [x] An optional `recollect_targets` request shape naming previously-
   collected source objects by their portable exact-source key alone,
   orthogonal to `mode`, excluding `cursor` and `window` when present, never
   combined with `snapshot` mode, and gated by the manifest's existing
@@ -1487,114 +1489,114 @@ accept, reject, or amend.
 
 ### Cursors, checkpoints, and crash safety
 
-- [ ] An opaque, non-secret, bounded, Field-owned cursor with a declared format
+- [x] An opaque, non-secret, bounded, Field-owned cursor with a declared format
   version that core never parses, and a format change starting unbounded with a
   reported recovery gap.
-- [ ] Checkpoints proposed by the Field and committed only by core, after every
+- [x] Checkpoints proposed by the Field and committed only by core, after every
   covered record is durable and the durability barrier has returned.
-- [ ] The fixed persistence order, with the cursor committed last and never
+- [x] The fixed persistence order, with the cursor committed last and never
   advancing past an undurable write.
-- [ ] A run in which core rejected a record commits no further checkpoint.
-- [ ] A lagging cursor as the deliberately required direction, with replay made
+- [x] A run in which core rejected a record commits no further checkpoint.
+- [x] A lagging cursor as the deliberately required direction, with replay made
   idempotent by portable-source-key reconciliation **at the store**, which is
   the only place that can see the notebook's current state; the protocol
   boundary itself guarantees only within-run duplicate detection.
-- [ ] Identical duplicate records as no-ops within and across runs, and
+- [x] Identical duplicate records as no-ops within and across runs, and
   in-run divergence without declared ordering as a rejected Field defect —
   settled, not reopened by cross-run or cross-instance divergence, which
   still becomes a visible conflict at the store.
-- [ ] Checkpoint eligibility stated precisely as "every accepted *record* with
+- [x] Checkpoint eligibility stated precisely as "every accepted *record* with
   seq at or below the covered value," not "every seq," because `seq` is
   shared across records, checkpoints, and diagnostics and a naive contiguous
   watermark over raw `seq` values never commits.
-- [ ] `covers_record_seq_through: 0` meaning no records covered, and repeated
+- [x] `covers_record_seq_through: 0` meaning no records covered, and repeated
   coverage of an already-covered range as a legal no-op.
-- [ ] `protocol.coverage_mismatch` as its own code for a `records_covered`
+- [x] `protocol.coverage_mismatch` as its own code for a `records_covered`
   disagreement, and `protocol.seq_gap` as its own code for a sequence gap,
   neither overloading `protocol.unexpected_order`.
-- [ ] Durability handled conservatively in v0.1: core refuses the next event
+- [x] Durability handled conservatively in v0.1: core refuses the next event
   while a checkpoint's durability barrier is outstanding, with pipelining left
   as a permitted future optimization.
-- [ ] The cursor grammar excluding every C0 control character, not only NUL.
+- [x] The cursor grammar excluding every C0 control character, not only NUL.
 
 ### Deletion and partial results
 
-- [ ] Removal only by an explicit declared-authority tombstone or a completed
+- [x] Removal only by an explicit declared-authority tombstone or a completed
   authoritative snapshot, and by nothing else.
-- [ ] Snapshot removal requiring declared authority, requested snapshot mode, a
+- [x] Snapshot removal requiring declared authority, requested snapshot mode, a
   completeness claim for exactly the requested scope, no error diagnostic, and
   a zero exit, with each condition independently sufficient to refuse.
-- [ ] Partial results made distinguishable by explicit completeness state,
+- [x] Partial results made distinguishable by explicit completeness state,
   diagnostic severity, and exit code, rather than inferred.
-- [ ] No tombstone or revision record written on deletion, with refetch
+- [x] No tombstone or revision record written on deletion, with refetch
   recovery under a new Note ID, as A1 section 7 requires.
 
 ### Credentials, diagnostics, and redaction
 
-- [ ] A credential reference in the request and material only on the protected
+- [x] A credential reference in the request and material only on the protected
   channel, with `credential_response.material` the only secret-bearing member
   in the protocol.
-- [ ] No secret in process arguments, the inherited environment, `config`,
+- [x] No secret in process arguments, the inherited environment, `config`,
   event streams, logs, cursors, or notebook material, with a sanitized
   allowlisted child environment.
-- [ ] Single-use per-run grant, declared expiry, declared refresh ownership,
+- [x] Single-use per-run grant, declared expiry, declared refresh ownership,
   and core closing the channel when the run ends.
-- [ ] The closed diagnostic-code vocabulary, and `severity: error`
+- [x] The closed diagnostic-code vocabulary, and `severity: error`
   disqualifying completeness and any deletion by absence.
-- [ ] Two-layer redaction: the Field sanitizes with the exact `[redacted]`
+- [x] Two-layer redaction: the Field sanitizes with the exact `[redacted]`
   marker and names what it removed; core redacts again over diagnostics and
   captured standard error before display or persistence, and never persists raw
   standard error.
-- [ ] Redaction as an obligation on Fieldnotes' own output only, with no secret
+- [x] Redaction as an obligation on Fieldnotes' own output only, with no secret
   scanning of collected evidence, per ruling 3.
-- [ ] The channel descriptor's flat object shape as deliberate, not an
+- [x] The channel descriptor's flat object shape as deliberate, not an
   oversight: `additionalProperties: false` and an internally tagged union
   fight each other, and a flat shape is what every implementation language
   will be pulled toward for the same reason.
-- [ ] The end-to-end credential canary — over a real per-platform channel
+- [x] The end-to-end credential canary — over a real per-platform channel
   mechanism — assigned to the `0.1.3` authentication gate, since section 12
   defers that mechanism there and A2 cannot freeze evidence for a mechanism it
   does not itself freeze.
 
 ### Failure, bounds, and trust
 
-- [ ] The exit-code table, with reserved ranges and signal termination
+- [x] The exit-code table, with reserved ranges and signal termination
   normalized to a failed run, including Windows abnormal termination — a full
   NTSTATUS-shaped 32-bit value such as `0xC0000409`, which does not fit the
   `u8` an ordinary exit code fits into and must never be narrowed into one.
-- [ ] Complete, partial, and failed run outcomes, with only complete
+- [x] Complete, partial, and failed run outcomes, with only complete
   authorizing deletion by absence, and durable work before a failure retained.
-- [ ] Per-Field outcomes in a multi-Field sync, with the CLI's own exit-code
+- [x] Per-Field outcomes in a multi-Field sync, with the CLI's own exit-code
   table left to the CLI contract.
-- [ ] Cooperative cancellation with a grace period, exit code 8, and a
+- [x] Cooperative cancellation with a grace period, exit code 8, and a
   cancelled run never complete.
-- [ ] The frozen bound ceilings — absolute technical bounds no configuration
+- [x] The frozen bound ceilings — absolute technical bounds no configuration
   may cross — echoed to the Field in the request. For most bounds the ceiling
   is also the default and configuration is downward only; the single-artifact
   bound and the run wall clock instead have a configurable default distinct
   from their ceiling and may be configured in either direction up to it, per
   the "Questions the reviewer may want to settle" section.
-- [ ] Any protocol violation failing the run, with the closed rejection-code
+- [x] Any protocol violation failing the run, with the closed rejection-code
   vocabulary and previously committed checkpoints standing.
-- [ ] Structural path safety: no Field-supplied string is ever a path
+- [x] Structural path safety: no Field-supplied string is ever a path
   component, handles resolved only inside the staging directory without
   following symlinks, and notebook paths derived only from core's own digest.
-- [ ] Pinned configured executable paths with no `PATH` discovery, a recorded
+- [x] Pinned configured executable paths with no `PATH` discovery, a recorded
   manifest snapshot and executable digest, and explicit confirmation on change.
 
 ### Corpus and policy
 
-- [ ] The candidate schemas and transcripts are correct and complete enough to
+- [x] The candidate schemas and transcripts are correct and complete enough to
   freeze as the IG2 implementation target, within the A2-versus-later-gate
   classification each corpus README states.
-- [ ] A2's compatibility and change policy, and the boundaries it leaves to the
+- [x] A2's compatibility and change policy, and the boundaries it leaves to the
   `0.1.3` authentication gate, the per-Field release gates, and the CLI
   contract.
-- [ ] The IG2 evidence list as release gate R1's required evidence.
+- [x] The IG2 evidence list as release gate R1's required evidence.
 
 ## Approval effect
 
-Approving A2 would unblock the `0.1.1` release: the protocol DTO and SDK
+Approval unblocks the `0.1.1` release: the protocol DTO and SDK
 crates, the fixture Field, the connector conformance kit, the `local` Field,
 `fields add/list/status/remove`, `sync`, durable cursors and checkpoint
 recovery, source-identity reconciliation, authoritative deletion handling, and
@@ -1603,7 +1605,7 @@ Outlook Mail, Calendar, Contacts, Teams, and Jira — then becomes a conforming
 connector plus fixtures plus registry review, rather than a protocol
 negotiation.
 
-It would not approve any A1 vocabulary change, any connector's actual
+It does not approve any A1 vocabulary change, any connector's actual
 capability slices or property names, the per-platform credential channel
 mechanics that close at `0.1.3`, renderers or handback packaging at `0.1.7`,
 enhancement at `0.1.8`, the CLI exit-code table, or any destination write.

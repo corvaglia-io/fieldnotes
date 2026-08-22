@@ -1,6 +1,7 @@
 # Fieldnotes v0.1 architecture
 
-**Status:** A0 workspace scaffold approved; later contracts remain proposed
+**Status:** A0 workspace scaffold, A1 notebook contract, and A2 Field protocol
+approved; connector-specific and later-release decisions remain proposed
 
 Fieldnotes is a local-first, current-state context collector. The architecture
 keeps the public notebook portable, source connectors isolated, deterministic
