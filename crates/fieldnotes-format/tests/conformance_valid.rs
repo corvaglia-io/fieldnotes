@@ -49,8 +49,8 @@ fn valid_corpus_round_trips_byte_for_byte() -> TestResult {
     files.sort();
     assert_eq!(
         files.len(),
-        23,
-        "expected the 23 frozen record fixtures, found {files:?}"
+        26,
+        "expected the 26 frozen record fixtures, found {files:?}"
     );
     for path in &files {
         let bytes = fs::read(path)?;
@@ -91,8 +91,8 @@ fn valid_note_filenames_match_computed_names() -> TestResult {
             .map_err(|e| format!("{}: {e}", path.display()))?;
         checked += 1;
     }
-    // Ten notes plus the same-id left/right pair.
-    assert_eq!(checked, 12);
+    // Thirteen notes plus the same-id left/right pair.
+    assert_eq!(checked, 15);
     Ok(())
 }
 
@@ -118,8 +118,8 @@ fn embedded_content_hashes_recompute_from_bodies() -> TestResult {
         );
         checked += 1;
     }
-    // Ten notes, two conflict candidates, and the same-id pair.
-    assert_eq!(checked, 14);
+    // Thirteen notes, two conflict candidates, and the same-id pair.
+    assert_eq!(checked, 17);
     Ok(())
 }
 

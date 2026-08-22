@@ -49,6 +49,45 @@ fn artifact_vector_reproduces_digest_id_and_path() -> TestResult {
     Ok(())
 }
 
+/// A true arbitrary-byte artifact vector (NUL, high-bit bytes, a lone CR not
+/// followed by LF, and an invalid-UTF-8 sequence) hashes to the checked-in
+/// digest and derives the frozen artifact ID and `.bin` fallback path,
+/// proving artifact hashing never UTF-8-validates, newline-converts, or
+/// otherwise normalizes the bytes.
+#[test]
+fn binary_artifact_vector_is_hashed_byte_exact_and_binary_safe() -> TestResult {
+    let bytes = fs::read(vectors_root().join("artifact-input-binary.bin"))?;
+
+    // The vector must actually exercise the bytes the plain-ASCII vector
+    // could not: NUL, high-bit bytes, a lone CR not followed by LF, and a
+    // byte sequence that is not valid UTF-8.
+    assert!(bytes.contains(&0x00), "vector must contain a NUL byte");
+    assert!(bytes.contains(&0x80), "vector must contain a 0x80 byte");
+    assert!(bytes.contains(&0xff), "vector must contain a 0xff byte");
+    assert!(
+        bytes.windows(2).any(|w| w[0] == 0x0d && w[1] != 0x0a),
+        "vector must contain a CR not followed by LF"
+    );
+    assert!(
+        std::str::from_utf8(&bytes).is_err(),
+        "vector must not be valid UTF-8"
+    );
+
+    let (_, expected_hex) = read_expected("artifact-input-binary.sha256", "sha256:")?;
+    assert_eq!(sha256_hex(&bytes), expected_hex);
+
+    let artifact_id = artifact_id_for_bytes(&bytes);
+    assert_eq!(
+        artifact_id.to_string(),
+        "artifact_sha256_cf741b831206259b64c8ec80e25fe3e584e131fd8122b9310fd8feab47dfb36f"
+    );
+    assert_eq!(
+        artifact_relative_path(&artifact_id, None),
+        "artifacts/artifact_sha256_cf741b831206259b64c8ec80e25fe3e584e131fd8122b9310fd8feab47dfb36f.bin"
+    );
+    Ok(())
+}
+
 /// The normalized-body vector reproduces the `fn-content-v1` digest, and the
 /// documented CRLF/CR/BOM/final-LF normalizations converge on the same bytes.
 #[test]

@@ -10,7 +10,7 @@
 - Files in this directory use UTF-8 and LF. Every non-empty input fixture has exactly one final LF. The current text happens to use precomposed Unicode characters, but the algorithm does not normalize Unicode.
 - Hashing is streaming and binary-safe. No platform newline conversion, YAML parsing, text decoding, path, media type, filename, timestamp, or filesystem metadata is applied unless the specific algorithm says so.
 
-The `.bin` artifact fixture deliberately contains only patch-safe ASCII bytes so it can be added with `apply_patch`. A later approved suite should add at least one true arbitrary-byte vector containing NUL and high-bit bytes through a binary-safe repository mechanism. Until then, binary safety is an algorithm requirement that this particular fixture does not fully exercise.
+The `artifact-input.bin` fixture deliberately contains only patch-safe ASCII bytes so it can be added with `apply_patch`. `artifact-input-binary.bin` (below) is the IG1 true arbitrary-byte vector added through a binary-safe repository mechanism (a Python script writing raw bytes directly, never a text editor or patch tool), so binary safety is now exercised end to end.
 
 ## Artifact byte hash
 
@@ -50,6 +50,70 @@ artifacts/artifact_sha256_449d6bf49ec2725f12047f2db40baea3e2eb1112dbfd851aa0ecc5
 This supplies an exact bytes-to-ID-to-path vector without pretending that the
 illustrative `.jpg`, `.m4a`, and `.pdf` references in the notebook-shape corpus
 have checked-in payloads.
+
+### True arbitrary-byte artifact vector (IG1, normative)
+
+`artifact-input.bin` above is deliberately patch-safe ASCII and does not
+exercise binary safety. `artifact-input-binary.bin` is the IG1 vector that
+does: it was written directly by a Python script (`open(path, "wb").write(...)`),
+never typed by hand or touched by a text editor, and its exact bytes are:
+
+```text
+Fieldnotes binary artifact vector.\n
+Lone CR next, not a newline:\r not-a-newline.\n
+NUL follows:\x00end-of-nul.\n
+High-bit bytes: \x80\xff end-of-high-bit.\n
+Invalid UTF-8 sequence: \xc3\x28 end-of-invalid.\n
+```
+
+(concatenated with no separators; the line breaks above are for readability
+only). Complete hexadecimal input, 184 bytes:
+
+```text
+46 69 65 6c 64 6e 6f 74 65 73 20 62 69 6e 61 72 79 20 61 72 74 69 66 61 63 74
+20 76 65 63 74 6f 72 2e 0a 4c 6f 6e 65 20 43 52 20 6e 65 78 74 2c 20 6e 6f 74
+20 61 20 6e 65 77 6c 69 6e 65 3a 0d 20 6e 6f 74 2d 61 2d 6e 65 77 6c 69 6e 65
+2e 0a 4e 55 4c 20 66 6f 6c 6c 6f 77 73 3a 00 65 6e 64 2d 6f 66 2d 6e 75 6c 2e
+0a 48 69 67 68 2d 62 69 74 20 62 79 74 65 73 3a 20 80 ff 20 65 6e 64 2d 6f 66
+2d 68 69 67 68 2d 62 69 74 2e 0a 49 6e 76 61 6c 69 64 20 55 54 46 2d 38 20 73
+65 71 75 65 6e 63 65 3a 20 c3 28 20 65 6e 64 2d 6f 66 2d 69 6e 76 61 6c 69 64
+2e 0a
+```
+
+This byte sequence deliberately contains: a NUL byte (`00`) after `follows:`;
+high-bit bytes `80` and `ff`; a CR (`0d`) immediately followed by a space
+rather than LF; and the two-byte sequence `c3 28`, which is not valid UTF-8
+(`c3` requires a UTF-8 continuation byte in `80`-`bf`, and `28` is ASCII `(`).
+A reviewer can reproduce the digest independently with:
+
+```sh
+shasum -a 256 artifact-input-binary.bin
+```
+
+Expected value is stored in `artifact-input-binary.sha256`:
+
+```text
+sha256:cf741b831206259b64c8ec80e25fe3e584e131fd8122b9310fd8feab47dfb36f
+```
+
+The same digest produces this A1 original-artifact identity:
+
+```text
+artifact_sha256_cf741b831206259b64c8ec80e25fe3e584e131fd8122b9310fd8feab47dfb36f
+```
+
+No media type is available for this vector either, so it falls back to the
+same canonical extension rule:
+
+```text
+artifacts/artifact_sha256_cf741b831206259b64c8ec80e25fe3e584e131fd8122b9310fd8feab47dfb36f.bin
+```
+
+This vector proves artifact hashing is byte-exact and binary-safe: the bytes
+above are never UTF-8-validated, never newline-converted, and never
+Unicode-normalized before hashing — unlike the separate, deliberately
+different `fn-content-v1-sha256` Markdown-body algorithm below, which does
+require valid UTF-8 and does convert line endings.
 
 ## Normalized Markdown content hash
 

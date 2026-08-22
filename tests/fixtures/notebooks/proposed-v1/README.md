@@ -60,13 +60,54 @@ reliable source version, so the pair must remain a visible conflict. The
 proposed materialized result is under `conflicts/<conf-id>/`; its candidates are
 ordered by ascending proposed semantic-record fingerprint.
 
+## IG1 corpus expansion
+
+A1 required IG1 to expand the corpus before the `0.1.0` compatibility suite is
+complete (see the A1 approval's fixture-evidence list). This batch adds, all
+normative at A1:
+
+- `20260822T223000Z_teams_work_meeting_note_01a02b9a-2f00-7000-8000-00000000000c.md` —
+  the missing `meeting` primary type (A1 section 5), produced by the `teams_work`
+  Field: the meeting itself, not its calendar reservation, is primary. Its
+  `occurred_at` (`2026-08-23T01:30:00+03:00`) is a positive explicit offset
+  whose local calendar date is a day ahead of its UTC instant
+  (`2026-08-22T22:30:00Z`), demonstrating that the filename is computed from
+  the UTC instant rather than the local wall clock.
+- `20260822T140000Z_teams_work_call_note_01a029c7-43c0-7000-8000-00000000000d.md` —
+  the missing `call` primary type: an observed call record, distinct from a
+  playable `voice` recording. Its `occurred_at` uses the explicit `+00:00` UTC
+  offset required by the fixture-evidence list.
+- `20260823T010000Z_local_work_document_note_01a02c26-4260-7000-8000-00000000000e.md` —
+  the missing `document` primary type: a text-bearing source document whose
+  document identity is primary, distinct from a generic imported `file`. Its
+  `occurred_at` (`2026-08-22T20:00:00-05:00`) is a negative explicit offset
+  whose UTC instant (`2026-08-23T01:00:00Z`) falls on the day *after* the local
+  calendar date, the opposite boundary-crossing direction from the `meeting`
+  Note above. It also carries `local_document_date` (a plain `YYYY-MM-DD`
+  date scalar, closing the corpus's only missing scalar-form example) and
+  `local_document_flag: "true"` (double-quoted text that would otherwise
+  resolve as a boolean under the YAML 1.2 Core Schema, alongside the existing
+  `source_version: "1745317800000"` quoted-as-text numeric example).
+
+Single-member lists, colon-quoted text, booleans (`damaged`/`truncated`), and
+numbers were already demonstrated by the pre-IG1 corpus; only a plain date
+scalar and a boolean-shaped text scalar were missing. Damaged/truncated
+material was already demonstrated by
+`20260822T091500Z_outlook_mail_work_mail_note_01a028c1-6c80-7000-8000-00000000000a.md`
+(`damaged`, `truncated`, `lost_characters`), so IG1 added no further fixture
+for that requirement.
+
+`tests/fixtures/hashes/proposed-v1/artifact-input-binary.bin` adds the true
+arbitrary-byte artifact vector called for by that corpus's own README; see
+that file for the exact bytes, digest, and derived artifact ID.
+
 ## Gate classification
 
 | Corpus area | A1 approval meaning | Later gate work |
 |---|---|---|
 | `.fieldnotes/instance.yaml` | Normative for the A1 operational instance-metadata exception and exact bytes | IG1 adds parser/write tests |
-| Notes, entities, relationships, proposal, and conflict files | Normative for the represented A1 envelope, naming, property ordering, scalar/list form, and exact bytes | IG1 adds omitted Note types and boundary cases |
+| Notes, entities, relationships, proposal, and conflict files | Normative for the represented A1 envelope, naming, property ordering, scalar/list form, and exact bytes | IG1 has added the previously omitted `meeting`, `call`, and `document` Note types and UTC-boundary-crossing/`+00:00` datetime cases (see "IG1 corpus expansion" above) |
 | Extraction and Observation | Normative only for the generic A1 derived-record envelope | `0.1.8` approves capability-specific types, evidence units, properties, and generators |
 | Package manifest | Normative for `pkg_`, directory/name, and generic flat manifest envelope only | `0.1.7` approves selection, closure, checksums, encryption, and lifecycle semantics |
 | Artifact IDs and paths embedded in Notes | Normative syntax examples; the absent payloads and their illustrative IDs are not end-to-end vectors | IG1 adds matching stored payload fixtures; `0.1.7` approves rendition layout |
-| Standalone artifact/hash corpus | Normative algorithm vector approved at A1 | IG1 adds arbitrary binary and normalization boundary vectors |
+| Standalone artifact/hash corpus | Normative algorithm vector approved at A1; IG1 has added the true arbitrary-byte binary vector (`artifact-input-binary.bin`) | IG1 adds further normalization boundary vectors as needed |
