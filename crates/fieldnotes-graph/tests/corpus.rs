@@ -12,9 +12,7 @@ use fieldnotes_domain::property::registry::PropertyRegistry;
 use fieldnotes_domain::{RecordId, RecordKind};
 use fieldnotes_format::{parse_record, validate_record};
 use fieldnotes_graph::{EntityKind, GapKind, Origin, RelationshipKind};
-use support::{
-    TestResult, config, corpus_notes, corpus_notes_with_suffixes, corpus_root, derive, load_records,
-};
+use support::{TestResult, config, corpus_notes, corpus_root, derive, load_records};
 
 /// The frozen corpus contains three people, joined only through anchors the
 /// approved rules permit, each with the channels, evidence, and time range its
@@ -152,18 +150,14 @@ fn every_projection_explains_itself_with_cited_notes() -> TestResult {
     Ok(())
 }
 
-/// Alice's projection over exactly the Notes the frozen entity fixture cites
-/// reproduces that fixture's frontmatter, property for property.
+/// Alice's and Bob's projections over the full current corpus reproduce their
+/// frozen entity fixtures' frontmatter, property for property. Both fixtures
+/// now carry a `title`, because both anchors now have a contact record: the
+/// corpus demonstrates the same provenance chain — contact record to entity
+/// `title` — for both people, not name inference from body text.
 #[test]
 fn person_projection_reproduces_the_frozen_entity_fixture_frontmatter() -> TestResult {
-    // The four Notes `entities/ent_…0001_person.md` cites: mail, calendar event,
-    // contact, and Teams message.
-    let notes = corpus_notes_with_suffixes(&[
-        "000000000005",
-        "000000000006",
-        "000000000007",
-        "000000000008",
-    ])?;
+    let notes = corpus_notes()?;
     let graph = derive(&notes, &config())?;
     let projected = graph.projected_records()?;
 
@@ -194,9 +188,8 @@ fn person_projection_reproduces_the_frozen_entity_fixture_frontmatter() -> TestR
     );
     assert!(derived_alice.relative_path.ends_with("_person.md"));
 
-    // Bob's fixture is identical except for a display name the corpus Notes do
-    // not supply: no Note states a name for `bob@example.net`, and inventing one
-    // is exactly the inference the product forbids.
+    // Bob's contact record now supplies his name too, exactly the way Alice's
+    // does: a contact record's own `title`, never inference from body text.
     let bob_fixture = fixture
         .iter()
         .find(|record| carries_anchor(record, "email:bob@example.net"))
@@ -206,44 +199,54 @@ fn person_projection_reproduces_the_frozen_entity_fixture_frontmatter() -> TestR
         .find(|record| carries_anchor(record.record.record(), "email:bob@example.net"))
         .ok_or("the derivation must project Bob")?;
     assert!(
-        bob_fixture.get("title").is_some() && derived_bob.record.record().get("title").is_none(),
-        "no current Note states a name for bob@example.net, so none is projected"
+        bob_fixture.get("title").is_some() && derived_bob.record.record().get("title").is_some(),
+        "Bob's contact record supplies a name, just as Alice's does"
     );
     let expected_bob: Vec<(String, String)> = property_pairs(bob_fixture)
         .into_iter()
-        .filter(|(key, _)| key != "id" && key != "title")
+        .filter(|(key, _)| key != "id")
         .collect();
     let actual_bob: Vec<(String, String)> = property_pairs(derived_bob.record.record())
         .into_iter()
         .filter(|(key, _)| key != "id")
         .collect();
-    assert_eq!(actual_bob, expected_bob);
+    assert_eq!(
+        actual_bob, expected_bob,
+        "derived person frontmatter must match the frozen fixture apart from the projection ID"
+    );
     Ok(())
 }
 
-/// The Alice-Bob edge over the same four Notes reproduces the frozen
+/// The Alice-Bob edge over the full current corpus reproduces the frozen
 /// relationship fixture's frontmatter.
 #[test]
 fn relationship_projection_reproduces_the_frozen_relationship_fixture() -> TestResult {
-    let notes = corpus_notes_with_suffixes(&[
-        "000000000005",
-        "000000000006",
-        "000000000007",
-        "000000000008",
-    ])?;
+    let notes = corpus_notes()?;
     let graph = derive(&notes, &config())?;
     let fixture_records = load_records(&corpus_root().join("relationships"))?;
     let fixture = fixture_records
         .first()
         .ok_or("the corpus must contain the relationship fixture")?;
 
-    // The fixture edge is the one carrying exactly the mail and calendar
-    // channels and two supporting Notes.
+    // The fixture edge is the person_person relationship between Alice and
+    // Bob specifically. Channel signature alone no longer disambiguates it:
+    // Bob and Sam also co-occur on exactly the mail and calendar channels
+    // (through the damaged mail Note and the calendar event), so the edge is
+    // selected by its entities' primary anchors instead.
     let edge = graph
         .relationships()
         .iter()
-        .find(|edge| edge.channels == ["outlook_calendar", "outlook_mail"])
-        .ok_or("the mail-and-calendar edge must exist")?;
+        .find(|edge| {
+            let anchor_of = |id| {
+                graph
+                    .entity(id)
+                    .and_then(fieldnotes_graph::Entity::primary_identity)
+                    .map(fieldnotes_graph::IdentityKey::anchor_text)
+            };
+            anchor_of(&edge.from_entity_id).as_deref() == Some("email:alice@example.com")
+                && anchor_of(&edge.to_entity_id).as_deref() == Some("email:bob@example.net")
+        })
+        .ok_or("the Alice-Bob edge must exist")?;
     assert_eq!(edge.interaction_count, 2);
     let from = graph
         .entity(&edge.from_entity_id)
@@ -262,11 +265,12 @@ fn relationship_projection_reproduces_the_frozen_relationship_fixture() -> TestR
     );
 
     let projected = fieldnotes_graph::relationship_record(edge, from, to, *graph.generated_at())?;
-    // The fixture's own `generated_at` is two minutes after the entity
-    // fixtures': the corpus was written as if entities and relationships were
-    // generated in separate passes. One derivation generates both at the single
-    // injected instant, so that property is compared separately.
-    let ignored = ["id", "from_entity_id", "to_entity_id", "generated_at"];
+    // A single derive_graph call stamps every projected record — entities and
+    // relationships alike — from the one injected instant, so the
+    // relationship fixture's own `generated_at` now matches the entity
+    // fixtures' exactly, rather than trailing them from a separate generation
+    // pass, and is compared like any other property below.
+    let ignored = ["id", "from_entity_id", "to_entity_id"];
     let expected: Vec<(String, String)> = property_pairs(fixture)
         .into_iter()
         .filter(|(key, _)| !ignored.contains(&key.as_str()))

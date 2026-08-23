@@ -160,12 +160,62 @@ Two consequences for the verified vectors this corpus carries:
 `conformance_hashes.rs` recompute every one of these from the fixture bytes
 on each test run.
 
+## ADR 0012 corpus expansion
+
+[ADR 0012](../../../../docs/decisions/0012-graph-implementation-rulings.md)
+ruled on findings the `fieldnotes-graph` (IG4) implementation surfaced
+against this corpus, recorded in
+[A1 graph implementation findings](../../../../docs/approvals/A1-graph-implementation-findings.md).
+This batch adds one Note and regenerates three derived fixtures, all
+normative at A1:
+
+- `20260822T082000Z_outlook_contacts_work_contact_note_01a02891-5bd0-7000-8000-000000000010.md` —
+  a `contact` Note for `bob@example.net`, produced by the same
+  `outlook_contacts_work` Field as Alice's existing contact record and
+  carrying the same registered properties, so the corpus demonstrates the
+  contact-record-to-entity-`title` provenance chain for both people rather
+  than only one. Its `identities` list carries a single `email:bob@example.net`
+  anchor: Bob has never carried a phone anchor anywhere else in the corpus,
+  so this fixture does not invent one merely to mirror Alice's two-anchor
+  shape. Its `content_hash` is a verified vector produced by
+  `fieldnotes-format`'s own `content_hash_value`.
+- `20260822T091500Z_outlook_mail_work_mail_note_01a028c1-6c80-7000-8000-00000000000a.md` —
+  the damaged/truncated mail Note gains an `identities` property
+  (`email:bob@example.net`, `email:sam@example.net`) matching the convention
+  every other mail Note in the corpus already follows for the anchors its
+  `from`/`to`/`cc` roles carry. This is a frontmatter-only addition: the
+  Note's `damaged`, `truncated`, and `lost_characters` properties, and its
+  body, are unchanged, so it still exercises exactly the damage/truncation
+  condition it was added to pin. `content_hash` covers the normalized body
+  only, so this addition does not move it; `fieldnotes-format`'s own
+  conformance suite recomputes and confirms the unchanged value on every run.
+- `entities/ent_01a028f2-dcc0-7000-8000-000000000001_person.md` (Alice) and
+  `entities/ent_01a028f2-dcc0-7000-8000-000000000002_person.md` (Bob), and
+  `relationships/rel_01a028f4-b180-7000-8000-000000000001_person_person.md`
+  (their edge), are regenerated directly from
+  `fieldnotes_graph::derive_graph` run over this corpus with the
+  previously-frozen fixtures supplied as prior projections, so the library
+  reused their exact projection IDs rather than minting new ones. Every
+  other property, and each record's Markdown body, came from the library's
+  own `entity_record`/`relationship_record` emitters — nothing here is
+  hand-typed. Alice's entity now cites all eight current Notes that carry
+  her anchor; Bob's now cites all four that carry his, including his new
+  contact record and the damaged mail Note above. Both fixtures now carry
+  the same `generated_at` instant, because one derivation call stamps every
+  projected record it returns from a single clock read.
+
+These three regenerated files remain a curated pair of entities and their
+edge, not the complete projection the full corpus would produce (which also
+derives a third `person` entity for the notebook owner, `sam@example.net`,
+not checked in here as a fixture) — see
+[A1 graph implementation findings, finding 4](../../../../docs/approvals/A1-graph-implementation-findings.md#finding-4-entity-fixtures-reflect-the-pre-ig1-four-note-corpus-not-the-current-fourteen).
+
 ## Gate classification
 
 | Corpus area | A1 approval meaning | Later gate work |
 |---|---|---|
 | `.fieldnotes/instance.yaml` | Normative for the A1 operational instance-metadata exception and exact bytes | IG1 adds parser/write tests |
-| Notes, entities, relationships, proposal, and conflict files | Normative for the represented A1 envelope, naming, property ordering, scalar/list form, and exact bytes | IG1 has added the previously omitted `meeting`, `call`, and `document` Note types and UTC-boundary-crossing/`+00:00` datetime cases (see "IG1 corpus expansion" above); the ADR 0007 amendment pass has added the `skipped_attachments` Note (see "ADR 0007 corpus expansion" above) |
+| Notes, entities, relationships, proposal, and conflict files | Normative for the represented A1 envelope, naming, property ordering, scalar/list form, and exact bytes | IG1 has added the previously omitted `meeting`, `call`, and `document` Note types and UTC-boundary-crossing/`+00:00` datetime cases (see "IG1 corpus expansion" above); the ADR 0007 amendment pass has added the `skipped_attachments` Note (see "ADR 0007 corpus expansion" above); the ADR 0012 amendment pass has added Bob's contact Note, added `identities` to the damaged mail Note, and regenerated the entity/relationship fixtures from the graph library itself (see "ADR 0012 corpus expansion" above) |
 | Extraction and Observation | Normative only for the generic A1 derived-record envelope | `0.1.8` approves capability-specific types, evidence units, properties, and generators |
 | Package manifest | Normative for `pkg_`, directory/name, and generic flat manifest envelope only | `0.1.7` approves selection, closure, checksums, encryption, and lifecycle semantics |
 | Artifact IDs and paths embedded in Notes | Normative syntax examples; the absent payloads and their illustrative IDs are not end-to-end vectors | IG1 adds matching stored payload fixtures; `0.1.7` approves rendition layout |

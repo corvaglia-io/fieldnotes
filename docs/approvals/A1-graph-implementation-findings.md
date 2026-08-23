@@ -1,14 +1,20 @@
 # A1 implementation findings from IG4 (identity graph)
 
-**Status:** Findings recorded during the `0.1.2` identity-graph library
-implementation, awaiting coordinator rulings  
+**Status:** The coordinator has ruled on findings 1 through 4; the rulings,
+rationale, and rejected alternatives are recorded in
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md). Findings 5
+through 8 remain open, awaiting coordinator rulings.  
 **Scope:** Contract defects and gaps surfaced while building
 `fieldnotes-graph` against the approved [A1](A1-notebook-contract.md) corpus
-and [Identity and deterministic graph](../identity-and-graph.md). Nothing here
-amends A1; each finding names the workaround the implementation shipped so the
-behavior is reviewable while the ruling is pending, exactly as
-[IG1 did for A1](A1-implementation-findings.md) and as the
-[A2 implementation findings](A2-implementation-findings.md) already do.
+and [Identity and deterministic graph](../identity-and-graph.md). This
+document itself amends nothing; each finding named the workaround the
+implementation shipped so the behavior was reviewable while a ruling was
+pending, exactly as [IG1 did for A1](A1-implementation-findings.md) and as the
+[A2 implementation findings](A2-implementation-findings.md) already do. Four
+findings have since been ruled; the resulting A1 amendments live in
+[A1's approved-amendments block](A1-notebook-contract.md#approved-amendments)
+and [ADR 0012](../decisions/0012-graph-implementation-rulings.md), not in this
+document.
 
 The roadmap's own compatibility policy requires exactly this: "if
 implementation evidence invalidates an approved contract, return to the
@@ -64,6 +70,11 @@ kind of case a reader of the reference corpus needs to see. This is the
 coordinator's decision, not IG4's; (a) remains a legitimate fallback if the
 corpus is not meant to carry that additional fixture right now.
 
+**Ruled.** The coordinator chose (b): a Bob contact Note was added, and the
+entity/relationship fixtures were regenerated from the graph library itself
+rather than hand-edited, so the corpus is provably derivable. See
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md) ruling 1.
+
 ## Finding 2: the identity namespace registry A1 was said to freeze does not exist
 
 [Identity and deterministic graph](../identity-and-graph.md) states: "the
@@ -97,6 +108,19 @@ catch it, because no fixture exists to disagree with.
 class, strength, and exact normalization vector per namespace — before
 compatibility can be claimed for identity normalization at all.
 
+**Ruled: resolved by scope, not fixed.** The coordinator settled that
+Fieldnotes performs no formal identity mapping: collected anchors are
+evidence for downstream observation and proposal work, not merge keys. This
+finding's concern — that divergent normalization could silently produce
+different entities from the same anchor — matters only if normalization
+decides merges. Since it does not, divergent normalization is a quality and
+interoperability concern rather than a correctness gap, and no frozen
+registry is required for v0.1 compatibility. `NamespaceRegistry::v1` is
+unchanged. **What would reopen this finding:** any future feature that makes
+merge decisions from normalized anchors (for example, an automatic
+cross-tenant merge keyed on normalized email text). See
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md) ruling 2.
+
 ## Finding 3: no public spelling for a scope-qualified identity anchor blocks `0.1.3`
 
 A1 froze identity anchors as flat `namespace:value` text
@@ -126,6 +150,24 @@ their `identities` property at all.
 **Needed:** an approved serialization for a scope-qualified anchor (for
 example, a third colon-delimited segment, or a distinct property) before
 `0.1.3` mapping work can proceed, with fixtures pinning the exact form.
+
+**Ruled: resolved by scope, and no longer critical path.** This finding's own
+"blocked on" claim is now wrong and is corrected here explicitly, because a
+future contributor reading only the paragraphs above would otherwise believe
+Outlook Mail cannot ship. Every Note already carries `source_scope` — the
+tenant/authority-scope carrier this finding was asking a new anchor form to
+provide. A Microsoft Field's Note already states
+`source_scope: "microsoft-graph:tenant/<tenant-id>"` today; an anchor inside
+`identities` stays an unqualified `email:`/`phone:` value exactly as A1
+already allows, and a reader who needs the tenant reads `source_scope` on
+the Note, not a new anchor segment. `0.1.3` is not blocked on this. IG4's
+`ScopeClass::requires_scope`/`RefusalReason::ScopeRequired` machinery is
+unaffected and remains available for a future namespace whose scope is not
+already carried by the Note's own `source_scope`. **What would reopen this
+finding:** a future namespace needing scope that `source_scope` does not
+already carry, or any feature that makes merge decisions from a
+scope-qualified anchor's spelling. See
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md) ruling 2.
 
 ## Finding 4: entity fixtures reflect the pre-IG1 four-Note corpus, not the current fourteen
 
@@ -157,6 +199,19 @@ graph from current evidence" guarantee the corpus exists to demonstrate.
 the full fourteen-Note corpus, or document that they are pinned to a named
 subset and are not a full projection of the corpus as checked in.
 
+**Ruled.** The coordinator chose regeneration, folded into the same ruling
+that added Bob's contact record (finding 1): both entity fixtures and the
+relationship fixture were regenerated from `fieldnotes-graph::derive_graph`
+over the current corpus, with the prior fixtures supplied as input so their
+projection IDs were reused unchanged. Alice's entity now cites all eight
+current Notes carrying her anchor; Bob's now cites all four carrying his.
+The fixtures remain a curated pair of entities (Alice, Bob) and their edge —
+not the complete three-entity, three-relationship projection the full corpus
+would produce once Sam's own entity is included — which is the "named
+subset" half of this finding's alternative, made explicit rather than left
+implicit. See [ADR 0012](../decisions/0012-graph-implementation-rulings.md)
+ruling 1.
+
 ## Finding 5: the relationship fixture's `generated_at` is two minutes later than the entity fixtures'
 
 Both entity fixtures carry `generated_at: 2026-08-22T12:10:00+02:00`, while
@@ -172,6 +227,22 @@ way, and they show the two-pass shape.
 **Needed:** confirm whether a single `generated_at` per rebuild is required,
 or whether per-stage timestamps (as the fixture already shows) are the
 approved shape.
+
+**Not ruled, but the regenerated fixtures no longer show the gap this finding
+described.** The finding-1/finding-4 regeneration (see
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md) ruling 1) used
+one `derive_graph` call to produce both the entity and relationship
+fixtures, and `derive_graph`'s public API only ever takes one clock read per
+call, so every projected record it returns necessarily carries the same
+`generated_at`. The regenerated relationship fixture's `generated_at` is now
+`2026-08-22T12:10:00+02:00`, identical to the entity fixtures', where the
+previous hand-authored fixture carried a value two minutes later. This is
+what the shipped library actually does when a caller derives everything in
+one pass; it is not a coordinator ruling that per-stage timestamps are
+disallowed, since a caller could still choose to call the entity and
+relationship builders from two separate clock reads if it wanted to. The
+question this finding raises — whether A1 or `identity-and-graph.md` should
+require single-instant stamping — remains open.
 
 ## Finding 6: `person_person` relationship direction is undefined
 

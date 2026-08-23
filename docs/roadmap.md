@@ -161,8 +161,14 @@ Deliver:
 - exact same-Note-ID and portable-source-key cross-instance duplicate handling, producer-union metadata, and unresolved conflict preservation;
 - disposable graph/index storage rebuilt from canonical files and non-secret configuration.
 
-The identity namespace/scoping registry itself is not yet approved as fixture
-bytes; see [A1 graph implementation findings](approvals/A1-graph-implementation-findings.md).
+The identity namespace/scoping registry itself is not frozen as fixture
+bytes, and does not need to be for v0.1 compatibility: Fieldnotes performs no
+formal identity mapping, so anchors are evidence rather than merge keys, and
+divergent normalization between implementations is a quality concern rather
+than a correctness gap. Tenant/authority scope for a Microsoft Graph anchor
+is already recoverable from the Note's own `source_scope`, so nothing here
+blocks `0.1.3`. See [ADR 0012](decisions/0012-graph-implementation-rulings.md)
+and [A1 graph implementation findings](approvals/A1-graph-implementation-findings.md).
 
 **Release gate R2:** deleting all caches and derived graph files reproduces the same semantic graph; copying two fixture notebooks together loses no provenance; identical Note IDs deduplicate exactly; divergent content for one Note ID produces a preserved conflict; content-hash equality alone never removes a Note.
 

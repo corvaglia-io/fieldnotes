@@ -13,6 +13,7 @@
 | [0009](0009-field-sdk-extraction.md) | A Field-authoring SDK, extracted from two working Fields | Accepted |
 | [0010](0010-property-registry-relocation.md) | Move the property registry from `fieldnotes-format` to `fieldnotes-domain` | Accepted |
 | [0011](0011-neutralize-illustrative-personal-identifiers.md) | Neutralize illustrative personal identifiers before first publication | Accepted |
+| [0012](0012-graph-implementation-rulings.md) | Graph implementation rulings from IG4 findings | Accepted |
 
 ADRs record decisions with architectural consequences. Proposed ADRs do not become implementation contracts until their roadmap approval gate is complete.
 

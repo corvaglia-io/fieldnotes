@@ -134,6 +134,51 @@ Ruling 9 changes approved bytes without changing any approved rule: every
 file valid under the prior contract prose is still valid, and every file
 invalid under it is still invalid for the same reason.
 
+**2026-08-23:** The owner ruled on three matters IG4 raised while building
+`fieldnotes-graph`, recorded with rationale, rejected alternatives, and
+consequences in
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md). Two of the
+three amend this document; the third settles that Fieldnotes performs no
+formal identity mapping, which resolves two graph-implementation findings
+about `identity-and-graph.md` without changing any A1 byte or rule (see
+[A1 graph implementation findings](A1-graph-implementation-findings.md)):
+
+10. The review corpus gains a `contact` Note for `bob@example.net`
+    (`tests/fixtures/notebooks/proposed-v1/notes/20260822T082000Z_outlook_contacts_work_contact_note_01a02891-5bd0-7000-8000-000000000010.md`),
+    mirroring Alice's existing contact record in shape and Field, so the
+    corpus demonstrates the contact-record-to-entity-`title` provenance chain
+    for both people rather than only one. The damaged mail Note
+    (`..._mail_note_01a028c1-...0000a.md`) gains the `identities` property
+    every other mail Note in the corpus already carries; its `content_hash`
+    is unchanged, because that hash covers the normalized body only. The
+    entity fixtures `entities/ent_...0001_person.md` and
+    `entities/ent_...0002_person.md`, and the relationship fixture
+    `relationships/rel_...0001_person_person.md`, are regenerated directly
+    from `fieldnotes-graph::derive_graph` over the corpus with the prior
+    fixtures present, so the library reused their exact projection IDs;
+    every other property and the Markdown body came from the library's own
+    emitters rather than being hand-typed. No property name, record type,
+    grammar, or list semantics changed; every property the new Note carries
+    was already registered.
+11. Section 12's prohibition on an "executable vendor API payload" is
+    clarified: the boundary A1 actually draws is that Fieldnotes never
+    performs a destination write, not that a proposal's supporting material
+    must be awkward to consume. A vendor-neutral, human-and-agent-readable
+    sidecar — for example a vCard 4.0 (RFC 6350) rendering — is permitted
+    alongside a proposal or inside a handback package; anything that
+    performs or is purpose-built to trigger a destination write remains
+    prohibited regardless of format. No vCard rendering is implemented by
+    this amendment; it records the boundary only, precisely because a
+    readable sidecar makes the write tempting enough that the line needs to
+    be explicit rather than inferred.
+
+Ruling 10 is a corpus and fixture change with no approved byte moved except
+the three it explicitly names (the new Note, the damaged Note's added
+property, and the three regenerated projection files' content); every
+projection ID it touches is unchanged. Ruling 11 clarifies section 12's
+existing rule without changing any approved byte or introducing a new
+property, record type, or grammar.
+
 ## Decision requested
 
 A1 freezes the byte-visible notebook contract that core writers, Fields,
@@ -775,10 +820,16 @@ proposals/<prop-id>_<type>.md
 
 It uses flat frontmatter, cites current evidence, describes vendor-neutral
 existing/proposed values in Markdown, and never contains an executable vendor
-API payload. `prop_` IDs are stable for the lifetime of the proposal. Human
-review state is durable private intent under `.fieldnotes/state/proposals/` and
-may be projected as a registered public `status` text value. Ordinary graph
-rebuild must not discard proposal files or accepted/rejected review intent.
+API payload. The boundary this draws is that Fieldnotes never performs the
+destination write, not that supporting material must be awkward to consume: a
+vendor-neutral, human-and-agent-readable sidecar such as a vCard 4.0
+rendering is permitted alongside a proposal or inside a handback package, so
+long as it does not itself perform or trigger a write. See
+[ADR 0012](../decisions/0012-graph-implementation-rulings.md). `prop_` IDs
+are stable for the lifetime of the proposal. Human review state is durable
+private intent under `.fieldnotes/state/proposals/` and may be projected as a
+registered public `status` text value. Ordinary graph rebuild must not
+discard proposal files or accepted/rejected review intent.
 
 An entity-targeting proposal carries both the current `entity_id` and a stable
 `subject_identity` anchor such as a normalized qualified email identity. On
@@ -869,6 +920,11 @@ release to cover at least:
   demonstrating that the two lists are independent and that the retained
   attachment's link targets the local artifact path while the skipped one's
   evidence points at its source (ADR 0007);
+- a second contact Note (Bob, alongside the existing Alice contact),
+  demonstrating that a derived entity's `title` is reproducible from a
+  contact record's own `title` for more than one person, and entity/
+  relationship fixtures regenerated by the graph library itself rather than
+  hand-authored (ADR 0012);
 - normalized body vectors for LF, CRLF, BOM, preserved Unicode code points,
   trailing whitespace, and exactly-one-final-LF behavior;
 - semantic-record fingerprint vectors proving that producer, capture,

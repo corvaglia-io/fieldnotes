@@ -49,9 +49,10 @@ fn valid_corpus_round_trips_byte_for_byte() -> TestResult {
     files.sort();
     assert_eq!(
         files.len(),
-        27,
+        28,
         "expected the 26 A1-frozen record fixtures plus the ADR 0007 skipped_attachments \
-         amendment fixture, found {files:?}"
+         amendment fixture and the ADR 0012 Bob contact-record amendment fixture, found \
+         {files:?}"
     );
     for path in &files {
         let bytes = fs::read(path)?;
@@ -93,8 +94,9 @@ fn valid_note_filenames_match_computed_names() -> TestResult {
         checked += 1;
     }
     // Thirteen notes plus the same-id left/right pair, plus the ADR 0007
-    // skipped_attachments amendment Note.
-    assert_eq!(checked, 16);
+    // skipped_attachments amendment Note and the ADR 0012 Bob contact-record
+    // amendment Note.
+    assert_eq!(checked, 17);
     Ok(())
 }
 
@@ -120,9 +122,10 @@ fn embedded_content_hashes_recompute_from_bodies() -> TestResult {
         );
         checked += 1;
     }
-    // Thirteen notes, two conflict candidates, the same-id pair, and the
-    // ADR 0007 skipped_attachments amendment Note.
-    assert_eq!(checked, 18);
+    // Thirteen notes, two conflict candidates, the same-id pair, the ADR 0007
+    // skipped_attachments amendment Note, and the ADR 0012 Bob contact-record
+    // amendment Note.
+    assert_eq!(checked, 19);
     Ok(())
 }
 
