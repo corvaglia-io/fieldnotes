@@ -41,10 +41,6 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// before this listener gives up on it.
 const PER_CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// How often the accept loop polls a non-blocking listener while waiting for
-/// the browser to connect.
-const ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(25);
-
 /// A bound loopback listener, ready to receive exactly one OAuth redirect.
 pub struct LoopbackListener {
     listener: TcpListener,
@@ -212,30 +208,61 @@ struct AcceptedRequest {
     stream: TcpStream,
 }
 
-/// Accepts exactly one connection, polling a non-blocking listener so the
-/// overall wait can be bounded by `timeout` even though `TcpListener::accept`
-/// itself has no timeout parameter.
+/// Accepts exactly one connection within `timeout`.
+///
+/// `TcpListener::accept` has no timeout parameter of its own, and this
+/// listener deliberately never enters non-blocking mode to get one: on some
+/// platforms (observed on macOS/BSD, where a plain `accept()` is used rather
+/// than Linux's flag-carrying `accept4()`) a socket returned by `accept()`
+/// can itself come back non-blocking when the *listening* socket is
+/// non-blocking. That previously made the request read below race the
+/// client's send — if the browser's bytes had not arrived yet by the time
+/// `read` was first called, it failed immediately with `WouldBlock`/`EAGAIN`
+/// instead of waiting, which is exactly the low-frequency failure this
+/// function now avoids by construction.
+///
+/// Instead, the deadline is enforced by handing the ordinary *blocking*
+/// `accept()` call to a background thread and waiting for it here with a
+/// bounded channel receive. A one-shot listener that accepts a single
+/// connection does not need a polling loop to get a deadline: `recv_timeout`
+/// gives the same bound with no busy-wait and no non-blocking state to get
+/// wrong.
+///
+/// If the deadline elapses first, the background thread is left running: it
+/// holds only a cloned listener handle, touches nothing this function's
+/// caller still owns, and will simply finish (accepting a connection nobody
+/// reads from, or observing the listener drop) on its own.
 fn accept_within(listener: &TcpListener, timeout: Duration) -> Result<TcpStream, LoopbackError> {
-    listener.set_nonblocking(true)?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match listener.accept() {
-            Ok((stream, _peer)) => return Ok(stream),
-            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                if Instant::now() >= deadline {
-                    return Err(LoopbackError::Timeout);
-                }
-                std::thread::sleep(ACCEPT_POLL_INTERVAL);
-            }
-            Err(error) => return Err(LoopbackError::Io(error.to_string())),
-        }
+    let listener = listener.try_clone()?;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let _ = std::thread::spawn(move || {
+        let _ = sender.send(listener.accept());
+    });
+    match receiver.recv_timeout(timeout) {
+        Ok(Ok((stream, _peer))) => Ok(stream),
+        Ok(Err(error)) => Err(LoopbackError::Io(error.to_string())),
+        Err(
+            std::sync::mpsc::RecvTimeoutError::Timeout
+            | std::sync::mpsc::RecvTimeoutError::Disconnected,
+        ) => Err(LoopbackError::Timeout),
     }
 }
 
 /// Reads one bounded HTTP request from `stream` and extracts its request
 /// line, keeping the stream open so a response can be written back.
+///
+/// The deadline is enforced with `SO_RCVTIMEO` (via `set_read_timeout`), but
+/// the exact `ErrorKind` a platform reports when that timeout elapses is not
+/// standardized: it may be `WouldBlock` or `TimedOut`. Both are treated the
+/// same way here — as "no data yet," not as a failure — and the loop keeps
+/// waiting, re-arming the read for whatever time remains, until its own
+/// deadline (computed independently of the socket option) is actually
+/// reached. Only then is it reported, as [`LoopbackError::MalformedRequest`]:
+/// a connection that never finished sending a request within the bound this
+/// listener enforces is indistinguishable from one that sent nothing at all.
+/// Any other I/O error is a genuine failure and is still reported as such.
 fn read_request(mut stream: TcpStream) -> Result<AcceptedRequest, LoopbackError> {
-    stream.set_read_timeout(Some(PER_CONNECTION_READ_TIMEOUT))?;
+    let deadline = Instant::now() + PER_CONNECTION_READ_TIMEOUT;
     let mut buffer = Vec::new();
     let mut chunk = [0u8; 1024];
     loop {
@@ -247,11 +274,27 @@ fn read_request(mut stream: TcpStream) -> Result<AcceptedRequest, LoopbackError>
         if find_header_terminator(&buffer).is_some() {
             break;
         }
-        let read = stream.read(&mut chunk)?;
-        if read == 0 {
-            break;
+        let remaining = deadline.checked_duration_since(Instant::now());
+        let Some(remaining) = remaining.filter(|remaining| !remaining.is_zero()) else {
+            return Err(LoopbackError::MalformedRequest);
+        };
+        stream.set_read_timeout(Some(remaining))?;
+        match stream.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(read) => buffer.extend_from_slice(&chunk[..read]),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                if Instant::now() >= deadline {
+                    return Err(LoopbackError::MalformedRequest);
+                }
+                // Not actually past the deadline yet (a spurious or
+                // early-armed wakeup) — go around and re-arm for the time
+                // that is left, rather than treating this as a failure.
+            }
+            Err(error) => return Err(error.into()),
         }
-        buffer.extend_from_slice(&chunk[..read]);
     }
     let text = String::from_utf8_lossy(&buffer);
     let request_line = text
@@ -385,6 +428,52 @@ mod tests {
             "GET /callback?code=abc123&state={state_value} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
         );
         let stream = connect_and_send(port, &request);
+        let status_line = read_status_line(stream);
+        assert!(status_line.starts_with("HTTP/1.1 200"));
+
+        let result = handle
+            .join()
+            .unwrap_or_else(|_| Err(LoopbackError::Io("test thread panicked".to_owned())))?;
+        assert_eq!(result.code, "abc123");
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_a_connection_that_sends_its_request_after_a_short_delay()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Regression test for the CI flake where the accept path treated
+        // `WouldBlock`/`EAGAIN` as fatal instead of "not ready yet." The bug
+        // depended on the client connecting *before* it had anything to
+        // send: on the affected platform, the accepted socket could come
+        // back non-blocking, so the very first read raced the client and
+        // failed outright instead of waiting for the request to arrive.
+        // Connecting immediately and then deliberately waiting before
+        // writing anything reproduces exactly that window on every run,
+        // rather than relying on scheduling luck the way the original flake
+        // did.
+        let listener = LoopbackListener::bind("/callback")?;
+        let port = listener.port()?;
+        let mut random = FixedRandom;
+        let state = State::generate(&mut random);
+        let state_value = state.as_str().to_owned();
+
+        let handle =
+            std::thread::spawn(move || listener.await_callback(&state, Duration::from_secs(5)));
+
+        let mut stream = loop {
+            if let Ok(stream) = TcpStream::connect((Ipv4Addr::LOCALHOST, port)) {
+                break stream;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        // Connect now, but hold off on sending the request: this is the
+        // window in which the old code's first read could observe no data
+        // yet and fail instead of waiting for it.
+        std::thread::sleep(Duration::from_millis(200));
+        let request = format!(
+            "GET /callback?code=abc123&state={state_value} HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n"
+        );
+        stream.write_all(request.as_bytes())?;
         let status_line = read_status_line(stream);
         assert!(status_line.starts_with("HTTP/1.1 200"));
 
