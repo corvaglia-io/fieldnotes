@@ -37,7 +37,17 @@ pub(crate) const GRAPH_SCOPE: &str = "Contacts.Read";
 pub(crate) const CONFIG_TENANT_ID: &str = "tenant_id";
 
 /// The non-secret configuration key naming a mailbox other than the signed-in
-/// user's own. Absent means `/me/contacts`.
+/// user's own.
+///
+/// Recognized but refused at configuration validation in this release: see
+/// [`crate::config::ConfigError::MailboxUnsupported`] for why. Microsoft
+/// Graph exposes a documented contacts-delta feed only under the signed-in
+/// user's own contacts (`/me/contacts/delta`) or under a specific contact
+/// folder (`/me/contactFolders/{id}/contacts/delta` or, for another mailbox,
+/// `/users/{id}/contactFolders/{id}/contacts/delta`); there is no documented
+/// path for another mailbox's contacts without naming a folder, and this
+/// Field does not yet accept a contact-folder ID as configuration. Absent,
+/// this Field collects `/me/contacts/delta`.
 pub(crate) const CONFIG_MAILBOX: &str = "mailbox";
 
 /// The non-secret configuration key overriding the Graph service root.

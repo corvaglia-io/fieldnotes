@@ -217,6 +217,113 @@ fn a_delta_collection_stages_one_attachment_and_declines_the_rest_with_their_ref
 }
 
 #[test]
+fn an_attachment_the_listing_called_a_file_but_graph_then_refuses_is_declined_not_failed() {
+    // The regression this case pins: a live run once saw Graph accept an
+    // attachment listing's `#microsoft.graph.fileAttachment` discriminator on
+    // an inline attachment, then reject the one request that actually fetches
+    // its bytes with a permanent client error (HTTP 400). That refusal must
+    // land exactly like any other declined attachment -- a `not_retained`
+    // reference in `skipped_attachments`, no error diagnostic, and a run that
+    // stays `Complete` -- never as an `internal.error` that degrades the run
+    // to `partial` and costs it deletion authority. The same fixture also
+    // carries a reference attachment and an item attachment, both declined
+    // before any byte is ever requested, so all three "no original bytes"
+    // shapes are covered in one run.
+    let case = Case::new("no-bytes-at-source");
+    let manifest = case.manifest();
+    let plan = windowed(case.plan(support::COLLECT_RUN), WINDOW_FROM, WINDOW_TO);
+    let run = case.collect(&manifest, &plan);
+
+    assert_eq!(
+        run.report.outcome,
+        RunOutcome::Complete,
+        "a refused attachment byte read must not degrade the run to partial: rejection {:?}, \
+         diagnostics {:?}",
+        run.rejection,
+        diagnostics(&run)
+    );
+    assert_eq!(run.report.records_accepted, 1);
+
+    assert!(
+        !run.actions
+            .iter()
+            .any(|action| matches!(action, CoreObservation::InstalledArtifact { .. })),
+        "none of these three attachments has bytes this run may retain: {:?}",
+        run.actions
+    );
+    let declined: Vec<&String> = run
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            CoreObservation::DeclinedArtifact { attachment_ref, .. } => Some(attachment_ref),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        declined,
+        vec![
+            "mail-attachment/AAMkAGI2TQABAAACattachD1",
+            "mail-attachment/AAMkAGI2TQABAAACattachD2",
+            "mail-attachment/AAMkAGI2TQABAAACattachD3",
+        ],
+        "the reference attachment, the item attachment, and the refused file attachment are all \
+         declined with their own stable reference: {:?}",
+        run.actions
+    );
+
+    let record = record_events(&run)
+        .into_iter()
+        .find(|record| record.source.identity.as_str() == "mail-message/AAMkAGI2TQABAAAZ")
+        .unwrap_or_else(|| panic!("the attachment-bearing message must still be collected"));
+    let artifacts = record
+        .artifacts
+        .as_ref()
+        .unwrap_or_else(|| panic!("artifacts must be present"));
+    assert_eq!(artifacts.len(), 3);
+    for declined in artifacts {
+        assert_eq!(declined.kind, ArtifactKind::NotRetained);
+        assert!(
+            declined.attachment_ref.is_some(),
+            "a declined artifact's reference is its only stable identity"
+        );
+        assert!(declined.handle.is_none() && declined.sha256.is_none());
+    }
+    let body = record
+        .body
+        .as_ref()
+        .unwrap_or_else(|| panic!("a body is required"));
+    assert!(
+        body.text
+            .contains("this attachment kind has no original bytes at the mail endpoint"),
+        "the reference and item attachments must still explain themselves in the body: {}",
+        body.text
+    );
+    assert!(
+        body.text
+            .contains("Graph could not return bytes for this attachment"),
+        "the refused file attachment must explain itself in the body too: {}",
+        body.text
+    );
+    assert!(
+        body.text.contains("ErrorAttachmentNotSupported"),
+        "Graph's own error code is safe to surface and makes the decline self-diagnosing: {}",
+        body.text
+    );
+
+    assert!(
+        !has_severity(&run, Severity::Error),
+        "a refused byte read for an attachment the metadata misjudged is a decline, not a \
+         connector defect: {:?}",
+        diagnostics(&run)
+    );
+    assert!(
+        diagnostics(&run).is_empty(),
+        "declining an attachment -- whenever it is discovered -- costs no diagnostic at all: {:?}",
+        diagnostics(&run)
+    );
+}
+
+#[test]
 fn resumption_from_a_committed_delta_cursor_does_not_re_emit_a_settled_message() {
     let first = Case::new("delta-two-pages");
     let manifest = first.manifest();

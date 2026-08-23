@@ -37,7 +37,7 @@ pub use kernel::{Kernel, SELF_FIELD};
 pub use note::{NoteOutcome, NoteRequest, NoteSource, create_note};
 pub use status::{StatusReport, status};
 pub use sync::{
-    DeletionReport, DurabilityPolicy, FieldRunOutcome, FieldSyncReport, SyncCounts, SyncDiagnostic,
-    SyncMode, SyncOptions, SyncOutcome, SyncRejection, sync, validate_artifact_max_bytes,
-    validate_artifact_media_types,
+    DEFAULT_WINDOW_DAYS, DeletionReport, DurabilityPolicy, FieldRunOutcome, FieldSyncReport,
+    SyncCounts, SyncDiagnostic, SyncMode, SyncOptions, SyncOutcome, SyncRejection, SyncWindow,
+    sync, validate_artifact_max_bytes, validate_artifact_media_types, validate_window_days,
 };

@@ -15,7 +15,7 @@
 
 use fieldnotes_field_protocol::codes::{DiagnosticCode, ExitCode as ProtocolExit};
 use fieldnotes_field_protocol::message::Severity;
-use fieldnotes_msgraph::GraphError;
+use fieldnotes_msgraph::{GraphError, GraphErrorDetail};
 
 /// How this Field reports one Graph failure.
 #[derive(Debug, Clone)]
@@ -34,6 +34,34 @@ pub(crate) struct Classified {
     pub(crate) message: String,
 }
 
+/// Renders one Graph failure's non-secret detail for a human-readable
+/// diagnostic message.
+///
+/// Deliberately does not use [`GraphErrorDetail`]'s own `Display`, which
+/// writes `code={value}`: core applies a second redaction pass to every
+/// diagnostic it persists, and that pass treats a bare `code=` as an OAuth
+/// authorization-code query parameter and blanks whatever follows it --
+/// exactly the false positive that turned a genuinely diagnostic Graph error
+/// code (a short, fixed, enum-like string such as `ErrorInvalidIdMalformed`,
+/// never free text) into the literal, useless `code=[redacted]` in a real
+/// run's diagnostics. Graph's `message` field can quote content this Field
+/// must not echo, so it is never included here; the `code` is safe precisely
+/// because it never carries content, only naming one of Graph's own fixed
+/// failure reasons -- as long as it survives redaction able to be read.
+fn render_detail(detail: &GraphErrorDetail) -> String {
+    let mut rendered = format!("'{}' (status {}", detail.operation(), detail.status());
+    if let Some(code) = detail.code() {
+        rendered.push_str(", graph code ");
+        rendered.push_str(code);
+    }
+    if let Some(request_id) = detail.request_id() {
+        rendered.push_str(", request_id ");
+        rendered.push_str(request_id);
+    }
+    rendered.push(')');
+    rendered
+}
+
 /// Whether Graph's own error code points at administrator consent rather than
 /// at this user's own grant.
 fn needs_admin_consent(code: Option<&str>) -> bool {
@@ -47,19 +75,23 @@ fn needs_admin_consent(code: Option<&str>) -> bool {
 #[must_use]
 pub(crate) fn classify(error: &GraphError) -> Classified {
     match error {
-        GraphError::ReauthenticationRequired(detail) => Classified {
-            severity: Severity::Error,
-            code: DiagnosticCode::AuthExpired,
-            retry_after_seconds: None,
-            exit: ProtocolExit::Authentication,
-            message: format!(
-                "the access token for this mailbox is no longer accepted ({detail}). \
-                 Re-authenticate this credential profile; retrying with the same token cannot \
-                 succeed."
-            ),
-        },
+        GraphError::ReauthenticationRequired(detail) => {
+            let rendered = render_detail(detail);
+            Classified {
+                severity: Severity::Error,
+                code: DiagnosticCode::AuthExpired,
+                retry_after_seconds: None,
+                exit: ProtocolExit::Authentication,
+                message: format!(
+                    "the access token for this mailbox is no longer accepted ({rendered}). \
+                     Re-authenticate this credential profile; retrying with the same token \
+                     cannot succeed."
+                ),
+            }
+        }
         GraphError::PermissionDenied(detail) => {
             let consent = needs_admin_consent(detail.code());
+            let rendered = render_detail(detail);
             Classified {
                 severity: Severity::Error,
                 code: if consent {
@@ -72,54 +104,63 @@ pub(crate) fn classify(error: &GraphError) -> Classified {
                 message: if consent {
                     format!(
                         "reading this mailbox needs administrator consent for the Mail.Read \
-                         scope ({detail}). A tenant administrator must grant it; retrying \
+                         scope ({rendered}). A tenant administrator must grant it; retrying \
                          cannot."
                     )
                 } else {
                     format!(
-                        "this account is not permitted to read the requested mail ({detail}). \
+                        "this account is not permitted to read the requested mail ({rendered}). \
                          Check that the credential profile is authorized for the Mail.Read \
                          scope and for this mailbox."
                     )
                 },
             }
         }
-        GraphError::Throttled(detail) => Classified {
-            severity: Severity::Error,
-            code: DiagnosticCode::RateLimitThrottled,
-            retry_after_seconds: detail
-                .retry_after()
-                .and_then(|delay| u32::try_from(delay.as_secs()).ok()),
-            exit: ProtocolExit::SourceUnavailable,
-            message: format!(
-                "Microsoft Graph is still throttling this mailbox after the transport exhausted \
-                 its retry budget ({detail}). The cursor did not advance, so the next run \
-                 resumes from the same point."
-            ),
-        },
-        GraphError::ServiceUnavailable(detail) => Classified {
-            severity: Severity::Error,
-            code: DiagnosticCode::SourceUnavailable,
-            retry_after_seconds: detail
-                .retry_after()
-                .and_then(|delay| u32::try_from(delay.as_secs()).ok()),
-            exit: ProtocolExit::SourceUnavailable,
-            message: format!(
-                "Microsoft Graph reported a transient server fault after the transport exhausted \
-                 its retry budget ({detail}). The cursor did not advance."
-            ),
-        },
-        GraphError::InvalidRequest(detail) => Classified {
-            severity: Severity::Error,
-            code: DiagnosticCode::InternalError,
-            retry_after_seconds: None,
-            exit: ProtocolExit::Internal,
-            message: format!(
-                "Microsoft Graph rejected a request this Field built ({detail}). Retrying the \
-                 identical request cannot help; this is a defect in this connector or an \
-                 unusable configured mail folder."
-            ),
-        },
+        GraphError::Throttled(detail) => {
+            let rendered = render_detail(detail);
+            Classified {
+                severity: Severity::Error,
+                code: DiagnosticCode::RateLimitThrottled,
+                retry_after_seconds: detail
+                    .retry_after()
+                    .and_then(|delay| u32::try_from(delay.as_secs()).ok()),
+                exit: ProtocolExit::SourceUnavailable,
+                message: format!(
+                    "Microsoft Graph is still throttling this mailbox after the transport \
+                     exhausted its retry budget ({rendered}). The cursor did not advance, so \
+                     the next run resumes from the same point."
+                ),
+            }
+        }
+        GraphError::ServiceUnavailable(detail) => {
+            let rendered = render_detail(detail);
+            Classified {
+                severity: Severity::Error,
+                code: DiagnosticCode::SourceUnavailable,
+                retry_after_seconds: detail
+                    .retry_after()
+                    .and_then(|delay| u32::try_from(delay.as_secs()).ok()),
+                exit: ProtocolExit::SourceUnavailable,
+                message: format!(
+                    "Microsoft Graph reported a transient server fault after the transport \
+                     exhausted its retry budget ({rendered}). The cursor did not advance."
+                ),
+            }
+        }
+        GraphError::InvalidRequest(detail) => {
+            let rendered = render_detail(detail);
+            Classified {
+                severity: Severity::Error,
+                code: DiagnosticCode::InternalError,
+                retry_after_seconds: None,
+                exit: ProtocolExit::Internal,
+                message: format!(
+                    "Microsoft Graph rejected a request this Field built ({rendered}). Retrying \
+                     the identical request cannot help; this is a defect in this connector or an \
+                     unusable configured mail folder."
+                ),
+            }
+        }
         GraphError::UntrustedContinuation { operation } => Classified {
             severity: Severity::Error,
             code: DiagnosticCode::SourceUnavailable,
@@ -274,6 +315,21 @@ mod tests {
         ));
         assert_eq!(classified.code, DiagnosticCode::InternalError);
         assert_eq!(classified.exit, ProtocolExit::Internal);
+        // Graph's own error code is diagnostic, not secret, so it is worth
+        // surfacing -- but never spelled `code=`: core's own second redaction
+        // pass treats a bare `code=` as an OAuth authorization-code parameter
+        // and blanks it, which is exactly what turned this code into the
+        // useless `code=[redacted]` in a real run's diagnostics.
+        assert!(
+            classified.message.contains("ErrorInvalidIdMalformed"),
+            "the diagnostic code is safe to surface and makes this self-diagnosing: {}",
+            classified.message
+        );
+        assert!(
+            !classified.message.contains("code="),
+            "the code must never be spelled so a generic `code=` redaction pass could eat it: {}",
+            classified.message
+        );
     }
 
     #[test]

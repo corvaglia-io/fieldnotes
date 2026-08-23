@@ -90,6 +90,74 @@
 //! refuses with an instruction to run `fieldnotes fields auth`, so a scheduled
 //! run cannot open a browser on an unattended machine.
 //!
+//! # The bounded collection window
+//!
+//! A first run against a Field has no durable cursor to bound it, and it is
+//! the run most likely to be enormous: exactly the failure this feature
+//! exists to fix (a live run against a real tenant reported `config.invalid`
+//! for a Field requiring a first-run window, and a windowless mail Field
+//! collected roughly eighteen days of mail against a one-week request). The
+//! rule `effective_window` implements is: send a window
+//! ([`DEFAULT_WINDOW_DAYS`], overridable through [`SyncOptions::window_days`])
+//! exactly when there is no durable cursor to replay *and* the manifest
+//! declares `window_supported`; omit it the moment a cursor exists, so a
+//! Field's own delta mechanism drives incremental collection as designed.
+//! "No durable cursor" means [`read_cursor`] returned `None` — a cursor
+//! recorded at a since-changed format version still counts as present here,
+//! so a cursor-format recovery gap (A2 section 9) keeps its existing
+//! documented behavior (unbounded, with the gap reported) rather than
+//! silently gaining a window this feature did not set out to change.
+//!
+//! Both endpoints are computed from [`Kernel::new_run`]'s already-clock-
+//! sourced `started_at` — never a second, direct wall-clock read — and
+//! rendered at the run's own configured offset (the same
+//! [`Kernel::offset_minutes`] every other datetime in the run uses), through
+//! [`OffsetDatetime::parse`], which itself refuses a bare `Z` or `-00:00`.
+//! Rendering in the configured offset rather than forcing UTC is a
+//! legibility choice, not a correctness one: an `OffsetDatetime` names an
+//! exact instant, so which numeric offset renders it changes nothing about
+//! *when* the window starts and ends, only how a human reads it — and every
+//! other instant this run reports (the deadline, a credential grant's
+//! expiry) already uses that same convention, so the window matches rather
+//! than introducing a second one.
+//!
+//! A window never widens what a run may do: [`CollectSession`] already
+//! refuses deletion authority outright for any run that carried a window
+//! (`DeletionRefusal::WindowedRun`), so sending one here cannot be the thing
+//! that lets a bounded, partial read acquire authority to delete Notes it
+//! never even considered.
+//!
+//! ## A delta-token Field can be windowed forever — a known gap, not silently patched
+//!
+//! A Field whose incremental mechanism is a delta token (a change feed that
+//! is not itself filterable by time) cannot honor `cursor` and `window`
+//! together: a windowed run has to be a *different*, bounded read than the
+//! delta feed, and that different read has no delta token to offer. If such
+//! a Field's bounded first drain does not finish inside one window, it ends
+//! the run with **no cursor** — not because nothing progressed, but because
+//! a partial windowed read is not a position on the delta feed. The rule
+//! above then sends a window again next run, for the same reason it did the
+//! first time, and the Field can loop on windowed runs indefinitely without
+//! ever reaching the delta feed that would make it incremental.
+//!
+//! This module does not special-case that Field, and does not silently widen
+//! or drop the window to make the loop disappear: doing either would mean
+//! guessing, per Field, when "no cursor yet" stops meaning "first run" and
+//! starts meaning "still draining" — a distinction only the Field's own
+//! backlog size can answer. The fix belongs on the Field side: a bounded
+//! first drain should persist its own **intermediate continuation token** as
+//! an ordinary (non-delta) cursor after each windowed run, so a subsequent
+//! run resumes the drain instead of restarting the same window, and once the
+//! drain catches up to the present the Field switches to emitting a real
+//! delta token — at which point [`read_cursor`] finds a cursor, no window is
+//! ever sent again, and incremental collection proceeds exactly as designed.
+//! Core's contract already supports this without any change here: nothing
+//! requires an intermediate cursor to share the delta feed's own encoding,
+//! only that
+//! [`fieldnotes_field_protocol::message::CollectionDeclaration::cursor_format_version`]
+//! stays stable across the switch so the token core stored remains one the
+//! Field commits to being able to read.
+//!
 //! # Out of scope here
 //!
 //! No re-collection pass over `skipped_attachments` (the `local` Field declares
@@ -119,7 +187,7 @@ use fieldnotes_field_protocol::limits::{
 };
 use fieldnotes_field_protocol::message::{
     ArtifactKind, ArtifactRef, CollectRequest, CollectionMode, CoreFrame, CredentialGrant,
-    DescribeRequest, FieldEvent, Manifest, RecordEvent, Validate, VersionList,
+    DescribeRequest, FieldEvent, Manifest, RecordEvent, Validate, VersionList, Window,
 };
 use fieldnotes_field_protocol::redact::Redactor;
 use fieldnotes_field_protocol::session::{
@@ -146,8 +214,17 @@ use crate::kernel::Kernel;
 use project::{ArtifactProjection, RetainedArtifact, SkippedArtifact};
 pub use report::{
     CredentialReport, DeletionReport, FieldRunOutcome, FieldSyncReport, SyncCounts, SyncDiagnostic,
-    SyncOutcome, SyncRejection, exit_label,
+    SyncOutcome, SyncRejection, SyncWindow, exit_label,
 };
+
+/// The bounded collection window's default length, in days, used when
+/// neither `--window` nor the profile records one.
+///
+/// Seven days is long enough that a first run over a normally-paced mailbox
+/// or calendar catches a reasonable back-fill, while staying nowhere near the
+/// "roughly eighteen days" an unbounded first run collected against a live
+/// tenant in the report that motivated this feature.
+pub const DEFAULT_WINDOW_DAYS: u64 = 7;
 
 /// Which collection mode a run requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -225,6 +302,13 @@ pub struct SyncOptions {
     /// The effective media-type retention include set, as text. `None` uses the
     /// protocol default include set approved by ADR 0007.
     pub artifact_media_types: Option<Vec<String>>,
+    /// The bounded collection window's length in days, sent only on a run
+    /// that has no durable cursor to replay and whose manifest declares
+    /// `window_supported`. `None` uses [`DEFAULT_WINDOW_DAYS`]. See
+    /// `effective_window` for the full rule and this module's
+    /// documentation for the tension between a window and a delta-token
+    /// cursor.
+    pub window_days: Option<u64>,
     /// The run wall clock in seconds. `None` uses the protocol default (600).
     pub run_seconds: Option<u64>,
     /// Seconds without a frame before the run is idle. `None` uses the protocol
@@ -311,6 +395,7 @@ fn run_field<C: Clock, R: RandomSource>(
 }
 
 /// A refusal to start or to continue a run, already phrased for a user.
+#[derive(Debug, PartialEq, Eq)]
 struct Refusal {
     message: String,
 }
@@ -514,6 +599,11 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
 
     let limits = effective_limits(options)?;
     let media_types = effective_media_types(options)?;
+    // Validated here, before any process is spawned, exactly like the two
+    // retention settings above: a misconfigured `--window` is a usage
+    // mistake, not a reason to start a child first.
+    validate_window_days(options.window_days.unwrap_or(DEFAULT_WINDOW_DAYS))
+        .map_err(Refusal::new)?;
     let (run_id_text, started_at) = kernel.new_run().map_err(Refusal::from)?;
     let run_id = RunId::parse(&run_id_text).map_err(|error| {
         Refusal::new(format!("the generated run identifier is invalid: {error}"))
@@ -622,6 +712,13 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
         }
         None => None,
     };
+    let window = effective_window(
+        options,
+        &manifest,
+        stored_cursor.is_some(),
+        started_at,
+        kernel.offset_minutes(),
+    )?;
 
     // The protected channel is opened before the staging directory and before
     // the child, so every credential-shaped failure still precedes both. It is
@@ -657,6 +754,7 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
         limits,
         deadline,
         media_types,
+        window,
         channel.as_ref().map(|channel| channel.grant().clone()),
     )?;
 
@@ -747,6 +845,24 @@ pub fn validate_artifact_media_types(entries: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Validates a configured bounded-window length in days.
+///
+/// Zero is refused: a zero-day window would ask a Field to collect a span
+/// that never opens, which is never what an operator setting `--window 0`
+/// meant. There is no configured upper bound beyond what an `i64` millisecond
+/// instant can represent, which `effective_window` itself reports actionably
+/// if a wildly large value is ever given.
+pub fn validate_window_days(days: u64) -> Result<(), String> {
+    if days == 0 {
+        return Err(
+            "a window of zero days would collect nothing; omit --window to use the seven-day \
+             default, or choose a value of at least one day"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
 fn effective_limits(options: &SyncOptions) -> Result<Limits, Refusal> {
     let mut limits = Limits::defaults();
     if let Some(bytes) = options.max_artifact_bytes {
@@ -802,6 +918,57 @@ fn effective_deadline(
         .validate()
         .map_err(|error| Refusal::new(format!("the run deadline is not usable: {error}")))?;
     Ok(deadline)
+}
+
+/// Decides whether this run sends a bounded window, and computes it when it
+/// does.
+///
+/// `has_durable_cursor` is whether [`read_cursor`] found a stored cursor at
+/// all — including one at a format version the manifest no longer matches.
+/// That cursor-format recovery gap already has its own documented behavior
+/// (A2 section 9: the run starts unbounded and the gap is reported), and this
+/// feature leaves that alone rather than quietly bounding a run the recovery
+/// path deliberately runs unbounded; only the genuine absence of any stored
+/// cursor — a true first run — is bounded here.
+///
+/// A window is sent only when there is no durable cursor **and** the
+/// manifest declares `window_supported`; a Field that declares no window
+/// support gets none regardless of cursor state; a Field with a durable
+/// cursor gets none regardless of window support, so its own delta mechanism
+/// drives incremental collection undisturbed. See this module's own
+/// documentation for why this rule can leave a delta-token Field windowed
+/// indefinitely, and what fixes that.
+///
+/// Both endpoints come from `started_at`, which is itself sourced from the
+/// injected [`Clock`] by [`Kernel::new_run`] rather than a second, direct
+/// wall-clock read, and are rendered at `offset_minutes` — the run's own
+/// configured offset, matching every other datetime this run reports.
+fn effective_window(
+    options: &SyncOptions,
+    manifest: &Manifest,
+    has_durable_cursor: bool,
+    started_at: Datetime,
+    offset_minutes: i16,
+) -> Result<Option<Window>, Refusal> {
+    if has_durable_cursor || !manifest.collection.window_supported {
+        return Ok(None);
+    }
+    let days = options.window_days.unwrap_or(DEFAULT_WINDOW_DAYS);
+    validate_window_days(days).map_err(Refusal::new)?;
+    let span_millis = i64::try_from(days.saturating_mul(86_400))
+        .unwrap_or(i64::MAX)
+        .saturating_mul(1000);
+    let from_millis = started_at.unix_millis().saturating_sub(span_millis);
+    let from = Datetime::from_unix_millis(from_millis, offset_minutes).map_err(|error| {
+        Refusal::new(format!(
+            "a {days}-day window's start is not representable: {error}"
+        ))
+    })?;
+    let from = OffsetDatetime::parse(&from.to_string())
+        .map_err(|error| Refusal::new(format!("the window start failed its own guard: {error}")))?;
+    let to = OffsetDatetime::parse(&started_at.to_string())
+        .map_err(|error| Refusal::new(format!("the window end failed its own guard: {error}")))?;
+    Ok(Some(Window { from, to }))
 }
 
 /// Resolves the scope a snapshot run claims.
@@ -1010,6 +1177,7 @@ fn build_request(
     limits: Limits,
     deadline: Deadline,
     artifact_media_types: Vec<MediaTypeMatcher>,
+    window: Option<Window>,
     credential: Option<CredentialGrant>,
 ) -> Result<CollectRequest, Refusal> {
     let staging_text = staging
@@ -1036,7 +1204,7 @@ fn build_request(
         mode: mode.protocol(),
         cursor: cursor.as_ref().map(|(cursor, _)| cursor.clone()),
         cursor_format_version: cursor.as_ref().map(|(_, version)| *version),
-        window: None,
+        window,
         snapshot_scope,
         config: connector_config,
         // A reference, never a value: the profile name, this run's single-use
@@ -1314,6 +1482,10 @@ fn collect<C: Clock, R: RandomSource>(
         withheld_checkpoints: withheld,
         cursor_recovery_gap: context.cursor_recovery_gap,
         deletion,
+        window: context.request.window.map(|window| SyncWindow {
+            from: window.from.to_string(),
+            to: window.to.to_string(),
+        }),
         rejection: rejection
             .as_ref()
             .map(|error| SyncRejection::new(error.code, error.detail.clone())),
@@ -1793,6 +1965,12 @@ fn status_file(report: &FieldSyncReport, finished_at: Datetime) -> LastSyncOutco
         "deletion_refusals".to_owned(),
         serde_json::json!(report.deletion.refusals),
     );
+    if let Some(window) = &report.window {
+        extra.insert(
+            "window".to_owned(),
+            serde_json::json!({ "from": window.from, "to": window.to }),
+        );
+    }
     if let Some(rejection) = &report.rejection {
         extra.insert(
             "rejection".to_owned(),
@@ -1822,5 +2000,159 @@ fn status_file(report: &FieldSyncReport, finished_at: Datetime) -> LastSyncOutco
         outcome: report.outcome.as_str().to_owned(),
         at: finished_at.to_string(),
         extra,
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::{DEFAULT_WINDOW_DAYS, SyncOptions, effective_window, validate_window_days};
+    use fieldnotes_domain::Datetime;
+    use fieldnotes_field_protocol::message::Manifest;
+
+    /// A fixed instant this test module treats as "now": 2026-08-22T08:45:00Z.
+    const FIXED_MILLIS: i64 = 1_787_381_100_000;
+
+    /// A manifest that is otherwise minimal but valid, with `window_supported`
+    /// set as requested — everything [`effective_window`] itself consults.
+    fn manifest(window_supported: bool) -> Manifest {
+        let value = serde_json::json!({
+            "v": 1,
+            "type": "manifest",
+            "run_id": "1a4c9f2e-0000-4000-8000-000000000001",
+            "protocol_version": 1,
+            "protocol_revision": 0,
+            "supported_protocol_versions": [1],
+            "driver": "window-test-driver",
+            "driver_version": "0.1.0",
+            "field_stem": "local",
+            "declared_properties": [],
+            "capabilities": [
+                {
+                    "object_kind": "file",
+                    "note_type": "file",
+                    "emits_artifacts": false,
+                    "emits_identity_anchors": false,
+                    "description": "A fixed test note, for unit-testing the window decision alone."
+                }
+            ],
+            "source_key": {
+                "scope_rule": "window_test_root_id",
+                "scope_rule_version": 1,
+                "scope_shape": "window-test:<root-id>",
+                "scope_depends_on_field_label": false,
+                "identity_shape": "<object-kind>/<path>",
+                "identity_includes_object_kind": true,
+                "source_version_ordering": "unsupported",
+                "stable_across_instances": true
+            },
+            "auth": {
+                "kind": "none",
+                "credential_profile_required": false,
+                "protected_channel_required": false,
+                "refresh_owner": "not_applicable",
+                "writes_to_source": false
+            },
+            "collection": {
+                "incremental": true,
+                "cursor_format_version": 1,
+                "supported_modes": ["incremental"],
+                "window_supported": window_supported,
+                "refetch": "unsupported",
+                "deletion": {
+                    "tombstones": "unsupported",
+                    "snapshot": "unsupported"
+                }
+            }
+        });
+        match serde_json::from_value(value) {
+            Ok(manifest) => manifest,
+            Err(error) => panic!("the test manifest must decode: {error}"),
+        }
+    }
+
+    fn started_at() -> Datetime {
+        match Datetime::from_unix_millis(FIXED_MILLIS, 0) {
+            Ok(datetime) => datetime,
+            Err(error) => panic!("the fixed test instant must be representable: {error}"),
+        }
+    }
+
+    #[test]
+    fn zero_days_is_rejected_and_any_positive_count_is_accepted() {
+        assert!(validate_window_days(0).is_err());
+        assert!(validate_window_days(1).is_ok());
+        assert!(validate_window_days(DEFAULT_WINDOW_DAYS).is_ok());
+    }
+
+    #[test]
+    fn a_first_run_against_a_window_supporting_field_gets_the_seven_day_default() {
+        let options = SyncOptions::default();
+        let window = match effective_window(&options, &manifest(true), false, started_at(), 0) {
+            Ok(Some(window)) => window,
+            other => panic!(
+                "a first run against a window-supporting Field must send a window: {other:?}"
+            ),
+        };
+        let to_millis = window.to.datetime().unix_millis();
+        let from_millis = window.from.datetime().unix_millis();
+        assert_eq!(to_millis, FIXED_MILLIS);
+        assert_eq!(
+            to_millis - from_millis,
+            i64::try_from(DEFAULT_WINDOW_DAYS).unwrap_or(0) * 86_400 * 1000,
+            "the default window must span exactly seven days"
+        );
+        // A1's explicit-numeric-offset contract, checked at the exact rendered
+        // string rather than trusted from the type alone.
+        let from_text = window.from.to_string();
+        let to_text = window.to.to_string();
+        assert!(
+            !from_text.ends_with('Z') && from_text.ends_with("+00:00"),
+            "the window start must carry an explicit numeric offset: {from_text}"
+        );
+        assert!(
+            !to_text.ends_with('Z') && to_text.ends_with("+00:00"),
+            "the window end must carry an explicit numeric offset: {to_text}"
+        );
+    }
+
+    #[test]
+    fn an_explicit_override_replaces_the_default_span() {
+        let options = SyncOptions {
+            window_days: Some(1),
+            ..SyncOptions::default()
+        };
+        let window = match effective_window(&options, &manifest(true), false, started_at(), 0) {
+            Ok(Some(window)) => window,
+            other => panic!("expected a one-day window: {other:?}"),
+        };
+        let span = window.to.datetime().unix_millis() - window.from.datetime().unix_millis();
+        assert_eq!(span, 86_400 * 1000);
+    }
+
+    #[test]
+    fn a_zero_day_override_is_refused_rather_than_silently_sent() {
+        let options = SyncOptions {
+            window_days: Some(0),
+            ..SyncOptions::default()
+        };
+        assert!(effective_window(&options, &manifest(true), false, started_at(), 0).is_err());
+    }
+
+    #[test]
+    fn a_run_with_a_durable_cursor_sends_no_window_regardless_of_support() {
+        let options = SyncOptions::default();
+        assert_eq!(
+            effective_window(&options, &manifest(true), true, started_at(), 0),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn a_field_declaring_no_window_support_gets_none_even_on_a_first_run() {
+        let options = SyncOptions::default();
+        assert_eq!(
+            effective_window(&options, &manifest(false), false, started_at(), 0),
+            Ok(None)
+        );
     }
 }

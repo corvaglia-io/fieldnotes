@@ -62,6 +62,14 @@ pub struct Profile {
     /// comma-separated list of exact `type/subtype` media types or subtype
     /// wildcards such as `image/*`.
     pub artifact_media_types: Option<String>,
+    /// How many days a first collection run reaches back.
+    ///
+    /// Only a run with no durable cursor is bounded this way: once a Field has
+    /// a cursor, its own incremental mechanism decides what is new, so sending
+    /// a window would replace incremental collection with a repeated bounded
+    /// read. Validating the value against the protocol's own bounds happens
+    /// where the collection request is built, not here.
+    pub window_days: Option<u32>,
 }
 
 /// Reads a user profile from `path`.
@@ -150,6 +158,11 @@ fn parse_profile(bytes: &[u8]) -> Result<Profile, String> {
                 })?);
             }
             "artifact_media_types" => profile.artifact_media_types = Some(value.to_owned()),
+            "window_days" => {
+                profile.window_days = Some(value.parse::<u32>().map_err(|_| {
+                    format!("line {line_number}: `window_days` is a day count, not `{value}`")
+                })?);
+            }
             // Unreachable: `SETTINGS` above is the single source of the
             // recognized set, and an unrecognized key already returned.
             other => return Err(format!("line {line_number}: unhandled setting `{other}`")),
@@ -159,11 +172,12 @@ fn parse_profile(bytes: &[u8]) -> Result<Profile, String> {
 }
 
 /// Every recognized profile setting name, in the order `show` reports them.
-const SETTINGS: [&str; 4] = [
+const SETTINGS: [&str; 5] = [
     "notebook",
     "timezone",
     "artifact_max_bytes",
     "artifact_media_types",
+    "window_days",
 ];
 
 /// Renders a profile back to text, in a fixed key order so writes of the same
@@ -188,6 +202,11 @@ fn render_profile(profile: &Profile) -> String {
     if let Some(media_types) = &profile.artifact_media_types {
         text.push_str("artifact_media_types = ");
         text.push_str(media_types);
+        text.push('\n');
+    }
+    if let Some(days) = profile.window_days {
+        text.push_str("window_days = ");
+        text.push_str(&days.to_string());
         text.push('\n');
     }
     text
@@ -233,6 +252,7 @@ mod tests {
             notebook: Some(PathBuf::from("/notebooks/work")),
             timezone: Some("Europe/Zurich".to_owned()),
             artifact_max_bytes: Some(26_214_400),
+            window_days: Some(7),
             artifact_media_types: Some("application/pdf,image/*".to_owned()),
         };
         write_profile(&path, &profile)?;
@@ -243,6 +263,7 @@ mod tests {
             notebook: Some(PathBuf::from("/notebooks/home")),
             timezone: Some("system".to_owned()),
             artifact_max_bytes: None,
+            window_days: None,
             artifact_media_types: None,
         };
         write_profile(&path, &updated)?;

@@ -71,8 +71,9 @@ pub(crate) struct RecordContext<'a> {
     pub(crate) bearer_token: &'a str,
     /// The Graph service root, for building the photo URL.
     pub(crate) graph_base_url: &'a str,
-    /// The target mailbox's Graph resource segment (`/me` or
-    /// `/users/<mailbox>`), for building the photo URL.
+    /// The signed-in user's Graph resource segment, `/me`, for building the
+    /// photo URL. Always `/me` in this release; see
+    /// [`crate::config::ResolvedConfig::mailbox_resource`].
     pub(crate) mailbox_resource: &'a str,
 }
 

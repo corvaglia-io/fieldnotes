@@ -48,13 +48,12 @@ const SENSITIVE_KEY_FRAGMENTS: [&str; 14] = [
     "www_authenticate",
 ];
 
-/// Query or form parameter names whose value is redacted inside a URL or an
-/// error string.
-const SENSITIVE_PARAMETERS: [&str; 10] = [
+/// Query or form parameter names whose value is redacted wherever the name
+/// appears, because the name alone is unambiguous evidence of a secret.
+const SENSITIVE_PARAMETERS: [&str; 9] = [
     "access_token",
     "id_token",
     "refresh_token",
-    "code",
     "client_secret",
     "password",
     "sig",
@@ -62,6 +61,22 @@ const SENSITIVE_PARAMETERS: [&str; 10] = [
     "token",
     "secret",
 ];
+
+/// Parameter names redacted only in a genuine query-string position, that is
+/// immediately after a `?` or `&`.
+///
+/// `code` names an OAuth authorization code when it is a query parameter, and
+/// that is worth blanking. But it is also what an upstream service calls its
+/// own short, non-secret failure identifier, and a diagnostic that renders one
+/// as `code=<value>` is not leaking anything. Redacting on the bare name
+/// blanked those identifiers too, which cost real diagnostic value: three
+/// separate connector failures against a live tenant each reported
+/// `code=[redacted]` and had to be investigated by reading source rather than
+/// by reading the error. Requiring query-string position keeps the protection
+/// where the secret actually travels — an authorization code reaches this
+/// process only as a redirect parameter — without eating an upstream error
+/// code that names no secret at all.
+const QUERY_ONLY_SENSITIVE_PARAMETERS: [&str; 1] = ["code"];
 
 /// Core's redactor.
 ///
@@ -216,11 +231,15 @@ fn redact_url_userinfo(text: &str) -> String {
 /// string.
 fn redact_parameters(text: &str) -> String {
     let mut result = text.to_owned();
-    for parameter in SENSITIVE_PARAMETERS {
+    let named = SENSITIVE_PARAMETERS.iter().map(|name| (*name, false));
+    let query_only = QUERY_ONLY_SENSITIVE_PARAMETERS
+        .iter()
+        .map(|name| (*name, true));
+    for (parameter, query_position_required) in named.chain(query_only) {
         let mut rebuilt = String::with_capacity(result.len());
         let mut rest = result.as_str();
         loop {
-            let Some(position) = find_parameter(rest, parameter) else {
+            let Some(position) = find_parameter(rest, parameter, query_position_required) else {
                 rebuilt.push_str(rest);
                 break;
             };
@@ -240,7 +259,12 @@ fn is_word_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-fn find_parameter(text: &str, parameter: &str) -> Option<usize> {
+/// Finds `parameter=` where the name starts at a word boundary.
+///
+/// When `query_position_required` is set, the name must also sit immediately
+/// after a `?` or `&`, so it is a genuine query parameter rather than the same
+/// word appearing in prose or in an upstream diagnostic.
+fn find_parameter(text: &str, parameter: &str, query_position_required: bool) -> Option<usize> {
     // `to_ascii_lowercase` never changes a string's byte length, so an offset
     // in the lowered copy is an offset in the original.
     let lowered = text.to_ascii_lowercase();
@@ -250,7 +274,8 @@ fn find_parameter(text: &str, parameter: &str) -> Option<usize> {
     while let Some(offset) = lowered[from..].find(&needle) {
         let position = from + offset;
         let starts_a_name = position == 0 || !is_word_byte(bytes[position - 1]);
-        if starts_a_name {
+        let in_query_position = position > 0 && matches!(bytes[position - 1], b'?' | b'&');
+        if starts_a_name && (!query_position_required || in_query_position) {
             return Some(position);
         }
         from = position + needle.len();
@@ -407,6 +432,30 @@ mod tests {
         let redactor = Redactor::new();
         let line = "Skipped 1 file above the configured size bound.";
         assert_eq!(redactor.redact(line), line);
+    }
+
+    #[test]
+    fn an_authorization_code_is_redacted_only_where_it_is_a_query_parameter() {
+        let redactor = Redactor::new();
+
+        // Where an authorization code actually travels: a redirect's query
+        // string. This must still be blanked.
+        let redirect = redactor.redact("http://localhost:61373/?code=0.AXkAum9&state=xyz");
+        assert!(
+            !redirect.contains("0.AXkAum9"),
+            "an authorization code in a query string must not survive: {redirect}"
+        );
+
+        // An upstream service's own failure identifier names no secret, and
+        // blanking it cost real diagnostic value: three connector failures
+        // against a live tenant each reported `code=[redacted]`.
+        let diagnostic =
+            "graph request 'list contacts delta' (status 404, code=Request_ResourceNotFound)";
+        assert_eq!(
+            redactor.redact(diagnostic),
+            diagnostic,
+            "an upstream diagnostic code is not a secret and must survive"
+        );
     }
 
     #[test]

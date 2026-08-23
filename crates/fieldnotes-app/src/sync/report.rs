@@ -167,6 +167,21 @@ impl DeletionReport {
     }
 }
 
+/// The bounded collection window a run sent, when it sent one.
+///
+/// Mirrors the protocol's own `Window` as rendered text rather than the
+/// protocol type itself, so this crate's report stays independent of exactly
+/// how the protocol crate spells an offset datetime. Both endpoints always
+/// carry an explicit numeric UTC offset, never a bare `Z`: see
+/// `super::effective_window` for why and how they are computed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncWindow {
+    /// The start of the window, inclusive.
+    pub from: String,
+    /// The end of the window, exclusive.
+    pub to: String,
+}
+
 /// What crossed the protected credential channel during one run.
 ///
 /// Deliberately made of counts and non-secret names. It exists because "did the
@@ -216,6 +231,12 @@ pub struct FieldSyncReport {
     pub cursor_recovery_gap: bool,
     /// Deletion authority for this run.
     pub deletion: DeletionReport,
+    /// The bounded window this run sent to the Field, when it sent one.
+    ///
+    /// `None` both when no window was sent (a durable cursor was replayable,
+    /// or the manifest declares no window support) and when the run never
+    /// reached the point of building a request at all.
+    pub window: Option<SyncWindow>,
     /// The rejection that failed the run, when one did.
     pub rejection: Option<SyncRejection>,
     /// A refusal to start, or a failure that is not a protocol rejection: a
@@ -259,6 +280,7 @@ impl FieldSyncReport {
             withheld_checkpoints: Vec::new(),
             cursor_recovery_gap: false,
             deletion: DeletionReport::default(),
+            window: None,
             rejection: None,
             failure: Some(failure.into()),
             exit: "not_started".to_owned(),

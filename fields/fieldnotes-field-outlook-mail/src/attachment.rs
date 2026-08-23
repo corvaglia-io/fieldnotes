@@ -18,6 +18,16 @@
 //! the shared `skipped_attachments` Note property. The Note is still created,
 //! the run still succeeds, and no error diagnostic is emitted -- "stays at
 //! source" is a policy decision, not a fault (A2 section 14).
+//!
+//! The listing's `@odata.type` is this Field's best *guess* at whether an
+//! attachment carries bytes, made before any byte crosses the wire; it is not
+//! infallible. When the policy admits an attachment on that guess but Graph
+//! then refuses -- authoritatively, with a permanent-client-error response to
+//! the one request whose only job is fetching those bytes -- the guess was
+//! wrong, not the connector: [`AttachmentError::NoBytesAtSource`] takes the
+//! identical `not_retained` path, with no error diagnostic and no effect on
+//! the run's outcome, exactly as an item or reference attachment excluded up
+//! front does.
 
 use std::fmt;
 
@@ -151,6 +161,30 @@ pub(crate) enum AttachmentError {
         /// How many bytes actually arrived.
         actual_bytes: u64,
     },
+    /// Graph rejected the one request whose only purpose is fetching this
+    /// attachment's bytes (status 400), even though the listing reported it
+    /// as a file attachment.
+    ///
+    /// The attachment listing's `@odata.type` is this Field's best guess at
+    /// whether an attachment carries original bytes, made without a byte ever
+    /// crossing the wire; Graph's own answer to "give me this attachment's
+    /// bytes" is authoritative over that guess. A permanent-client-error
+    /// response to *that specific, narrow* request can only mean this
+    /// attachment does not support this read -- an inline cloud reference the
+    /// listing under-reported, a shape this Field's manifest has not yet
+    /// named, or any other reason -- never that this Field built some other
+    /// request wrong, because no other request is in flight here. Treating it
+    /// as a defect would train an operator to ignore diagnostics on every
+    /// routine sync that happens to carry one of these; treating it as a
+    /// decline keeps the signal for a genuine defect meaningful.
+    NoBytesAtSource {
+        /// Graph's own short error code, when the failure body parsed as a
+        /// Graph error envelope. Already bounded and passed through this
+        /// run's redactor by `fieldnotes-msgraph` before this Field ever sees
+        /// it; never Graph's free-text `message`, which can quote content
+        /// this Field must not echo into evidence.
+        code: Option<String>,
+    },
 }
 
 impl fmt::Display for AttachmentError {
@@ -179,6 +213,20 @@ impl fmt::Display for AttachmentError {
                 "the attachment delivered {actual_bytes} bytes, over this run's retention \
                  threshold, so it was not retained"
             ),
+            AttachmentError::NoBytesAtSource { code } => match code {
+                // "code " rather than "code=" on purpose: a redaction pass
+                // downstream that treats a bare `code=` as an OAuth
+                // authorization-code parameter must not mistake Graph's
+                // enum-like error code for one.
+                Some(code) => write!(
+                    f,
+                    "Graph could not return bytes for this attachment (graph error code {code}), \
+                     so it stays at its source"
+                ),
+                None => f.write_str(
+                    "Graph could not return bytes for this attachment, so it stays at its source",
+                ),
+            },
         }
     }
 }
@@ -363,7 +411,16 @@ where
                     }
                     Err(reference_error) => outcome.issues.push(reference_error),
                 }
-                outcome.issues.push(error);
+                // Graph authoritatively refusing to hand over this
+                // attachment's bytes is a decline, exactly like a size or
+                // media-type exclusion the policy caught before any byte was
+                // fetched: it is already fully reported in the evidence above,
+                // so it does not also cost the run a diagnostic, and it must
+                // never cost the run its `Complete` outcome or its deletion
+                // authority the way a genuine defect does.
+                if !matches!(error, AttachmentError::NoBytesAtSource { .. }) {
+                    outcome.issues.push(error);
+                }
             }
         }
     }
@@ -386,9 +443,20 @@ where
     C: RetryClock,
     R: RandomSource,
 {
-    let fetched = reader
-        .attachment_content(message_id, attachment_id)
-        .map_err(AttachmentError::Graph)?;
+    let fetched = match reader.attachment_content(message_id, attachment_id) {
+        Ok(fetched) => fetched,
+        // This call has exactly one job: fetch this one attachment's bytes.
+        // Graph refusing it outright (a permanent client error, not a token,
+        // consent, or throttling problem) can only be about this attachment,
+        // never about some other request this Field also builds -- so it is
+        // evidence the bytes are unobtainable, not a connector defect.
+        Err(GraphError::InvalidRequest(detail)) => {
+            return Err(AttachmentError::NoBytesAtSource {
+                code: detail.code().map(str::to_owned),
+            });
+        }
+        Err(error) => return Err(AttachmentError::Graph(error)),
+    };
     let encoded = fetched
         .content_bytes
         .as_deref()
@@ -426,8 +494,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Retention, plan};
+    use super::{Retention, collect, plan};
     use fieldnotes_field_protocol::limits::{Limits, default_artifact_media_types};
+    use fieldnotes_field_protocol::message::ArtifactKind;
 
     fn attachment(json: &str) -> crate::api::GraphAttachment {
         serde_json::from_str(json).unwrap_or_else(|error| panic!("must deserialize: {error}"))
@@ -546,5 +615,75 @@ mod tests {
                 .unwrap_or_else(|error| panic!("must parse: {error}")),
         ];
         assert_eq!(plan(&value, &limits(), &policy, 0), Retention::Retain);
+    }
+
+    /// The regression this module pins: `plan` admitted this attachment on
+    /// the listing's `#microsoft.graph.fileAttachment` discriminator alone,
+    /// but Graph's own read of its bytes -- the only request that could ever
+    /// prove the guess right -- came back a permanent client error. That must
+    /// be a decline exactly like any other, never an `AttachmentError::Graph`
+    /// that would freeze the cursor and degrade the run.
+    #[test]
+    fn graph_refusing_a_listed_file_attachments_bytes_is_declined_not_reported_as_an_issue() {
+        use fieldnotes_msgraph::testing::{FakeRetryClock, json_response};
+        use fieldnotes_msgraph::{AccessToken, GraphClient};
+
+        let listing = json_response(
+            200,
+            r##"{"value":[{"@odata.type":"#microsoft.graph.fileAttachment","id":"a1",
+                "name":"signature.png","contentType":"image/png","size":2048,
+                "isInline":true}]}"##,
+        );
+        let refusal = json_response(
+            400,
+            r#"{"error":{"code":"ErrorAttachmentNotSupported","message":"nope"}}"#,
+        );
+        let client = GraphClient::new(
+            fieldnotes_msgraph::testing::ScriptedTransport::new(vec![listing, refusal]),
+            FakeRetryClock::new(0),
+            fieldnotes_test_support::CountingRandom::new(3),
+        );
+        let token = AccessToken::new("FIXTURE-NOT-A-REAL-TOKEN-canary-outlook-mail-attachment");
+        let reader = crate::mail::MailReader::new(&client, &token, "inbox");
+        let staging = fieldnotes_test_support::TempDir::new("attachment-no-bytes-at-source")
+            .unwrap_or_else(|error| panic!("a staging directory is required: {error}"));
+
+        let outcome = collect(
+            &reader,
+            "m1",
+            1,
+            staging.path(),
+            &Limits::defaults(),
+            &default_artifact_media_types(),
+            0,
+        );
+
+        assert!(
+            outcome.issues.is_empty(),
+            "a refusal to hand over bytes is a decline, not a reportable issue: {:?}",
+            outcome.issues
+        );
+        assert_eq!(outcome.staged_bytes, 0);
+        assert_eq!(outcome.artifacts.len(), 1);
+        assert_eq!(outcome.artifacts[0].kind, ArtifactKind::NotRetained);
+        assert!(outcome.artifacts[0].handle.is_none() && outcome.artifacts[0].sha256.is_none());
+        assert!(
+            outcome.artifacts[0].attachment_ref.is_some(),
+            "a declined artifact's reference is its only stable identity"
+        );
+        assert!(
+            outcome.evidence[0]
+                .note
+                .contains("Graph could not return bytes for this attachment"),
+            "{}",
+            outcome.evidence[0].note
+        );
+        assert!(
+            outcome.evidence[0]
+                .note
+                .contains("ErrorAttachmentNotSupported"),
+            "Graph's own error code is safe to surface and makes the decline self-diagnosing: {}",
+            outcome.evidence[0].note
+        );
     }
 }

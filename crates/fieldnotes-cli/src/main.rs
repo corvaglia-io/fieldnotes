@@ -63,7 +63,8 @@
 //! [`timezone`] for how a timezone setting becomes a numeric UTC offset.
 //! Every setting except the notebook resolves through the same order: an
 //! explicit flag, then an environment variable, then the profile, then
-//! `0.1.0`'s existing behavior (UTC for the offset). The notebook resolves
+//! `0.1.0`'s existing behavior (UTC for the offset; seven days for `sync`'s
+//! `--window`, [`fieldnotes_app::DEFAULT_WINDOW_DAYS`]). The notebook resolves
 //! differently, in [`config::resolve_notebook`]: an explicit flag, then the
 //! environment variable, then discovery by walking up from the working
 //! directory, then the profile's recorded default, last — standing inside a
@@ -267,6 +268,19 @@ enum Command {
         /// Seconds without a frame before the run is considered idle.
         #[arg(long, value_name = "SECONDS")]
         idle_seconds: Option<u32>,
+        /// The bounded collection window's length in days, sent only on a
+        /// run that has no durable cursor to replay and whose manifest
+        /// declares it honors one.
+        ///
+        /// Named `--window` rather than `--since` because it names the
+        /// protocol concept it controls directly (`collect_request.window`,
+        /// a bounded span, not a single instant `--since` would suggest)
+        /// and because a run's own report says "window" too, so the flag a
+        /// user types and the value it produces read the same. Overrides
+        /// the profile's `window_days` setting and the seven-day default.
+        /// FIELDNOTES_WINDOW_DAYS is the equivalent environment variable.
+        #[arg(long, value_name = "DAYS")]
+        window: Option<u64>,
     },
 }
 
@@ -671,10 +685,25 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             media_types,
             run_seconds,
             idle_seconds,
+            window,
         } => {
             let (notebook, notebook_source) =
                 open_notebook(explicit_notebook.clone(), profile.notebook.clone())?;
             notify_notebook_source(&notebook, notebook_source, cli.format);
+            let window_env = non_empty_env(config::WINDOW_ENV)
+                .map(|value| {
+                    value.trim().parse::<u64>().map_err(|_| {
+                        Failure::new(
+                            "invalid_setting",
+                            format!(
+                                "{} `{value}` is not a whole number of days",
+                                config::WINDOW_ENV
+                            ),
+                            EXIT_USAGE,
+                        )
+                    })
+                })
+                .transpose()?;
             let options = SyncOptions {
                 mode: if snapshot {
                     SyncMode::Snapshot
@@ -690,6 +719,13 @@ fn run(cli: Cli) -> Result<i32, Failure> {
                 ),
                 run_seconds,
                 idle_seconds,
+                // Flag, then FIELDNOTES_WINDOW_DAYS, then the profile's
+                // `window_days`, then `fieldnotes_app::DEFAULT_WINDOW_DAYS`.
+                window_days: config::resolve_window_days(
+                    window,
+                    window_env,
+                    profile.window_days.map(u64::from),
+                ),
                 durability: fieldnotes_app::DurabilityPolicy::AllSucceed,
                 // Core builds the child's environment rather than inheriting
                 // it, and the CLI widens that allowlist by nothing at all.
@@ -1557,6 +1593,12 @@ fn render_sync(outcome: &SyncOutcome, format: Format) -> String {
                         _ => "not advanced".to_owned(),
                     }
                 ));
+                if let Some(window) = &report.window {
+                    out.push_str(&format!(
+                        "    window             {} .. {}\n",
+                        window.from, window.to
+                    ));
+                }
                 if let Some(credential) = &report.credential {
                     out.push_str(&format!(
                         "    credential         profile `{}` in {}; {} delivered, {} refused\n",
@@ -1662,6 +1704,15 @@ fn field_sync_json(report: &FieldSyncReport) -> Json {
         (
             "cursor_recovery_gap",
             Json::Bool(report.cursor_recovery_gap),
+        ),
+        (
+            "window",
+            report.window.as_ref().map_or(Json::Null, |window| {
+                Json::Obj(vec![
+                    ("from", Json::text(window.from.clone())),
+                    ("to", Json::text(window.to.clone())),
+                ])
+            }),
         ),
         (
             "withheld_checkpoints",
@@ -1969,6 +2020,7 @@ fn render_config_get(key: ConfigKey, profile: &Profile, format: Format) -> Strin
 mod tests {
     use super::*;
     use clap::CommandFactory;
+    use fieldnotes_app::{FieldRunOutcome, SyncWindow};
 
     #[test]
     fn the_command_surface_is_well_formed() {
@@ -1983,5 +2035,75 @@ mod tests {
             Cli::try_parse_from(["fieldnotes", "note", "--file", "a", "--voice", "b"]).is_err()
         );
         assert!(Cli::try_parse_from(["fieldnotes", "note", "--stdin"]).is_ok());
+    }
+
+    #[test]
+    fn the_window_flag_parses_as_a_whole_number_of_days() {
+        let cli = match Cli::try_parse_from(["fieldnotes", "sync", "--window", "3"]) {
+            Ok(cli) => cli,
+            Err(error) => panic!("--window 3 must parse: {error}"),
+        };
+        match cli.command {
+            Command::Sync { window, .. } => assert_eq!(window, Some(3)),
+            other => panic!("expected the sync command, got {other:?}"),
+        }
+
+        // Omitted, it resolves through the flag/environment/profile/default
+        // chain instead of a clap-level default, so it parses to `None` here.
+        let cli = match Cli::try_parse_from(["fieldnotes", "sync"]) {
+            Ok(cli) => cli,
+            Err(error) => panic!("a bare `sync` must parse: {error}"),
+        };
+        match cli.command {
+            Command::Sync { window, .. } => assert_eq!(window, None),
+            other => panic!("expected the sync command, got {other:?}"),
+        }
+    }
+
+    fn report_with_window(window: Option<SyncWindow>) -> FieldSyncReport {
+        let mut report = FieldSyncReport::not_run(
+            "local_demo",
+            "incremental",
+            FieldRunOutcome::Complete,
+            "test fixture",
+        );
+        report.window = window;
+        report
+    }
+
+    #[test]
+    fn the_reported_window_appears_in_both_output_forms() {
+        let window = SyncWindow {
+            from: "2026-08-15T08:45:00+02:00".to_owned(),
+            to: "2026-08-22T08:45:00+02:00".to_owned(),
+        };
+        let outcome = SyncOutcome {
+            fields: vec![report_with_window(Some(window))],
+        };
+
+        let human = render_sync(&outcome, Format::Human);
+        assert!(
+            human.contains("2026-08-15T08:45:00+02:00 .. 2026-08-22T08:45:00+02:00"),
+            "{human}"
+        );
+
+        let json = render_sync(&outcome, Format::Json);
+        assert!(
+            json.contains(
+                r#""window":{"from":"2026-08-15T08:45:00+02:00","to":"2026-08-22T08:45:00+02:00"}"#
+            ),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn a_report_with_no_window_renders_json_null_and_no_human_line() {
+        let outcome = SyncOutcome {
+            fields: vec![report_with_window(None)],
+        };
+        let json = render_sync(&outcome, Format::Json);
+        assert!(json.contains(r#""window":null"#), "{json}");
+        let human = render_sync(&outcome, Format::Human);
+        assert!(!human.contains("window"), "{human}");
     }
 }

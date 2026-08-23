@@ -211,6 +211,13 @@ where
 
     let start = match previous_cursor {
         Some(delta_token) => DeltaStart::Resume(delta_token),
+        // `resolved_config.mailbox_resource` is always `/me` in this
+        // release (`crate::config::resolve` refuses a configured
+        // `mailbox` outright), so this always builds `/me/contacts`,
+        // which `GraphClient::delta` turns into `/me/contacts/delta` --
+        // the signed-in user's own contacts-delta feed. See
+        // `crate::config::ConfigError::MailboxUnsupported` for why no
+        // other segment is ever built here.
         None => DeltaStart::Initial(
             GraphRequest::new(format!("{}/contacts", resolved_config.mailbox_resource)).select([
                 "id",
@@ -318,7 +325,7 @@ where
                     &request.run_id,
                     severity,
                     code,
-                    &graph_error.to_string(),
+                    &describe_graph_error(&graph_error),
                 );
                 break;
             }
@@ -372,6 +379,65 @@ where
         exit_code
     } else {
         ProtocolExit::Completed
+    }
+}
+
+/// Renders a Graph failure as this Field's own diagnostic message.
+///
+/// Deliberately does not delegate to [`GraphError`]'s own [`std::fmt::Display`]:
+/// that renders Graph's own short error code as `code=<value>` (see
+/// `fieldnotes_msgraph::error::GraphErrorDetail`'s `Display` impl), and
+/// core's own second redaction pass
+/// (`fieldnotes_field_protocol::redact::Redactor`) treats any `code=`
+/// substring as an OAuth authorization-code parameter and blanks it --
+/// even though a Graph error code such as `Request_ResourceNotFound` is a
+/// short, fixed, non-secret label naming the failure class, exactly the
+/// fact a diagnostic exists to surface. A Graph error's free-text
+/// `message`, by contrast, can quote request content and is deliberately
+/// left out here exactly as `GraphErrorDetail`'s own `Display` already
+/// leaves it out.
+///
+/// Rendering the same fields with a colon instead of `=` (`graph_code: \
+/// <value>`) carries identical information without colliding with that
+/// redaction pattern, so the code that would have made this Field's own
+/// 404 self-diagnosing survives all the way to a reviewer instead of
+/// arriving as `graph_code: [redacted]`.
+fn describe_graph_error(error: &GraphError) -> String {
+    fn with_detail(detail: &fieldnotes_msgraph::GraphErrorDetail, outcome: &str) -> String {
+        let mut text = format!(
+            "graph request '{}' (status {}",
+            detail.operation(),
+            detail.status()
+        );
+        if let Some(code) = detail.code() {
+            text.push_str(&format!(", graph_code: {code}"));
+        }
+        if let Some(request_id) = detail.request_id() {
+            text.push_str(&format!(", request_id: {request_id}"));
+        }
+        text.push(')');
+        text.push(' ');
+        text.push_str(outcome);
+        text
+    }
+    match error {
+        GraphError::ReauthenticationRequired(detail) => {
+            with_detail(detail, "requires a fresh access token")
+        }
+        GraphError::PermissionDenied(detail) => {
+            with_detail(detail, "was denied; an administrator must grant consent")
+        }
+        GraphError::Throttled(detail) => with_detail(detail, "is still throttled after retrying"),
+        GraphError::ServiceUnavailable(detail) => with_detail(
+            detail,
+            "failed with a transient server fault after retrying",
+        ),
+        GraphError::InvalidRequest(detail) => {
+            with_detail(detail, "was rejected and will not succeed by retrying")
+        }
+        GraphError::UntrustedContinuation { .. }
+        | GraphError::MalformedResponse { .. }
+        | GraphError::Transport { .. } => error.to_string(),
     }
 }
 
@@ -982,6 +1048,132 @@ mod tests {
         assert!(
             checkpoints_of(&events).is_empty(),
             "a partial result must never commit a checkpoint"
+        );
+        Ok(())
+    }
+
+    /// Wraps a borrowed [`ScriptedTransport`] so a test can both drive a
+    /// [`GraphClient`] with it and, afterwards, inspect
+    /// [`ScriptedTransport::requested_urls`] on the original -- `GraphClient`
+    /// otherwise takes its transport by value and never hands it back.
+    struct RefTransport<'a>(&'a ScriptedTransport);
+
+    impl fieldnotes_msgraph::transport::HttpTransport for RefTransport<'_> {
+        fn execute(
+            &self,
+            request: &fieldnotes_msgraph::transport::GraphHttpRequest,
+        ) -> Result<
+            fieldnotes_msgraph::transport::GraphHttpResponse,
+            fieldnotes_msgraph::transport::TransportError,
+        > {
+            self.0.execute(request)
+        }
+    }
+
+    /// The regression test for this Field's own release-day 404: with no
+    /// `mailbox` configured, the very first request this Field makes must be
+    /// the signed-in user's own contacts-delta feed, `/me/contacts/delta` --
+    /// never a `/users/...`-scoped path -- because that is the one resource
+    /// Microsoft Graph actually exposes for this case (see
+    /// `crate::config::ConfigError::MailboxUnsupported` for the other half
+    /// of this fix).
+    #[test]
+    fn no_mailbox_requests_the_signed_in_users_own_contacts_delta_path() -> std::io::Result<()> {
+        let staging = TempDir::new("collect-default-resource-path")?;
+        let transport = ScriptedTransport::new(vec![json_response(200, ALICE_PAGE)]);
+        let request = request("1a4c9f2e-0000-4000-8000-000000000020", staging.path(), None);
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let mut emitter = Emitter::new_with_sink(&request, &mut sink);
+            let client = GraphClient::new(
+                RefTransport(&transport),
+                FakeRetryClock::new(0),
+                CountingRandom::new(1),
+            );
+            let token = AccessToken::new("FIXTURE-NOT-A-REAL-TOKEN-canary".to_owned());
+            let photo_transport =
+                ScriptedPhotoTransport::new(vec![crate::photo::testing::Scripted::None]);
+            let clock = FixedClock(1_755_000_000_000);
+            let exit = collect_with(
+                &request,
+                &resolved_config(),
+                &client,
+                &token,
+                "FIXTURE-NOT-A-REAL-TOKEN-canary",
+                &photo_transport,
+                &clock,
+                &mut emitter,
+            );
+            assert_eq!(exit, ProtocolExit::Completed);
+        }
+        let urls = transport.requested_urls();
+        assert_eq!(urls.len(), 1);
+        assert_eq!(
+            urls[0],
+            "https://graph.microsoft.com/v1.0/me/contacts/delta?$select=id%2CdisplayName%2CgivenName%2Csurname%2CcompanyName%2CjobTitle%2CemailAddresses%2CbusinessPhones%2ChomePhones%2CmobilePhone%2ClastModifiedDateTime%2CcreatedDateTime%2CchangeKey"
+        );
+        Ok(())
+    }
+
+    /// core applies its own second, pattern-based redaction pass over every
+    /// diagnostic before display or persistence
+    /// (`fieldnotes_field_protocol::redact::Redactor`), and that pass treats
+    /// any `code=<value>` substring as an OAuth authorization code. Graph's
+    /// own error `code` is a short, fixed, non-secret failure label (see
+    /// `describe_graph_error`'s docs) that this Field renders as
+    /// `graph_code: <value>` specifically so it is not mistaken for that
+    /// pattern and blanked out downstream -- which, for exactly this
+    /// Field's own 404, would have destroyed the one detail that made the
+    /// failure self-diagnosing.
+    #[test]
+    fn a_graph_error_code_survives_cores_downstream_redaction() -> std::io::Result<()> {
+        let staging = TempDir::new("collect-code-visible")?;
+        let transport = ScriptedTransport::new(vec![json_response(
+            404,
+            r#"{"error":{"code":"Request_ResourceNotFound","message":"Resource not found for the segment 'contacts'."}}"#,
+        )]);
+        let request = request("1a4c9f2e-0000-4000-8000-000000000021", staging.path(), None);
+        let mut sink: Vec<u8> = Vec::new();
+        {
+            let mut emitter = Emitter::new_with_sink(&request, &mut sink);
+            let client =
+                GraphClient::new(transport, FakeRetryClock::new(0), CountingRandom::new(1));
+            let token = AccessToken::new("FIXTURE-NOT-A-REAL-TOKEN-canary".to_owned());
+            let photo_transport = ScriptedPhotoTransport::new(vec![]);
+            let clock = FixedClock(1_755_000_000_000);
+            let exit = collect_with(
+                &request,
+                &resolved_config(),
+                &client,
+                &token,
+                "FIXTURE-NOT-A-REAL-TOKEN-canary",
+                &photo_transport,
+                &clock,
+                &mut emitter,
+            );
+            assert_eq!(exit, ProtocolExit::ConfigInvalid);
+        }
+        let events = events_of(&sink);
+        let diagnostics = diagnostics_of(&events);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DiagnosticCode::ConfigInvalid)
+            .unwrap_or_else(|| {
+                panic!("expected a config-invalid diagnostic among {diagnostics:?}")
+            });
+        assert!(
+            diagnostic
+                .message
+                .as_str()
+                .contains("Request_ResourceNotFound"),
+            "the field's own message must carry the graph code: {}",
+            diagnostic.message.as_str()
+        );
+        let redactor = fieldnotes_field_protocol::redact::Redactor::new();
+        let redacted = redactor.redact(diagnostic.message.as_str());
+        assert!(
+            redacted.contains("Request_ResourceNotFound"),
+            "the graph error code must survive core's downstream redaction pass: {redacted}"
         );
         Ok(())
     }

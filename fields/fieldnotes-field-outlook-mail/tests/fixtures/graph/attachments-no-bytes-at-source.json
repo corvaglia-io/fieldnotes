@@ -1,0 +1,26 @@
+{
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.referenceAttachment",
+      "id": "AAMkAGI2TQABAAACattachD1",
+      "name": "Shared design doc",
+      "size": 2048,
+      "isInline": false
+    },
+    {
+      "@odata.type": "#microsoft.graph.itemAttachment",
+      "id": "AAMkAGI2TQABAAACattachD2",
+      "name": "Forwarded receipt",
+      "size": 4096,
+      "isInline": false
+    },
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "AAMkAGI2TQABAAACattachD3",
+      "name": "signature.png",
+      "contentType": "image/png",
+      "size": 2048,
+      "isInline": true
+    }
+  ]
+}

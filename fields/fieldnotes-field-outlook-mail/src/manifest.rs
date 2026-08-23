@@ -269,7 +269,9 @@ fn limitations() -> Vec<Limitation> {
                 "Only file attachments carry bytes. An item attachment (an embedded message or \
                  event) and a reference attachment (a link to cloud storage) are reported as \
                  not retained with their attachment reference, because neither has original \
-                 bytes at the mail endpoint this Field reads.",
+                 bytes at the mail endpoint this Field reads. An attachment the listing reports \
+                 as a file attachment, but whose bytes Graph then refuses outright, is reported \
+                 the same way rather than as an error.",
             ),
         },
         Limitation {

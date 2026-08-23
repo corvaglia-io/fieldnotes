@@ -235,6 +235,15 @@ fn limitations() -> Vec<Limitation> {
                  is not yet derived automatically from the delegated access token.",
             ),
         },
+        Limitation {
+            code: DiagnosticCode::ConfigInvalid,
+            message: medium(
+                "config.mailbox is refused in this release: Microsoft Graph exposes no \
+                 documented contacts-delta feed for another mailbox without also naming a \
+                 specific contact folder, which this Field does not yet accept as \
+                 configuration. Only the signed-in user's own contacts are collected.",
+            ),
+        },
     ]
 }
 

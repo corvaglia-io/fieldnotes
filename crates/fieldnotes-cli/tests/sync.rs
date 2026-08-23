@@ -270,6 +270,91 @@ fn the_retention_settings_are_recorded_validated_and_reported() -> std::io::Resu
     Ok(())
 }
 
+/// A `--window` of zero days is refused before anything is spawned, exactly
+/// like the two artifact retention settings validated inside `sync` itself
+/// (`effective_limits`/`effective_media_types`): the executable named here
+/// holds nothing runnable, so a run that reached the spawn would fail with
+/// "cannot start Field" instead, which is how "refused early" is observable
+/// here rather than merely asserted. This is a per-Field refusal, not a
+/// top-level usage error, matching how those two settings are reported: the
+/// run still exits 3 (a Field short of `complete`) with a `failed` per-Field
+/// report, never abandoning other configured Fields the way a hard top-level
+/// exit would.
+#[test]
+fn a_zero_day_window_is_refused_before_the_spawn() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-sync-window-zero")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+    let executable = missing_executable(&temp);
+    assert!(
+        run(
+            &root,
+            &[
+                "fields",
+                "add",
+                "local",
+                "work",
+                "--executable",
+                &executable.display().to_string(),
+            ],
+        )?
+        .status
+        .success()
+    );
+
+    let json = run(
+        &root,
+        &["--format", "json", "sync", "local_work", "--window", "0"],
+    )?;
+    assert_eq!(json.status.code(), Some(3));
+    let text = stdout(&json);
+    assert!(text.contains(r#""outcome":"failed""#), "{text}");
+    assert!(text.contains("zero days"), "{text}");
+    assert!(
+        !text.contains("cannot start"),
+        "a bad --window must refuse before the spawn: {text}"
+    );
+    Ok(())
+}
+
+/// `FIELDNOTES_WINDOW_DAYS` resolves the same setting `--window` does, and a
+/// value that does not parse as a whole number of days is a usage error
+/// rather than a silent fallback to the default.
+#[test]
+fn the_window_environment_variable_is_validated_as_a_whole_number() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-sync-window-env")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+    let executable = missing_executable(&temp);
+    assert!(
+        run(
+            &root,
+            &[
+                "fields",
+                "add",
+                "local",
+                "work",
+                "--executable",
+                &executable.display().to_string(),
+            ],
+        )?
+        .status
+        .success()
+    );
+
+    let output = Command::new(binary())
+        .arg("--notebook")
+        .arg(&root)
+        .args(["sync", "local_work"])
+        .env(CONFIG_ENV, hermetic_config_path(&root))
+        .env("FIELDNOTES_WINDOW_DAYS", "not-a-number")
+        .output()?;
+    assert_eq!(output.status.code(), Some(2));
+    let text = String::from_utf8_lossy(&output.stderr);
+    assert!(text.contains("FIELDNOTES_WINDOW_DAYS"), "{text}");
+    Ok(())
+}
+
 #[test]
 fn fields_status_reports_no_cursor_before_any_sync() -> std::io::Result<()> {
     let temp = TempDir::new("cli-sync-status")?;

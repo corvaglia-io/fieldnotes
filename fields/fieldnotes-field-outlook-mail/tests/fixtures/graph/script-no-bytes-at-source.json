@@ -1,0 +1,17 @@
+[
+  {
+    "expect_url_contains": "$filter=receivedDateTime",
+    "status": 200,
+    "body_file": "window-page-no-bytes-at-source.json"
+  },
+  {
+    "expect_url_contains": "/attachments?",
+    "status": 200,
+    "body_file": "attachments-no-bytes-at-source.json"
+  },
+  {
+    "expect_url_contains": "attachments('AAMkAGI2TQABAAACattachD3')",
+    "status": 400,
+    "body_file": "error-attachment-no-bytes.json"
+  }
+]

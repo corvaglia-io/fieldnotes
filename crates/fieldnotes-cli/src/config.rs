@@ -13,13 +13,18 @@
 //! order, implemented once in [`pick`] rather than re-derived per setting:
 //!
 //! 1. an explicit CLI flag (`--offset`, and `sync`'s `--max-artifact-bytes` /
-//!    `--media-type`);
+//!    `--media-type` / `--window`);
 //! 2. an environment variable (`FIELDNOTES_TIMEZONE`, or the legacy
-//!    `FIELDNOTES_UTC_OFFSET` if the newer name is unset);
+//!    `FIELDNOTES_UTC_OFFSET` if the newer name is unset; `FIELDNOTES_WINDOW_DAYS`
+//!    for the window);
 //! 3. the profile setting;
 //! 4. an existing documented default: UTC for the offset, and — for the two
-//!    artifact retention settings — the protocol crate's own approved
-//!    defaults.
+//!    artifact retention settings and the collection window — the protocol
+//!    crate's own approved defaults (seven days for the window).
+//!
+//! The window's profile tier is implemented in [`resolve_window_days`] and
+//! exercised by this module's own tests, but has no real file-backed profile
+//! setting to read from yet: see that function's documentation.
 //!
 //! The notebook is the one exception, implemented once in
 //! [`resolve_notebook`] rather than in [`pick`]:
@@ -69,6 +74,14 @@ pub const NOTEBOOK_ENV: &str = "FIELDNOTES_NOTEBOOK";
 /// Accepts the same grammar as `--offset` and the profile's `timezone` key:
 /// `system`, a fixed `+HH:MM`/`-HH:MM`/`utc` offset, or an IANA zone name.
 pub const TIMEZONE_ENV: &str = "FIELDNOTES_TIMEZONE";
+
+/// Environment variable naming `sync`'s bounded collection window, in days.
+///
+/// Resolved through [`pick`] exactly like every other setting here: `--window`
+/// wins, then this variable, then the profile (once [`Profile`] carries a
+/// `window_days` setting — see this module's own precedence note below), then
+/// [`fieldnotes_app::DEFAULT_WINDOW_DAYS`].
+pub const WINDOW_ENV: &str = "FIELDNOTES_WINDOW_DAYS";
 
 /// The profile filename inside its platform-specific directory.
 const PROFILE_FILENAME: &str = "config";
@@ -199,6 +212,22 @@ pub fn resolve_timezone_text(
     profile_timezone: Option<String>,
 ) -> Option<String> {
     pick(flag, env_timezone.or(env_legacy_offset), profile_timezone)
+}
+
+/// Resolves `sync`'s bounded-window length in days from the flag/env/profile
+/// tiers, leaving the [`fieldnotes_app::DEFAULT_WINDOW_DAYS`] fallback (tier
+/// four) to the caller — the same shape [`resolve_timezone_text`] uses.
+///
+/// `profile_window_days` comes from [`Profile`]'s `window_days` setting, so
+/// all four tiers are live: a user can record a window once rather than
+/// passing it on every run.
+#[must_use]
+pub fn resolve_window_days(
+    flag: Option<u64>,
+    env: Option<u64>,
+    profile_window_days: Option<u64>,
+) -> Option<u64> {
+    pick(flag, env, profile_window_days)
 }
 
 /// Validates that `path` is (or is inside) an initialized Fieldnotes
@@ -438,6 +467,25 @@ mod tests {
             Some("system".to_owned())
         );
         assert_eq!(resolve_timezone_text(None, None, None, None), None);
+    }
+
+    #[test]
+    fn window_days_precedence_is_flag_then_environment_then_profile_then_default() {
+        // Nothing set anywhere: the caller falls back to the documented
+        // default (`fieldnotes_app::DEFAULT_WINDOW_DAYS`), which this
+        // function itself does not know about — it only decides which of
+        // the three sources it was given wins.
+        assert_eq!(resolve_window_days(None, None, None), None);
+
+        // Tier 3: only the profile is set.
+        assert_eq!(resolve_window_days(None, None, Some(14)), Some(14));
+
+        // Tier 2: the environment variable beats the profile.
+        assert_eq!(resolve_window_days(None, Some(3), Some(14)), Some(3));
+
+        // Tier 1: an explicit flag beats both the environment and the
+        // profile.
+        assert_eq!(resolve_window_days(Some(1), Some(3), Some(14)), Some(1));
     }
 
     #[test]
