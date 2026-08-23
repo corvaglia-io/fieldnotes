@@ -6,7 +6,78 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# Base64url (no padding) encoding/decoding for PKCE code verifiers and
+# challenges (RFC 7636). `default-features = false` plus `std` excludes the
+# `simd-unsafe` default feature: this crate encodes/decodes short (tens of
+# bytes) values, not a throughput-sensitive workload, so there is no reason
+# to pull an unsafe SIMD path into the credential trust path.
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+# Scalar value model and the injected `Clock`/`RandomSource` traits. This
+# crate never reads the wall clock or an OS random source directly: PKCE
+# verifier/state generation takes an injected `RandomSource`, and access-token
+# expiry checks take an injected `Clock`, so tests are deterministic and only
+# a composition root (outside this crate) touches real time/entropy.
 fieldnotes-domain.workspace = true
+# The expected cross-platform credential-storage dependency named in this
+# crate's brief: one API over macOS Keychain, Windows Credential Manager, and
+# Linux Secret Service, instead of three hand-written FFI/D-Bus adapters this
+# crate would otherwise need (and `unsafe_code` is forbidden here, so this
+# crate could not write that FFI itself). `default-features = false` plus an
+# explicit feature list pins exactly the three OS backends this crate ships
+# (`apple-native`, `windows-native`, `zbus-secret-service`) and the `v1`
+# entry-point API; the CLI/db-keystore/android/dbus-alternative/keyutils
+# backends are not enabled because nothing in this crate needs them.
+keyring = { version = "4.1.6", default-features = false, features = [
+    "v1",
+    "apple-native-keyring-store",
+    "windows-native-keyring-store",
+    "zbus-secret-service-keyring-store",
+] }
+# Percent-encoding the authorize-URL query parameters (`scope` contains
+# spaces, `redirect_uri` contains reserved characters) and decoding the
+# untrusted query string the loopback listener reads back from the redirect.
+# Already a transitive dependency of `ureq`; declared directly because this
+# crate calls it directly, and pinned to the same version.
+percent-encoding = "2.3.2"
+# Derive-based (de)serialization for the token endpoint's small JSON response
+# body (`access_token`, `refresh_token`, `expires_in`, ...). Already a
+# workspace dependency used by the protocol crate for its own wire format.
+serde.workspace = true
+# JSON reader for the same token-endpoint response. Already a workspace
+# dependency; default features only, consistent with the rest of the
+# workspace.
+serde_json.workspace = true
+# SHA-256 for the mandatory PKCE `S256` code-challenge method (RFC 7636
+# effectively requires it; the `plain` method exists only for clients that
+# cannot compute SHA-256, which this crate can). Already a workspace
+# dependency used for the A1 content-hash domains.
+sha2.workspace = true
+# A blocking, minimal HTTPS client for the one-shot token-endpoint exchange
+# and refresh calls this crate makes. Chosen over `reqwest` because the OAuth
+# authorization-code exchange is inherently a single interactive round trip,
+# not sustained throughput, so an async runtime would be pure overhead with
+# nothing else in the dependency graph needing one. `default-features =
+# false` plus the single `rustls` feature pulls a pure-Rust TLS stack
+# (`rustls` + `ring` + `webpki-roots`) rather than linking a platform TLS
+# library, and deliberately excludes the `gzip`/`brotli`/`cookies`/`json`/
+# `multipart`/`socks-proxy` features this crate's small plaintext-JSON POST
+# request never needs. The real transport sits behind this crate's own
+# `TokenTransport` trait so tests substitute a fake and never make a real
+# network call.
+ureq = { version = "3.4.0", default-features = false, features = ["rustls"] }
+# Reliable best-effort zeroing of secret buffers on drop (`Zeroizing<String>`)
+# for refresh/access-token material held in memory. Rust does not guarantee a
+# plain `String`'s heap buffer is cleared before deallocation, and this crate
+# forbids `unsafe_code`, so it cannot volatile-write the buffer itself.
+# Already a transitive dependency of `keyring`; declared directly because
+# this crate's own secret type uses it, pinned to the same version.
+# `default-features = false` plus `std`/`alloc` excludes the `derive`,
+# `simd`, and CPU-feature-detection (`aarch64`) features this crate does not
+# use.
+zeroize = { version = "1.9.0", default-features = false, features = [
+    "std",
+    "alloc",
+] }
 
 [lints]
 workspace = true
