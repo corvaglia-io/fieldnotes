@@ -160,6 +160,19 @@ pub struct FieldStatusReport {
     /// attempting a sync**: the probe reads the credential store and makes no
     /// network call, starts no process, and touches no notebook file.
     pub credential_state: CredentialState,
+    /// **Which account** that credential authenticates as, as recorded at the
+    /// last successful `fields auth`.
+    ///
+    /// `None` means unknown, and unknown has two causes worth telling apart in
+    /// output but not in this member: the Field needs no credential, or its
+    /// credential predates Fieldnotes recording accounts and the fix is to run
+    /// `fields auth` again. It is never guessed and never learned during a sync;
+    /// see
+    /// [`AccessTokenProvider::mint_access_token`](fieldnotes_credentials::oauth::AccessTokenProvider::mint_access_token).
+    ///
+    /// Read from the Field's configuration, so it is answerable **before any
+    /// sync has run** — which is exactly when confirming the account matters.
+    pub credential_account: Option<String>,
 }
 
 /// Reports status for one named Field, or every Field when `field_id` is
@@ -219,6 +232,7 @@ fn one_field_status(
             credential_profile: None,
             credential_provider: None,
             credential_state: CredentialState::NotRequired,
+            credential_account: None,
         });
     }
     let config = read_field_config(notebook, id)?
@@ -297,6 +311,7 @@ fn status_from_config(
         credential_profile,
         credential_provider,
         credential_state,
+        credential_account: config.credential_account.clone(),
         cursor_present: stored.is_some() || cursor_exists(notebook, &config.id),
         cursor_format_version: stored.as_ref().map(|stored| stored.cursor_format_version),
         cursor_coverage: stored
@@ -325,6 +340,41 @@ pub fn remove_field(notebook: &Notebook, id: &str) -> Result<(), AppError> {
         return Err(AppError::FieldNotConfigured { id: id.to_owned() });
     }
     remove_sync_state(notebook, id)?;
+    Ok(())
+}
+
+/// Records **which account** one Field's credential now authenticates as.
+///
+/// Called by `fields auth` after the refresh token is stored, with whatever the
+/// ID token named — or `None` when the authorization server named nobody, in
+/// which case any previously recorded account is cleared rather than left in
+/// place. Leaving a stale account behind a freshly stored credential would be
+/// the worst of both worlds: a confident-looking label for a credential it no
+/// longer describes.
+///
+/// This is the only writer of
+/// [`FieldConfig::credential_account`](fieldnotes_store::FieldConfig::credential_account).
+/// A collection run never writes it: see this crate's
+/// [`credentials::account`](crate::credentials::account) module and
+/// [`AccessTokenProvider::mint_access_token`](fieldnotes_credentials::oauth::AccessTokenProvider::mint_access_token)
+/// for why a non-interactive run must not silently rewrite it.
+///
+/// The value is a display label. Nothing may authorize anything on it.
+pub fn record_credential_account(
+    notebook: &Notebook,
+    id: &str,
+    account: Option<&str>,
+) -> Result<(), AppError> {
+    let mut config = read_field_config(notebook, id)?
+        .ok_or_else(|| AppError::FieldNotConfigured { id: id.to_owned() })?;
+    let recorded = account.map(str::to_owned);
+    if config.credential_account == recorded {
+        // Nothing changed: skip the write rather than rewriting an identical
+        // file, so re-authenticating as the same person is not a durable write.
+        return Ok(());
+    }
+    config.credential_account = recorded;
+    write_field_config(notebook, &config)?;
     Ok(())
 }
 

@@ -31,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use fieldnotes_app::credentials::account_mismatch;
 use fieldnotes_app::credentials::channel::{GrantSpec, ProtectedChannel};
 use fieldnotes_app::credentials::{
     AccessTokenSource, CredentialFailure, CredentialInspector, CredentialSettings,
@@ -38,7 +39,7 @@ use fieldnotes_app::credentials::{
 };
 use fieldnotes_app::{
     AppError, FieldRunOutcome, Kernel, SyncOptions, add_field, field_status, field_status_with,
-    init, sync, validate_field_id,
+    init, record_credential_account, sync, validate_field_id,
 };
 use fieldnotes_credentials::oauth::token::exchange_code;
 use fieldnotes_credentials::oauth::{
@@ -501,6 +502,372 @@ fn configuring_a_credential_override_without_a_profile_is_refused_at_configurati
         ),
         Err(AppError::Credential(_))
     ));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Which account a stored credential authenticates as
+// ---------------------------------------------------------------------------
+
+/// A fixture ID token whose payload names `mailbox.owner@example.test`.
+///
+/// It exists to be asserted **absent**: an ID token is credential-adjacent and
+/// must never reach a report, a status file, a Field's configuration file, or
+/// any rendered output. `fieldnotes-credentials` confines it to the function
+/// that parses a token-endpoint response, and this file checks that from the
+/// outside, on everything a run produces.
+const FIXTURE_ID_TOKEN: &str = concat!(
+    "eyJhbGciOiJSUzI1NiJ9.",
+    "eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJtYWlsYm94Lm93bmVyQGV4YW1wbGUudGVzdCJ9.",
+    "FIELDNOTES-FIXTURE-ID-TOKEN-SIGNATURE-3d90ff"
+);
+
+const OWNER: &str = "mailbox.owner@example.test";
+const ADMIN: &str = "tenant.admin@example.test";
+
+/// Asserts that no part of the fixture ID token appears in `rendered`.
+fn assert_no_id_token(rendered: &str, what: &str) {
+    assert!(
+        !rendered.contains(FIXTURE_ID_TOKEN),
+        "an ID token must never reach {what}: {rendered}"
+    );
+    for segment in FIXTURE_ID_TOKEN.split('.') {
+        assert!(
+            !rendered.contains(segment),
+            "no ID token segment may reach {what}: {rendered}"
+        );
+    }
+}
+
+/// A notebook with two configured Outlook Fields, both naming a credential.
+fn notebook_with_two_authenticating_fields(
+    temp: &TempDir,
+) -> Result<(Notebook, Kernel<FixedClock, CountingRandom>), AppError> {
+    let root = temp.path().join("notebook");
+    let mut kernel = kernel()?;
+    init(&mut kernel, &root, Some("credential-tests"))?;
+    let notebook = Notebook::open(&root)?;
+    for (stem, label) in [("outlook_mail", "work"), ("outlook_contacts", "work")] {
+        add_field(
+            &notebook,
+            &validate_field_id(stem, label)?,
+            unspawnable(temp),
+            credential_config(),
+            true,
+        )?;
+    }
+    Ok((notebook, kernel))
+}
+
+#[test]
+fn a_recorded_account_is_reported_by_fields_status_before_any_sync_has_run() -> Result<(), AppError>
+{
+    let temp = temp("credentials-account-recorded");
+    let (notebook, _kernel) = notebook_with_authenticating_field(&temp)?;
+
+    // Nothing recorded yet: unknown, not an error, and not a guess.
+    let before = field_status(&notebook, Some("outlook_mail_work"))?;
+    assert_eq!(before[0].credential_account, None);
+
+    // This is what `fields auth` does after the refresh token is stored.
+    record_credential_account(&notebook, "outlook_mail_work", Some(OWNER))?;
+
+    // No sync has run — no cursor, no last-sync record — and the account is
+    // already reportable, which is the whole reason it lives in the Field's
+    // configuration rather than in operational sync state.
+    let after = field_status(&notebook, Some("outlook_mail_work"))?;
+    assert_eq!(after[0].credential_account.as_deref(), Some(OWNER));
+    assert_eq!(after[0].last_sync, None);
+    assert!(!cursor_exists(&notebook, "outlook_mail_work"));
+
+    // And nothing token-shaped went to disk with it.
+    let config_text = std::fs::read_to_string(fieldnotes_store::field_config_path(
+        &notebook,
+        "outlook_mail_work",
+    ))
+    .unwrap_or_else(|error| panic!("the configuration must be readable: {error}"));
+    assert!(config_text.contains(OWNER), "{config_text}");
+    assert_no_id_token(&config_text, "a Field's configuration file");
+
+    // Re-authenticating as somebody else replaces it rather than accumulating.
+    record_credential_account(&notebook, "outlook_mail_work", Some(ADMIN))?;
+    let replaced = field_status(&notebook, Some("outlook_mail_work"))?;
+    assert_eq!(replaced[0].credential_account.as_deref(), Some(ADMIN));
+
+    // An authorization that named nobody clears it rather than leaving a stale
+    // label in front of a freshly stored credential.
+    record_credential_account(&notebook, "outlook_mail_work", None)?;
+    let cleared = field_status(&notebook, Some("outlook_mail_work"))?;
+    assert_eq!(cleared[0].credential_account, None);
+    Ok(())
+}
+
+#[test]
+fn a_credential_recorded_before_this_release_reports_unknown_rather_than_erroring()
+-> Result<(), AppError> {
+    let temp = temp("credentials-account-legacy");
+    let root = temp.path().join("notebook");
+    let mut kernel = kernel()?;
+    init(&mut kernel, &root, Some("credential-tests"))?;
+    let notebook = Notebook::open(&root)?;
+
+    // Exactly what an installation predating recorded accounts left on disk: a
+    // configuration file with no `credential_account` member at all.
+    let path = fieldnotes_store::field_config_path(&notebook, "outlook_mail_work");
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("could not create the fields directory: {error}"));
+    }
+    std::fs::write(
+        &path,
+        br#"{"id":"outlook_mail_work","enabled":true,"executable":"/nonexistent/field",
+             "config":{"credential_profile":"work"}}"#,
+    )
+    .unwrap_or_else(|error| panic!("could not write the legacy configuration: {error}"));
+
+    // Status answers, and answers "unknown".
+    let reports = field_status_with(
+        &notebook,
+        Some("outlook_mail_work"),
+        &StubInspector(CredentialState::Stored),
+    )?;
+    assert_eq!(reports[0].credential_state, CredentialState::Stored);
+    assert_eq!(
+        reports[0].credential_account, None,
+        "an older credential's account is unknown, never guessed"
+    );
+
+    // A sync reports it as unknown too, rather than failing on its absence.
+    let outcome = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::granting(canary_token(3600))),
+    )?;
+    let report = outcome
+        .fields
+        .first()
+        .unwrap_or_else(|| panic!("one Field was synced"));
+    let account = report
+        .credential_account
+        .as_ref()
+        .unwrap_or_else(|| panic!("an authenticating Field always reports an account block"));
+    assert_eq!(account.account, None);
+    assert!(!account.changed_since_last_sync());
+    // Nothing about the missing account made this a mismatch.
+    assert_eq!(outcome.account_mismatch, None);
+    Ok(())
+}
+
+#[test]
+fn a_sync_report_names_the_account_even_when_the_run_refused_before_spawning()
+-> Result<(), AppError> {
+    let temp = temp("credentials-account-sync-report");
+    let (notebook, mut kernel) = notebook_with_authenticating_field(&temp)?;
+    record_credential_account(&notebook, "outlook_mail_work", Some(ADMIN))?;
+
+    // The run cannot authenticate, so it refuses before spawning anything —
+    // which is precisely the case that motivated this: a collection that fails
+    // because the account it authenticated as has no mailbox should say, in the
+    // same report, which account that was.
+    let outcome = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::failing(CredentialFailure::NotAuthenticated {
+            field_id: "outlook_mail_work".to_owned(),
+            profile: "work".to_owned(),
+        })),
+    )?;
+    let report = outcome
+        .fields
+        .first()
+        .unwrap_or_else(|| panic!("one Field was synced"));
+    assert_eq!(report.outcome, FieldRunOutcome::Failed);
+    let account = report
+        .credential_account
+        .as_ref()
+        .unwrap_or_else(|| panic!("a refused run still reports its account"));
+    assert_eq!(account.account.as_deref(), Some(ADMIN));
+    nothing_happened(&notebook, "outlook_mail_work");
+
+    // A Field that needs no credential reports no account block at all.
+    add_field(
+        &notebook,
+        &validate_field_id("local", "work")?,
+        unspawnable(&temp),
+        BTreeMap::new(),
+        true,
+    )?;
+    let local = sync(
+        &mut kernel,
+        &notebook,
+        Some("local_work"),
+        &SyncOptions::default(),
+    )?;
+    assert_eq!(local.fields[0].credential_account, None);
+    Ok(())
+}
+
+#[test]
+fn a_credential_reauthenticated_as_somebody_else_is_reported_against_the_last_sync()
+-> Result<(), AppError> {
+    let temp = temp("credentials-account-changed");
+    let (notebook, mut kernel) = notebook_with_authenticating_field(&temp)?;
+
+    // What a previous successful run recorded. `sync` writes this file itself;
+    // this test writes it directly so the comparison can be exercised without a
+    // Field executable, exactly as the store's own cursor tests do.
+    let sync_state = notebook
+        .private_dir()
+        .join("state")
+        .join("sync")
+        .join("outlook_mail_work.status.json");
+    if let Some(parent) = sync_state.parent() {
+        std::fs::create_dir_all(parent)
+            .unwrap_or_else(|error| panic!("could not create the sync state directory: {error}"));
+    }
+    std::fs::write(
+        &sync_state,
+        format!(
+            r#"{{"outcome":"complete","at":"2026-08-22T08:45:00+02:00","credential_account":"{OWNER}"}}"#
+        ),
+    )
+    .unwrap_or_else(|error| panic!("could not write the last-sync record: {error}"));
+
+    // The credential has since been re-authenticated as the administrator.
+    record_credential_account(&notebook, "outlook_mail_work", Some(ADMIN))?;
+
+    let outcome = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::granting(canary_token(3600))),
+    )?;
+    let account = outcome.fields[0]
+        .credential_account
+        .as_ref()
+        .unwrap_or_else(|| panic!("an authenticating Field always reports an account block"));
+    assert!(
+        account.changed_since_last_sync(),
+        "a credential re-authenticated as somebody else must be reported"
+    );
+    assert_eq!(account.account.as_deref(), Some(ADMIN));
+    assert_eq!(account.previous_account.as_deref(), Some(OWNER));
+
+    // The same account as last time is not a change.
+    record_credential_account(&notebook, "outlook_mail_work", Some(OWNER))?;
+    let unchanged = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::granting(canary_token(3600))),
+    )?;
+    let account = unchanged.fields[0]
+        .credential_account
+        .as_ref()
+        .unwrap_or_else(|| panic!("an authenticating Field always reports an account block"));
+    assert!(!account.changed_since_last_sync());
+    assert_eq!(account.previous_account, None);
+    Ok(())
+}
+
+#[test]
+fn a_notebook_whose_fields_authenticate_as_different_accounts_warns_and_names_both()
+-> Result<(), AppError> {
+    let temp = temp("credentials-account-mismatch");
+    let (notebook, mut kernel) = notebook_with_two_authenticating_fields(&temp)?;
+
+    // Both signed in as the same person: nothing to warn about.
+    record_credential_account(&notebook, "outlook_mail_work", Some(OWNER))?;
+    record_credential_account(&notebook, "outlook_contacts_work", Some(OWNER))?;
+    assert_eq!(account_mismatch(&notebook)?, None);
+    let agreeing = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::granting(canary_token(3600))),
+    )?;
+    assert_eq!(agreeing.account_mismatch, None);
+
+    // One of them was actually the administrator, because the browser reused an
+    // existing session. This is the diagnostic that makes that visible.
+    record_credential_account(&notebook, "outlook_contacts_work", Some(ADMIN))?;
+    let mismatch = account_mismatch(&notebook)?
+        .unwrap_or_else(|| panic!("differing accounts must be reported"));
+    assert_eq!(mismatch.account_names(), vec![OWNER, ADMIN]);
+    assert_eq!(
+        mismatch.accounts[0].field_ids,
+        vec!["outlook_mail_work".to_owned()]
+    );
+    assert_eq!(
+        mismatch.accounts[1].field_ids,
+        vec!["outlook_contacts_work".to_owned()]
+    );
+
+    // And a sync of just one of them still reports it, because it is a fact
+    // about the notebook rather than about the Field that was named.
+    let outcome = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::granting(canary_token(3600))),
+    )?;
+    let found = outcome
+        .account_mismatch
+        .as_ref()
+        .unwrap_or_else(|| panic!("a notebook-wide disagreement must be reported"));
+    assert_eq!(found.account_names(), vec![OWNER, ADMIN]);
+    // A warning, not a refusal: the run's own outcome is unaffected by it.
+    assert!(
+        outcome.fields[0]
+            .failure
+            .clone()
+            .unwrap_or_default()
+            .contains("cannot start")
+            || outcome.fields[0]
+                .failure
+                .clone()
+                .unwrap_or_default()
+                .contains("cannot run"),
+        "the mismatch must warn, never refuse: {:?}",
+        outcome.fields[0].failure
+    );
+    Ok(())
+}
+
+#[test]
+fn no_id_token_material_reaches_any_state_a_run_writes() -> Result<(), AppError> {
+    let temp = temp("credentials-account-canary");
+    let (notebook, mut kernel) = notebook_with_authenticating_field(&temp)?;
+    record_credential_account(&notebook, "outlook_mail_work", Some(OWNER))?;
+    let outcome = sync(
+        &mut kernel,
+        &notebook,
+        Some("outlook_mail_work"),
+        &options(StubTokens::granting(canary_token(3600))),
+    )?;
+
+    // The report's own Debug rendering — the only formatting a caller can reach
+    // for — and every file under the private directory.
+    assert_no_id_token(&format!("{outcome:?}"), "a sync report");
+    let mut checked = 0_usize;
+    let mut stack = vec![notebook.private_dir()];
+    while let Some(directory) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if let Ok(text) = std::fs::read_to_string(&path) {
+                assert_no_id_token(&text, &path.display().to_string());
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "the scan must have read something");
     Ok(())
 }
 

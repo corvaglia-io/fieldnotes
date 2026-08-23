@@ -10,8 +10,34 @@
 //!   as it has extracted what it needs, in addition to every value it
 //!   extracts becoming a [`crate::Secret`] immediately.
 //! - **The parsed JSON DTO never derives `Debug`.** A derived `Debug` would
-//!   print `access_token`/`refresh_token` in the clear; not deriving it means
-//!   there is nothing for a stray `{:?}` to print.
+//!   print `access_token`/`refresh_token`/`id_token` in the clear; not deriving
+//!   it means there is nothing for a stray `{:?}` to print.
+//!
+//! # The ID token stops here
+//!
+//! When the authorization request included the `openid` scope, the response
+//! also carries an `id_token`. That token is credential-adjacent — a signed
+//! bearer assertion about a person — so it is confined to
+//! `parse_token_response`'s own stack frame: it is wrapped in a [`Secret`] the
+//! instant `serde` hands it over, read once by
+//! [`crate::oauth::id_token::account_from_id_token`], and dropped (zeroized)
+//! before this function returns. [`TokenSet`] carries only the extracted
+//! [`AccountId`], so there is no field on any returned type for a logger, a
+//! serializer, a `Debug`, or an error message to reach.
+//!
+//! # Why `openid`/`profile` are requested at all
+//!
+//! Neither grants access to anything. `openid` asks the authorization server to
+//! identify the signed-in principal to this client, and `profile` is what makes
+//! Microsoft Entra include the human-recognizable `preferred_username` claim.
+//! They exist precisely to answer "who just signed in", they need no
+//! administrative consent, and without them a stored credential is anonymous:
+//! three Fields authenticated in three browser flows can silently be three
+//! different people, because a browser reuses whatever session is already open.
+//! The `email` scope is deliberately *not* requested — `profile` already yields
+//! a recognizable name, so `email` would add a second personal-data claim for
+//! nothing. See [`crate::oauth::id_token`] for what the resulting value may and
+//! may not be used for.
 
 use core::time::Duration;
 
@@ -20,6 +46,7 @@ use serde::Deserialize;
 use fieldnotes_domain::Clock;
 
 use crate::error::CredentialError;
+use crate::oauth::id_token::{self, AccountId};
 use crate::secret::Secret;
 
 /// One token-endpoint HTTP response, as far as this crate cares: a status
@@ -220,6 +247,16 @@ pub struct TokenSet {
     /// place of the previous one when it is present, and for leaving the
     /// previous one untouched when it is not.
     pub refresh_token: Option<Secret>,
+    /// Which account signed in, when the response carried a readable ID token.
+    ///
+    /// `None` whenever the account could not be learned — no `id_token` in the
+    /// response, or one this crate could not read. That is never an error: see
+    /// [`crate::oauth::id_token::account_from_id_token`]. **This is a label for
+    /// display and confirmation, never an authorization input.**
+    ///
+    /// Note what this member is *not*: the ID token. That token never leaves
+    /// `parse_token_response`'s stack frame.
+    pub account: Option<AccountId>,
 }
 
 /// The raw token-endpoint success body. Deliberately does not derive
@@ -232,6 +269,11 @@ struct TokenSuccessBody {
     expires_in: i64,
     #[serde(default)]
     scope: Option<String>,
+    /// The OpenID Connect ID token, present when `openid` was among the granted
+    /// scopes. Read once, never stored, never returned: see this module's "The
+    /// ID token stops here".
+    #[serde(default)]
+    id_token: Option<String>,
 }
 
 /// The raw token-endpoint error body (RFC 6749 section 5.2). Does not derive
@@ -303,7 +345,7 @@ fn request_token(
         .post_form(token_endpoint, form)
         .map_err(|error| CredentialError::Unavailable(error.to_string()))?;
     let result = if (200..300).contains(&response.status) {
-        parse_success(&response.body, clock)
+        parse_token_response(&response.body, clock)
     } else {
         Err(parse_error(&response.body))
     };
@@ -315,13 +357,32 @@ fn request_token(
     result
 }
 
-fn parse_success(body: &str, clock: &dyn Clock) -> Result<TokenSet, CredentialError> {
+/// Parses a 2xx token-endpoint body into a [`TokenSet`].
+///
+/// This is the only function in Fieldnotes that reads inside a token, and the
+/// token it reads is the ID token, which OpenID Connect issues *to this client*
+/// for exactly this purpose. The access token is never inspected: Microsoft
+/// documents it as opaque to the client, and it is treated as opaque here.
+///
+/// The ID token exists only as the local `id_token` binding below. It is a
+/// [`Secret`] (no `Display`, redacting `Debug`, zeroized on drop), it is read
+/// once, and it is dropped before this function returns. Only the extracted
+/// [`AccountId`] survives.
+fn parse_token_response(body: &str, clock: &dyn Clock) -> Result<TokenSet, CredentialError> {
     let parsed: TokenSuccessBody = serde_json::from_str(body).map_err(|_| {
         CredentialError::Backend("token endpoint response was not valid".to_owned())
     })?;
     let expires_at_unix_millis = i64::try_from(clock.unix_millis())
         .unwrap_or(i64::MAX)
         .saturating_add(parsed.expires_in.max(0).saturating_mul(1000));
+    // Wrapped before it is read, dropped (and zeroized) at the end of this
+    // block. An unreadable or absent ID token leaves the account unknown and
+    // does not fail the exchange.
+    let account = parsed
+        .id_token
+        .map(Secret::new)
+        .as_ref()
+        .and_then(id_token::account_from_id_token);
     Ok(TokenSet {
         access_token: AccessToken {
             value: Secret::new(parsed.access_token),
@@ -329,6 +390,7 @@ fn parse_success(body: &str, clock: &dyn Clock) -> Result<TokenSet, CredentialEr
             scope: parsed.scope,
         },
         refresh_token: parsed.refresh_token.map(Secret::new),
+        account,
     })
 }
 
@@ -512,6 +574,95 @@ mod tests {
             &Secret::new("old-refresh-token"),
         ));
         assert!(matches!(error, CredentialError::Unavailable(_)));
+    }
+
+    /// A JWS-shaped ID token whose payload names `preferred_username`.
+    ///
+    /// The signature segment is deliberately fixture text: nothing in this crate
+    /// verifies an ID token's signature, because the token arrived over the
+    /// TLS-authenticated response to a request this process made, and because
+    /// the extracted value is a display label rather than an authorization
+    /// input.
+    fn fixture_id_token(username: &str) -> String {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        format!(
+            "{}.{}.{}",
+            URL_SAFE_NO_PAD.encode(br#"{"alg":"RS256"}"#),
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"preferred_username":"{username}"}}"#).as_bytes()),
+            "FIXTURE-NOT-A-REAL-ID-TOKEN-SIGNATURE-b41d7e"
+        )
+    }
+
+    #[test]
+    fn an_id_token_in_the_response_yields_the_signed_in_account_and_never_escapes()
+    -> Result<(), CredentialError> {
+        let id_token = fixture_id_token("mailbox.owner@example.test");
+        let transport = FakeTransport {
+            status: 200,
+            body: format!(
+                r#"{{"access_token":"AT-canary","refresh_token":"RT-canary","expires_in":3600,"id_token":"{id_token}"}}"#
+            ),
+        };
+        let clock = FixedClock(0);
+        let set = exchange_code(
+            &transport,
+            &clock,
+            "https://example.invalid/token",
+            "client-id",
+            "code",
+            "http://127.0.0.1:1/callback",
+            "verifier",
+        )?;
+        assert_eq!(
+            set.account.as_ref().map(AccountId::as_str),
+            Some("mailbox.owner@example.test")
+        );
+        // The returned type has no member holding the ID token, and its own
+        // `Debug` — the only formatting a caller can reach for — carries neither
+        // the token nor any other material.
+        let rendered = format!("{set:?}");
+        assert!(!rendered.contains(&id_token), "leaked: {rendered}");
+        assert!(!rendered.contains("AT-canary"), "leaked: {rendered}");
+        assert!(!rendered.contains("RT-canary"), "leaked: {rendered}");
+        Ok(())
+    }
+
+    #[test]
+    fn a_malformed_or_absent_id_token_leaves_the_account_unknown_without_failing()
+    -> Result<(), CredentialError> {
+        for body in [
+            // No `id_token` at all: an authorization server that was not asked
+            // for `openid`, or an older stored grant.
+            r#"{"access_token":"AT","refresh_token":"RT","expires_in":3600}"#.to_owned(),
+            // Present but not a JWS at all.
+            r#"{"access_token":"AT","refresh_token":"RT","expires_in":3600,"id_token":"not-a-token"}"#.to_owned(),
+            // Three segments, but the payload is not base64url JSON.
+            r#"{"access_token":"AT","refresh_token":"RT","expires_in":3600,"id_token":"aaa.!!!.ccc"}"#.to_owned(),
+            // Explicitly null.
+            r#"{"access_token":"AT","refresh_token":"RT","expires_in":3600,"id_token":null}"#.to_owned(),
+        ] {
+            let transport = FakeTransport {
+                status: 200,
+                body: body.clone(),
+            };
+            let clock = FixedClock(0);
+            let set = exchange_code(
+                &transport,
+                &clock,
+                "https://example.invalid/token",
+                "client-id",
+                "code",
+                "http://127.0.0.1:1/callback",
+                "verifier",
+            )?;
+            // The sign-in succeeded: a usable access token and refresh token.
+            assert_eq!(set.access_token.expose_secret(), "AT");
+            assert!(set.refresh_token.is_some());
+            // And the account is simply unknown.
+            assert_eq!(set.account, None, "must be unknown, not an error: {body}");
+        }
+        Ok(())
     }
 
     #[test]

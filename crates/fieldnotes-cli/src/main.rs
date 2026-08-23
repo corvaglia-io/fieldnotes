@@ -85,11 +85,11 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand, ValueEnum};
 use fieldnotes_app::credentials::system::{SystemCredentials, SystemTokenSource};
 use fieldnotes_app::{
-    AppError, AuthOutcome, AuthRequest, CredentialState, FieldStatusReport, FieldSummary,
-    FieldSyncReport, InitOutcome, InspectReport, Kernel, NoteOutcome, NoteRequest, NoteSource,
-    StatusReport, SyncMode, SyncOptions, SyncOutcome, add_field, authenticate_field, create_note,
-    field_status_with, init, inspect, list_fields, remove_field, status,
-    validate_artifact_max_bytes, validate_artifact_media_types, validate_field_id,
+    AccountMismatch, AppError, AuthOutcome, AuthRequest, CredentialState, FieldStatusReport,
+    FieldSummary, FieldSyncReport, InitOutcome, InspectReport, Kernel, NoteOutcome, NoteRequest,
+    NoteSource, StatusReport, SyncMode, SyncOptions, SyncOutcome, account_mismatch, add_field,
+    authenticate_field, create_note, field_status_with, init, inspect, list_fields, remove_field,
+    status, validate_artifact_max_bytes, validate_artifact_media_types, validate_field_id,
 };
 use fieldnotes_domain::{Clock, Datetime};
 use fieldnotes_store::{FieldConfig, InitState, LastSyncOutcome, Notebook, Profile};
@@ -853,7 +853,11 @@ fn run_fields(
             // "authenticated or not" answerable without attempting a sync.
             let inspector = SystemTokenSource::new(SystemClock);
             let reports = field_status_with(&notebook, field_id.as_deref(), &inspector)?;
-            print(&render_fields_status(&reports, format));
+            // Notebook-wide, even when one Field was named: "your Fields are
+            // signed in as different people" is true of the notebook whichever
+            // Field the caller asked about.
+            let mismatch = account_mismatch(&notebook)?;
+            print(&render_fields_status(&reports, mismatch.as_ref(), format));
             Ok(EXIT_OK)
         }
         FieldsAction::Remove { field_id } => {
@@ -1283,19 +1287,130 @@ fn render_fields_add(config: &FieldConfig, format: Format) -> String {
     }
 }
 
+/// How an unknown recorded account is explained, once, everywhere.
+///
+/// A credential stored before Fieldnotes learned to record which account it
+/// authenticates as has none, and the honest answer is "unknown" plus the one
+/// command that fixes it — never a guess.
+fn unknown_account_line(field_id: &str) -> String {
+    format!("unknown; run `fieldnotes fields auth {field_id}` to record it")
+}
+
+/// The prominent, multi-line warning for a notebook whose Fields authenticate as
+/// different accounts.
+///
+/// Deliberately loud and deliberately not a refusal: collecting a shared or
+/// delegated mailbox alongside your own legitimately means two accounts. It
+/// names every account and every Field so the person reading it can tell which
+/// case they are in, which is the whole point — the failure this catches is
+/// otherwise invisible.
+fn account_mismatch_block(mismatch: &AccountMismatch) -> String {
+    let mut out = String::from(
+        "\nWARNING  this notebook's Fields are authenticated as different accounts:\n",
+    );
+    let width = mismatch
+        .accounts
+        .iter()
+        .map(|group| group.account.chars().count())
+        .max()
+        .unwrap_or(0);
+    for group in &mismatch.accounts {
+        out.push_str(&format!(
+            "           {:<width$}  {}\n",
+            group.account,
+            group.field_ids.join(", "),
+            width = width
+        ));
+    }
+    out.push_str(&wrapped(AccountMismatch::advice(), "         ", 88));
+    // On its own line, so the command in it is never broken across a wrap.
+    out.push_str(&format!("         {}\n", AccountMismatch::remedy()));
+    out
+}
+
+/// Wraps `text` on word boundaries, prefixing every line with `indent`.
+///
+/// The advice text lives in the application layer so every surface says the same
+/// thing, which means the line breaks have to be decided here rather than baked
+/// into it. Words longer than the budget are never split: a Field ID or an
+/// account name is worth an overlong line more than it is worth being cut in
+/// half.
+fn wrapped(text: &str, indent: &str, width: usize) -> String {
+    let budget = width.saturating_sub(indent.len()).max(1);
+    let mut out = String::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        if !line.is_empty() && line.chars().count() + 1 + word.chars().count() > budget {
+            out.push_str(indent);
+            out.push_str(&line);
+            out.push('\n');
+            line.clear();
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(word);
+    }
+    if !line.is_empty() {
+        out.push_str(indent);
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+/// One account group as JSON.
+fn account_mismatch_json(mismatch: Option<&AccountMismatch>) -> Json {
+    match mismatch {
+        None => Json::Null,
+        Some(mismatch) => Json::Obj(vec![
+            (
+                "accounts",
+                Json::Arr(
+                    mismatch
+                        .accounts
+                        .iter()
+                        .map(|group| {
+                            Json::Obj(vec![
+                                ("account", Json::text(group.account.clone())),
+                                (
+                                    "field_ids",
+                                    Json::Arr(
+                                        group.field_ids.iter().cloned().map(Json::Str).collect(),
+                                    ),
+                                ),
+                            ])
+                        })
+                        .collect(),
+                ),
+            ),
+            ("advice", Json::text(AccountMismatch::advice())),
+            ("remedy", Json::text(AccountMismatch::remedy())),
+        ]),
+    }
+}
+
 /// Renders `fields auth`'s result.
 ///
-/// Names the profile, the provider, the non-secret client and tenant, and the
-/// scopes; never anything that could be material. The shared-client-ID notice
-/// is printed every time on purpose: it is the one consequence of the
-/// out-of-the-box default that an administrator would otherwise discover only
-/// in a sign-in log.
+/// Names the profile, the provider, the non-secret client and tenant, the
+/// scopes, and **which account signed in**; never anything that could be
+/// material, and never the ID token that account was read from. The
+/// shared-client-ID notice is printed every time on purpose: it is the one
+/// consequence of the out-of-the-box default that an administrator would
+/// otherwise discover only in a sign-in log.
 fn render_fields_auth(outcome: &AuthOutcome, format: Format) -> String {
     match format {
         Format::Human => {
             let mut out = format!("Authenticated Field {}\n", outcome.field_id);
             out.push_str(&format!("  profile     {}\n", outcome.profile));
             out.push_str(&format!("  stored in   {}\n", outcome.provider));
+            out.push_str(&format!(
+                "  account     {}\n",
+                outcome
+                    .credential_account
+                    .clone()
+                    .unwrap_or_else(|| "unknown (the sign-in returned no account claim)".to_owned())
+            ));
             out.push_str(&format!("  client      {}\n", outcome.client_id));
             out.push_str(&format!("  tenant      {}\n", outcome.tenant));
             out.push_str(&format!("  scopes      {}\n", outcome.scopes.join(" ")));
@@ -1314,6 +1429,9 @@ fn render_fields_auth(outcome: &AuthOutcome, format: Format) -> String {
                      and set --config oauth_client_id=<guid>.\n",
                 );
             }
+            if let Some(mismatch) = &outcome.account_mismatch {
+                out.push_str(&account_mismatch_block(mismatch));
+            }
             out
         }
         Format::Json => {
@@ -1323,6 +1441,10 @@ fn render_fields_auth(outcome: &AuthOutcome, format: Format) -> String {
                 ("id", Json::text(outcome.field_id.clone())),
                 ("credential_profile", Json::text(outcome.profile.clone())),
                 ("credential_provider", Json::text(outcome.provider.clone())),
+                (
+                    "credential_account",
+                    Json::maybe_text(outcome.credential_account.clone()),
+                ),
                 ("client_id", Json::text(outcome.client_id.clone())),
                 ("tenant", Json::text(outcome.tenant.clone())),
                 (
@@ -1336,6 +1458,10 @@ fn render_fields_auth(outcome: &AuthOutcome, format: Format) -> String {
                 (
                     "uses_shared_client_id",
                     Json::Bool(outcome.uses_shared_client_id),
+                ),
+                (
+                    "credential_account_mismatch",
+                    account_mismatch_json(outcome.account_mismatch.as_ref()),
                 ),
             ]);
             format!("{}\n", value.render())
@@ -1439,7 +1565,26 @@ fn credential_line(report: &FieldStatusReport) -> String {
     }
 }
 
-fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String {
+/// One Field's recorded credential account as a line a user can act on.
+///
+/// `None` for a Field that names no credential profile: there is no account to
+/// report and no line is printed. Otherwise the answer is the recorded account
+/// or an explicit `unknown` naming the command that records one — never a guess.
+fn account_line(report: &FieldStatusReport) -> Option<String> {
+    report.credential_profile.as_ref()?;
+    Some(
+        report
+            .credential_account
+            .clone()
+            .unwrap_or_else(|| unknown_account_line(&report.id)),
+    )
+}
+
+fn render_fields_status(
+    reports: &[FieldStatusReport],
+    mismatch: Option<&AccountMismatch>,
+    format: Format,
+) -> String {
     match format {
         Format::Human => {
             let mut out = String::from("Field status\n");
@@ -1489,6 +1634,9 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                     "    credential         {}\n",
                     credential_line(report)
                 ));
+                if let Some(account) = account_line(report) {
+                    out.push_str(&format!("    account            {account}\n"));
+                }
                 match &report.last_sync {
                     Some(outcome) => out.push_str(&format!(
                         "    last sync          {} at {}\n",
@@ -1496,6 +1644,9 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                     )),
                     None => out.push_str("    last sync          never\n"),
                 }
+            }
+            if let Some(mismatch) = mismatch {
+                out.push_str(&account_mismatch_block(mismatch));
             }
             out
         }
@@ -1542,6 +1693,10 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                             "credential_state",
                             Json::text(report.credential_state.as_str()),
                         ),
+                        (
+                            "credential_account",
+                            Json::maybe_text(report.credential_account.clone()),
+                        ),
                     ])
                 })
                 .collect();
@@ -1549,6 +1704,10 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                 ("schema", Json::text("fieldnotes.fields_status.v1")),
                 ("ok", Json::Bool(true)),
                 ("fields", Json::Arr(items)),
+                (
+                    "credential_account_mismatch",
+                    account_mismatch_json(mismatch),
+                ),
             ]);
             format!("{}\n", value.render())
         }
@@ -1608,6 +1767,31 @@ fn render_sync(outcome: &SyncOutcome, format: Format) -> String {
                         credential.refused
                     ));
                 }
+                if let Some(account) = &report.credential_account {
+                    out.push_str(&format!(
+                        "    account            {}\n",
+                        account
+                            .account
+                            .clone()
+                            .unwrap_or_else(|| unknown_account_line(&report.field_id))
+                    ));
+                    if let Some(previous) = &account.previous_account {
+                        out.push_str("    account changed    ");
+                        let detail = format!(
+                            "this Field's last successful sync collected as `{previous}`, so Notes \
+                             collected before and after this point came from different accounts."
+                        );
+                        // The first line continues the label; the rest lines up
+                        // under it, and the command it names goes on a line of
+                        // its own so it is never broken across a wrap.
+                        out.push_str(wrapped(&detail, "                       ", 96).trim_start());
+                        out.push_str(&format!(
+                            "                       If that was not deliberate, run `fieldnotes \
+                             fields auth {}` again.\n",
+                            report.field_id
+                        ));
+                    }
+                }
                 if report.cursor_recovery_gap {
                     out.push_str(
                         "    recovery gap       the stored cursor was written at a different \
@@ -1652,6 +1836,9 @@ fn render_sync(outcome: &SyncOutcome, format: Format) -> String {
                     out.push_str(&format!("    failed             {failure}\n"));
                 }
             }
+            if let Some(mismatch) = &outcome.account_mismatch {
+                out.push_str(&account_mismatch_block(mismatch));
+            }
             out
         }
         Format::Json => {
@@ -1660,6 +1847,10 @@ fn render_sync(outcome: &SyncOutcome, format: Format) -> String {
                 ("schema", Json::text("fieldnotes.sync.v1")),
                 ("ok", Json::Bool(outcome.ok())),
                 ("fields", Json::Arr(fields)),
+                (
+                    "credential_account_mismatch",
+                    account_mismatch_json(outcome.account_mismatch.as_ref()),
+                ),
             ]);
             format!("{}\n", value.render())
         }
@@ -1785,6 +1976,29 @@ fn field_sync_json(report: &FieldSyncReport) -> Json {
         ),
         ("failure", Json::maybe_text(report.failure.clone())),
         ("exit", Json::text(report.exit.clone())),
+        (
+            // Which account this Field's credential authenticates as, and
+            // whether that changed since its last successful sync. Present for
+            // every authenticating Field, including a run that refused before
+            // spawning anything.
+            "credential_account",
+            report
+                .credential_account
+                .as_ref()
+                .map_or(Json::Null, |account| {
+                    Json::Obj(vec![
+                        ("account", Json::maybe_text(account.account.clone())),
+                        (
+                            "previous_account",
+                            Json::maybe_text(account.previous_account.clone()),
+                        ),
+                        (
+                            "changed_since_last_sync",
+                            Json::Bool(account.changed_since_last_sync()),
+                        ),
+                    ])
+                }),
+        ),
         (
             "credential",
             report.credential.as_ref().map_or(Json::Null, |credential| {
@@ -2079,6 +2293,7 @@ mod tests {
         };
         let outcome = SyncOutcome {
             fields: vec![report_with_window(Some(window))],
+            account_mismatch: None,
         };
 
         let human = render_sync(&outcome, Format::Human);
@@ -2100,10 +2315,340 @@ mod tests {
     fn a_report_with_no_window_renders_json_null_and_no_human_line() {
         let outcome = SyncOutcome {
             fields: vec![report_with_window(None)],
+            account_mismatch: None,
         };
         let json = render_sync(&outcome, Format::Json);
         assert!(json.contains(r#""window":null"#), "{json}");
         let human = render_sync(&outcome, Format::Human);
         assert!(!human.contains("window"), "{human}");
+    }
+
+    // -----------------------------------------------------------------------
+    // Which account a credential authenticates as, on all three surfaces
+    // -----------------------------------------------------------------------
+
+    /// An ID token whose payload names `username`.
+    ///
+    /// Rendered output must never contain this, on any surface, in either form:
+    /// the whole design keeps the ID token inside the credential crate's
+    /// response parser, and these tests assert that from the outside.
+    const FIXTURE_ID_TOKEN: &str = "eyJhbGciOiJSUzI1NiJ9.eyJwcmVmZXJyZWRfdXNlcm5hbWUiOiJtYWlsYm94Lm93bmVyQGV4YW1wbGUudGVzdCJ9.\
+         FIELDNOTES-FIXTURE-ID-TOKEN-SIGNATURE-7c41ab";
+
+    fn auth_outcome(account: Option<&str>, mismatch: Option<AccountMismatch>) -> AuthOutcome {
+        AuthOutcome {
+            field_id: "outlook_mail_work".to_owned(),
+            profile: "work".to_owned(),
+            provider: "keychain".to_owned(),
+            client_id: "11111111-2222-3333-4444-555555555555".to_owned(),
+            tenant: "organizations".to_owned(),
+            scopes: vec![
+                "Mail.Read".to_owned(),
+                "offline_access".to_owned(),
+                "openid".to_owned(),
+                "profile".to_owned(),
+            ],
+            access_token_expires_at: Some("2026-08-24T10:00:00+02:00".to_owned()),
+            uses_shared_client_id: false,
+            credential_account: account.map(str::to_owned),
+            account_mismatch: mismatch,
+        }
+    }
+
+    fn status_report(id: &str, account: Option<&str>) -> FieldStatusReport {
+        FieldStatusReport {
+            id: id.to_owned(),
+            built_in: false,
+            enabled: true,
+            cursor_present: false,
+            cursor_format_version: None,
+            cursor_coverage: None,
+            cursor_committed_at: None,
+            manifest_present: false,
+            manifest_cursor_format_version: None,
+            last_sync: None,
+            credential_profile: Some("work".to_owned()),
+            credential_provider: Some("keychain".to_owned()),
+            credential_state: CredentialState::Stored,
+            credential_account: account.map(str::to_owned),
+        }
+    }
+
+    fn mismatch() -> AccountMismatch {
+        match account_mismatch_of(&[
+            ("outlook_calendar_work", "mailbox.owner@example.test"),
+            ("outlook_contacts_work", "tenant.admin@example.test"),
+            ("outlook_mail_work", "mailbox.owner@example.test"),
+        ]) {
+            Some(mismatch) => mismatch,
+            None => panic!("differing accounts must produce a mismatch"),
+        }
+    }
+
+    fn account_mismatch_of(entries: &[(&str, &str)]) -> Option<AccountMismatch> {
+        let pairs: Vec<(String, String)> = entries
+            .iter()
+            .map(|(field, account)| ((*field).to_owned(), (*account).to_owned()))
+            .collect();
+        fieldnotes_app::credentials::account::mismatch_of(&pairs)
+    }
+
+    /// The one assertion every case in this section repeats: no surface, in
+    /// either form, may ever contain the fixture ID token or any part of it.
+    fn assert_no_token(rendered: &str) {
+        assert!(
+            !rendered.contains(FIXTURE_ID_TOKEN),
+            "an ID token must never reach output: {rendered}"
+        );
+        for segment in FIXTURE_ID_TOKEN.split('.') {
+            assert!(
+                !rendered.contains(segment),
+                "no ID token segment may reach output: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn fields_auth_reports_the_account_in_both_output_forms() {
+        let outcome = auth_outcome(Some("mailbox.owner@example.test"), None);
+
+        let human = render_fields_auth(&outcome, Format::Human);
+        assert!(
+            human.contains("account     mailbox.owner@example.test"),
+            "{human}"
+        );
+        assert!(human.contains("openid"), "{human}");
+        assert_no_token(&human);
+
+        let json = render_fields_auth(&outcome, Format::Json);
+        assert!(
+            json.contains(r#""credential_account":"mailbox.owner@example.test""#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""credential_account_mismatch":null"#),
+            "{json}"
+        );
+        assert_no_token(&json);
+    }
+
+    #[test]
+    fn fields_auth_reports_an_unknown_account_rather_than_guessing() {
+        let outcome = auth_outcome(None, None);
+        let human = render_fields_auth(&outcome, Format::Human);
+        assert!(human.contains("account     unknown"), "{human}");
+        let json = render_fields_auth(&outcome, Format::Json);
+        assert!(json.contains(r#""credential_account":null"#), "{json}");
+    }
+
+    #[test]
+    fn fields_auth_warns_prominently_when_the_notebooks_accounts_disagree() {
+        let outcome = auth_outcome(Some("tenant.admin@example.test"), Some(mismatch()));
+
+        let human = render_fields_auth(&outcome, Format::Human);
+        assert!(human.contains("WARNING"), "{human}");
+        assert!(human.contains("different accounts"), "{human}");
+        // Both accounts, and the Fields each belongs to.
+        assert!(human.contains("mailbox.owner@example.test"), "{human}");
+        assert!(human.contains("tenant.admin@example.test"), "{human}");
+        assert!(
+            human.contains("outlook_calendar_work, outlook_mail_work"),
+            "{human}"
+        );
+        assert!(human.contains("outlook_contacts_work"), "{human}");
+        assert!(human.contains("fieldnotes fields auth"), "{human}");
+        assert_no_token(&human);
+
+        let json = render_fields_auth(&outcome, Format::Json);
+        assert!(
+            json.contains(
+                r#""credential_account_mismatch":{"accounts":[{"account":"mailbox.owner@example.test","field_ids":["outlook_calendar_work","outlook_mail_work"]},{"account":"tenant.admin@example.test","field_ids":["outlook_contacts_work"]}]"#
+            ),
+            "{json}"
+        );
+        assert_no_token(&json);
+    }
+
+    #[test]
+    fn fields_status_reports_the_account_and_the_mismatch_in_both_output_forms() {
+        let reports = vec![
+            status_report("outlook_mail_work", Some("mailbox.owner@example.test")),
+            status_report("outlook_contacts_work", Some("tenant.admin@example.test")),
+        ];
+        let found = mismatch();
+
+        let human = render_fields_status(&reports, Some(&found), Format::Human);
+        assert!(
+            human.contains("account            mailbox.owner@example.test"),
+            "{human}"
+        );
+        assert!(
+            human.contains("account            tenant.admin@example.test"),
+            "{human}"
+        );
+        assert!(human.contains("WARNING"), "{human}");
+        assert!(
+            human.contains("outlook_calendar_work, outlook_mail_work"),
+            "{human}"
+        );
+        assert_no_token(&human);
+
+        let json = render_fields_status(&reports, Some(&found), Format::Json);
+        assert!(
+            json.contains(r#""credential_account":"mailbox.owner@example.test""#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""credential_account":"tenant.admin@example.test""#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""credential_account_mismatch":{"accounts":["#),
+            "{json}"
+        );
+        assert_no_token(&json);
+    }
+
+    #[test]
+    fn fields_status_agreeing_accounts_produce_no_warning_at_all() {
+        let reports = vec![
+            status_report("outlook_mail_work", Some("mailbox.owner@example.test")),
+            status_report("outlook_calendar_work", Some("mailbox.owner@example.test")),
+        ];
+        // Two Fields, one account: there is nothing to warn about.
+        assert_eq!(
+            account_mismatch_of(&[
+                ("outlook_mail_work", "mailbox.owner@example.test"),
+                ("outlook_calendar_work", "mailbox.owner@example.test"),
+            ]),
+            None
+        );
+        let human = render_fields_status(&reports, None, Format::Human);
+        assert!(!human.contains("WARNING"), "{human}");
+        let json = render_fields_status(&reports, None, Format::Json);
+        assert!(
+            json.contains(r#""credential_account_mismatch":null"#),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn fields_status_reports_an_unknown_account_for_a_credential_that_recorded_none() {
+        let reports = vec![status_report("outlook_mail_work", None)];
+        let human = render_fields_status(&reports, None, Format::Human);
+        assert!(
+            human.contains(
+                "account            unknown; run `fieldnotes fields auth outlook_mail_work` to \
+                 record it"
+            ),
+            "{human}"
+        );
+        let json = render_fields_status(&reports, None, Format::Json);
+        assert!(json.contains(r#""credential_account":null"#), "{json}");
+    }
+
+    fn sync_report_with_account(account: Option<&str>, previous: Option<&str>) -> FieldSyncReport {
+        let mut report = FieldSyncReport::not_run(
+            "outlook_mail_work",
+            "incremental",
+            FieldRunOutcome::Complete,
+            "test fixture",
+        );
+        report.credential_account = Some(fieldnotes_app::AccountReport {
+            account: account.map(str::to_owned),
+            previous_account: previous.map(str::to_owned),
+        });
+        report
+    }
+
+    #[test]
+    fn the_sync_report_carries_the_account_in_both_output_forms() {
+        let outcome = SyncOutcome {
+            fields: vec![sync_report_with_account(
+                Some("mailbox.owner@example.test"),
+                None,
+            )],
+            account_mismatch: None,
+        };
+
+        let human = render_sync(&outcome, Format::Human);
+        assert!(
+            human.contains("account            mailbox.owner@example.test"),
+            "{human}"
+        );
+        assert!(!human.contains("account changed"), "{human}");
+        assert_no_token(&human);
+
+        let json = render_sync(&outcome, Format::Json);
+        assert!(
+            json.contains(
+                r#""credential_account":{"account":"mailbox.owner@example.test","previous_account":null,"changed_since_last_sync":false}"#
+            ),
+            "{json}"
+        );
+        assert_no_token(&json);
+    }
+
+    #[test]
+    fn the_sync_report_reports_an_unknown_account_and_a_notebook_wide_mismatch() {
+        let outcome = SyncOutcome {
+            fields: vec![sync_report_with_account(None, None)],
+            account_mismatch: Some(mismatch()),
+        };
+
+        let human = render_sync(&outcome, Format::Human);
+        assert!(
+            human.contains(
+                "account            unknown; run `fieldnotes fields auth outlook_mail_work` to \
+                 record it"
+            ),
+            "{human}"
+        );
+        assert!(human.contains("WARNING"), "{human}");
+        assert!(human.contains("tenant.admin@example.test"), "{human}");
+
+        let json = render_sync(&outcome, Format::Json);
+        assert!(
+            json.contains(r#""credential_account":{"account":null,"#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#""credential_account_mismatch":{"accounts":["#),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn a_credential_reauthenticated_as_somebody_else_is_named_on_both_surfaces() {
+        let outcome = SyncOutcome {
+            fields: vec![sync_report_with_account(
+                Some("tenant.admin@example.test"),
+                Some("mailbox.owner@example.test"),
+            )],
+            account_mismatch: None,
+        };
+
+        let human = render_sync(&outcome, Format::Human);
+        assert!(human.contains("account changed"), "{human}");
+        // Both the account it is now and the account it was.
+        assert!(human.contains("tenant.admin@example.test"), "{human}");
+        assert!(human.contains("mailbox.owner@example.test"), "{human}");
+        assert!(human.contains("fields auth outlook_mail_work"), "{human}");
+        // The continuation lines line up under the label rather than running
+        // off the terminal.
+        assert!(
+            human
+                .lines()
+                .all(|line| line.chars().count() <= 96 || !line.contains("account changed")),
+            "{human}"
+        );
+
+        let json = render_sync(&outcome, Format::Json);
+        assert!(
+            json.contains(
+                r#""credential_account":{"account":"tenant.admin@example.test","previous_account":"mailbox.owner@example.test","changed_since_last_sync":true}"#
+            ),
+            "{json}"
+        );
     }
 }

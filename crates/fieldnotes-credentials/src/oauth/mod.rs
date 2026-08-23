@@ -24,7 +24,10 @@
 //!    authorization code.
 //! 4. [`broker::AccessTokenProvider::complete_authorization`] redeems the
 //!    code and verifier at the token endpoint ([`token::exchange_code`]),
-//!    stores the returned refresh token, and returns a minted access token.
+//!    stores the returned refresh token, and returns a minted access token
+//!    together with the account that signed in
+//!    ([`id_token::account_from_id_token`], extracted from the ID token the
+//!    `openid` scope makes the server return).
 //! 5. On every later collection run,
 //!    [`broker::AccessTokenProvider::mint_access_token`] loads the stored
 //!    refresh token, redeems it ([`token::refresh`]), and rotates the stored
@@ -38,11 +41,13 @@
 
 pub mod authorize;
 pub mod broker;
+pub mod id_token;
 pub mod loopback;
 pub mod token;
 
 pub use authorize::AuthorizeRequest;
-pub use broker::AccessTokenProvider;
+pub use broker::{AccessTokenProvider, Authorization};
+pub use id_token::AccountId;
 pub use loopback::{CallbackResult, LoopbackError, LoopbackListener};
 pub use token::{
     AccessToken, TokenHttpResponse, TokenSet, TokenTransport, TransportError, UreqTokenTransport,

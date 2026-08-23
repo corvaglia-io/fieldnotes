@@ -253,7 +253,7 @@ impl Authorizer for SystemCredentials<'_> {
             settings.token_endpoint(),
             settings.client_id.clone(),
         );
-        let token = broker
+        let authorization = broker
             .complete_authorization(
                 &settings.profile,
                 &callback.code,
@@ -269,7 +269,14 @@ impl Authorizer for SystemCredentials<'_> {
             })?;
         Ok(Authorized {
             scopes: scopes.to_vec(),
-            access_token_expires_at: self.render_expiry(&token),
+            access_token_expires_at: self.render_expiry(&authorization.access_token),
+            // The non-secret account name, and only that. The ID token it was
+            // read from never reached this crate: `fieldnotes-credentials`
+            // confines it to the function that parses the token-endpoint
+            // response, and hands back the extracted label alone.
+            account: authorization
+                .account
+                .map(|account| account.as_str().to_owned()),
         })
     }
 }

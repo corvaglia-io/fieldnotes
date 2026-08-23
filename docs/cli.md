@@ -271,7 +271,7 @@ key is required; every other has a default and every one is overridable.
 | `oauth_client_id` | the shared first-party client below | The OAuth public client ID. |
 | `oauth_tenant_id` | `organizations` | The authority tenant segment. `organizations` resolves to the signed-in user's home tenant. |
 | `oauth_authority` | `https://login.microsoftonline.com` | The authority base URL. Must be `https`. |
-| `oauth_redirect_path` | `/callback` | The loopback redirect path. The port is always ephemeral. |
+| `oauth_redirect_path` | *(none)* | The loopback redirect path. Empty by default: an authorization server waives the port when matching a loopback redirect URI but compares the path exactly, and a public-client registration conventionally names no path. Set one only if yours does. |
 
 The `environment` provider is explicit, opt-in, and **read-only**: it reads a
 refresh token a person or a CI system placed in the named variable, into core's
@@ -295,12 +295,75 @@ run that uses it. A deployment should register its own application and set
 
 #### Scopes come from the Field, not from the command
 
-Core requests exactly the least-privilege scopes the Field's own manifest
-declares, plus `offline_access` so a refresh token is issued at all. It never
-requests a broader set, and the protected channel refuses a Field that later
-asks for a scope outside its grant. `fields auth` runs `describe` first to read
-those scopes, which is safe because A2 gives a describe run no credential grant,
-no cursor, and no staging directory.
+Core requests exactly the least-privilege **resource** scopes the Field's own
+manifest declares, plus three of its own that grant access to nothing:
+
+| Scope | Why core adds it |
+|---|---|
+| `offline_access` | So a refresh token is issued at all. |
+| `openid` | So the authorization server says **which account** signed in, by returning an ID token. |
+| `profile` | So that ID token carries the human-recognizable `preferred_username` claim. |
+
+The last two are requested **for identification, not for access**. Neither grants
+access to any data and neither needs administrative consent. `email` is
+deliberately not requested: `profile` already yields a recognizable name.
+
+Core never requests a broader resource set, and the protected channel refuses a
+Field that later asks for a scope outside its grant. `fields auth` runs
+`describe` first to read those scopes, which is safe because A2 gives a describe
+run no credential grant, no cursor, and no staging directory.
+
+#### `fields auth` tells you which account you signed in as
+
+A browser silently reuses whatever sign-in session is already open, so
+authenticating several Fields in several flows can store credentials for several
+different people without saying so. `fields auth` therefore reports an `account`
+line, and `fieldnotes.fields_auth.v1` gained `credential_account`:
+
+```text
+Authenticated Field outlook_mail_work
+  profile     work
+  stored in   keychain
+  account     mailbox.owner@example.test
+  ...
+```
+
+The account is read from the ID token the `openid` scope makes the server return
+and is recorded in the Field's non-secret configuration file. It is a **label for
+you to confirm, never an authorization input** — nothing in Fieldnotes grants or
+denies anything on it. The ID token it came from is never logged, never
+persisted, and never printed; see `docs/security.md`.
+
+If the sign-in returns no account claim, the account is reported as `unknown`
+rather than guessed, and the credential is still stored.
+
+#### Fields signed in as different accounts are called out
+
+When more than one Field in a notebook has a recorded account and they do not all
+agree, `fields auth`, `fields status`, and `sync` all print a prominent warning
+naming every account and the Fields it belongs to:
+
+```text
+WARNING  this notebook's Fields are authenticated as different accounts:
+           mailbox.owner@example.test  outlook_calendar_work, outlook_mail_work
+           tenant.admin@example.test   outlook_contacts_work
+         This is legitimate if you meant to collect a shared or delegated mailbox
+         alongside your own. If you did not, a browser reused an existing sign-in
+         session during `fields auth`, and one of these Fields is authenticated as the
+         wrong person.
+         Sign that account out, then run `fieldnotes fields auth <field_id>` again.
+```
+
+It is a **warning, not a refusal**: collecting a shared or delegated mailbox
+alongside your own legitimately means two accounts, so Fieldnotes names what it
+found and leaves the judgement to you. Exit codes are unaffected. All three
+commands gained a `credential_account_mismatch` member in JSON — `{accounts:
+[{account, field_ids}], advice, remedy}` — `null` when the accounts agree or
+fewer than two are recorded.
+
+The check is notebook-wide even when you name one Field, because "your Fields are
+signed in as different people" is true of the notebook whichever Field you asked
+about.
 
 #### A collection run never opens a browser
 
@@ -322,11 +385,35 @@ move, delete, flag, categorize, or otherwise mutate mail.
 from the credential store without attempting a sync, without a network call,
 and without starting a process.
 
+It also reports an `account` line for every Field that names a credential
+profile, and `fieldnotes.fields_status.v1` gained `credential_account` (`null`
+when unknown) plus the notebook-wide `credential_account_mismatch`. Because the
+account lives in the Field's configuration rather than in sync state, it is
+answerable **before the first sync**. A credential stored before Fieldnotes
+recorded accounts reports:
+
+```text
+    account            unknown; run `fieldnotes fields auth outlook_mail_work` to record it
+```
+
 `fieldnotes.sync.v1` gained a `credential` member, `null` for a Field that needs
 none: the profile, the provider, the granted scopes, and how many requests the
 protected channel answered and refused. It carries no material, and neither does
 the `credential` object recorded in
 `.fieldnotes/state/sync/<field_id>.status.json`.
+
+`fieldnotes.sync.v1` also gained `credential_account`
+(`{account, previous_account, changed_since_last_sync}`, `null` for a Field that
+names no credential profile) and the notebook-wide
+`credential_account_mismatch`. The per-Field block is reported on **every** run
+of an authenticating Field, including one that refused before spawning anything —
+which is exactly the case that motivated it: a collection that fails because the
+account it authenticated as has no mailbox should say, in the same report, which
+account that was. `previous_account` is set when the credential was
+re-authenticated as somebody else since this Field's last successful sync, which
+is reported prominently and, for the same reason as the mismatch warning, still
+not refused. The status file records `credential_account` so the next run can
+make that comparison; it is a name, never material.
 
 ## 0.1.4 — Outlook Calendar and Contacts
 

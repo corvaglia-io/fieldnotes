@@ -119,6 +119,91 @@ refusing two kinds the protocol names but forbids building.
 - **a collection run never authorizes interactively.** It refreshes silently or
   refuses with an instruction, so a scheduled run cannot open a browser.
 
+### Core learns which account signed in, for display only
+
+A stored refresh token used to be anonymous: it authenticated *somebody*, and
+nothing recorded who. Authenticating several Fields against one Microsoft 365
+tenant means several separate browser flows, and **a browser silently reuses
+whatever sign-in session is already open** — so if one flow needed an
+administrator (consenting for the organization, say), the credential stored for
+that Field can authenticate the administrator while the others authenticate the
+mailbox owner. That has already happened here. Collection failed with an error
+whose real meaning was "the account you authenticated as has no mailbox", and
+`fields status`, `fields auth`, and the sync report were all silent about the
+three Fields being three different people.
+
+**The loud version of that mistake is the lucky one.** Had the wrong account
+been an administrator who *does* have a mailbox, collection would have succeeded
+and quietly filled the notebook with somebody else's mail, with nothing in any
+output to suggest it. That is a data-integrity problem, not an ergonomics one.
+
+So `fields auth` requests two scopes **for identification, not for access**:
+
+- `openid`, which exists precisely to tell a client who signed in, by returning
+  an ID token;
+- `profile`, which makes Microsoft Entra include the human-recognizable
+  `preferred_username` claim in that token.
+
+Neither grants access to any data and neither needs administrative consent. The
+`email` scope is deliberately not requested: `profile` already yields a
+recognizable name, so `email` would add a second personal-data claim for no
+additional answer. Resource scopes still come from the Field's own manifest and
+nowhere else.
+
+**Reading an ID token is correct; reading an access token would not be.** An ID
+token is issued *to the client that requested it*, for the sole purpose of
+naming the signed-in principal, and Microsoft documents it as a token the
+application is expected to read. An access token is issued to the *resource
+server*, is documented as opaque to the client, and must never be parsed.
+Fieldnotes parses the first and never the second, and that distinction is the
+whole reason one is acceptable.
+
+**The extracted value is for display and confirmation, never authorization.**
+Nothing in Fieldnotes grants access, denies access, chooses a scope, authorizes
+a deletion, or selects a credential on it. The claim's signature, issuer,
+audience, and expiry are not verified, because it is not being presented to
+Fieldnotes as a bearer assertion for a decision — it arrived in the response to
+a request this process made. A future reader will be tempted to treat it as an
+identity. It is a label.
+
+**The ID token itself is credential-adjacent** — a signed bearer assertion about
+a person — and is handled like any other token material: wrapped in the
+credential crate's redacting secret type the instant it is parsed out, confined
+to the function that parses the token-endpoint response, never logged, never
+persisted, never in an error or a `Debug` rendering. Only the extracted account
+identifier is retained.
+
+That identifier is recorded in the Field's **non-secret configuration file**
+(`.fieldnotes/fields/<field_id>.json`), beside the `credential_profile` it
+belongs to, rather than in operational sync state — because `fields status` must
+be able to report it before any sync has run, which is exactly when confirming
+the account matters most. It is not a `config` key: `config` is declared intent
+a person typed, and letting one type an account would turn a diagnostic into a
+way to lie. It is not a secret, but it *is* personal data, and a copied notebook
+carries it; every file under the private `.fieldnotes/` directory is equally
+copied, so what limits exposure is scope rather than location — it is written
+once, never copied into a Note, an artifact, a cursor, a protocol frame, or a
+child process's environment, and removed with the Field by `fields remove`.
+
+The account is reported by `fields auth`, by `fields status`, and in every sync
+report. A credential stored before this existed has none recorded: that is
+reported as **unknown**, with the command that records one, never guessed. A
+collection run deliberately does not learn it, even though a refresh response
+could carry one, because a scheduled run silently rewriting durable
+configuration would erase the very discrepancy the recorded value exists to
+expose.
+
+**When a notebook's Fields do not all agree, Fieldnotes says so prominently.**
+That is a warning and not a refusal: collecting a shared or delegated mailbox
+alongside your own legitimately means two accounts. The warning names every
+account and which Fields it belongs to, so the person reading it can tell which
+case they are in. The same reasoning applies, more strongly, to a credential
+re-authenticated as somebody else since its last successful sync: that is
+reported prominently on the Field's own run, and still not refused — a user
+principal name can legitimately change, and refusing a run on this value would
+be an authorization decision made on the one claim this document has just said
+must never be used for one.
+
 The out-of-the-box OAuth client ID is a shared first-party public client, which
 makes reads attributable to *that application* in the tenant's sign-in logs
 rather than to Fieldnotes; it is overridable per Field, and a deployment should

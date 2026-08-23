@@ -22,6 +22,21 @@
 //!   alongside values like `root_path`; `credential_profile` is the name of the
 //!   stored credential, not the credential.
 //!
+//! # Core also learns *which account* signed in
+//!
+//! A stored refresh token used to be anonymous: it authenticated *somebody*, and
+//! nothing recorded who. That cost a real debugging session and could have cost
+//! notebook integrity — see [`mod@account`] for the whole story. So `fields
+//! auth` now requests [`IDENTIFICATION_SCOPES`] alongside the Field's own
+//! resource scopes, reads the resulting ID token's account claim, and records
+//! that non-secret name in the Field's configuration
+//! ([`fieldnotes_store::FieldConfig::credential_account`]). It is surfaced by
+//! `fields auth`, `fields status`, and every sync report, and a notebook whose
+//! Fields disagree gets a prominent warning naming the accounts and the Fields.
+//!
+//! The account is a **label for a person to confirm**, never an authorization
+//! input. Nothing here decides anything on it.
+//!
 //! # Device-code flow appears nowhere
 //!
 //! Interactive browser PKCE on an ephemeral loopback redirect is the only
@@ -42,11 +57,14 @@
 //! or the developer's real keychain. [`system`] holds the real implementations,
 //! which the composition root builds.
 
+pub mod account;
 pub mod auth;
 pub mod channel;
 pub mod system;
 
 use std::collections::BTreeMap;
+
+pub use account::{AccountGroup, AccountMismatch, account_mismatch};
 
 use fieldnotes_credentials::{CredentialError, CredentialRef};
 use fieldnotes_field_protocol::message::{AuthDeclaration, AuthKind, Manifest, RefreshOwner};
@@ -133,9 +151,43 @@ pub const KEYCHAIN_SERVICE: &str = "fieldnotes";
 /// The scope core adds to an authorization request so a refresh token is
 /// actually issued.
 ///
-/// Every other scope comes from the Field's own manifest: core requests exactly
-/// what the Field declares, plus this one, and never a broader set.
+/// Every resource scope comes from the Field's own manifest: core requests
+/// exactly what the Field declares, plus this one and
+/// [`IDENTIFICATION_SCOPES`], and never a broader set.
 pub const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
+
+/// The OpenID Connect scope that makes the authorization server tell core
+/// **which account** just signed in, by returning an ID token.
+pub const OPENID_SCOPE: &str = "openid";
+
+/// The OpenID Connect scope that makes Microsoft Entra include the
+/// human-recognizable `preferred_username` claim in that ID token.
+pub const PROFILE_SCOPE: &str = "profile";
+
+/// The two scopes core adds **for identification, not for access**.
+///
+/// Neither grants access to any data. `openid` exists precisely to tell a
+/// client who signed in, and `profile` is what makes the resulting ID token
+/// carry a name a person can recognize. Neither requires administrative
+/// consent.
+///
+/// They are requested because without them a stored credential is anonymous,
+/// and that anonymity has already cost a real debugging session: three Fields
+/// authenticated in three separate browser flows can silently be three
+/// different principals, because a browser reuses whatever sign-in session is
+/// already open. The quiet version of that mistake — an administrator who
+/// *does* have a mailbox — fills a notebook with the wrong person's mail with
+/// nothing in any output to suggest it. Identifying the account at
+/// authorization time is what turns that from invisible into obvious.
+///
+/// The `email` scope is deliberately **not** requested: `profile` already
+/// yields a recognizable name, so `email` would add a second personal-data
+/// claim for no additional answer.
+///
+/// What the resulting account identifier is for is narrow and documented in
+/// [`fieldnotes_credentials::oauth::id_token`]: display and confirmation.
+/// **Nothing may authorize anything on it.**
+pub const IDENTIFICATION_SCOPES: [&str; 2] = [OPENID_SCOPE, PROFILE_SCOPE];
 
 /// Which credential provider stores this profile's refresh token.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,12 +475,22 @@ pub struct AuthRequirement {
 
 impl AuthRequirement {
     /// The scopes an authorization request asks for: exactly what the Field
-    /// declared, plus `offline_access` so a refresh token is issued.
+    /// declared, plus `offline_access` so a refresh token is issued, plus
+    /// [`IDENTIFICATION_SCOPES`] so core learns which account signed in.
+    ///
+    /// The resource scopes are still exactly the Field's own least-privilege
+    /// declaration. The three core adds grant access to nothing: one makes a
+    /// refresh token possible at all, and two make the signed-in principal
+    /// nameable. A scope already declared is not requested twice.
     #[must_use]
     pub fn authorization_scopes(&self) -> Vec<String> {
         let mut scopes = self.scopes.clone();
-        if !scopes.iter().any(|scope| scope == OFFLINE_ACCESS_SCOPE) {
-            scopes.push(OFFLINE_ACCESS_SCOPE.to_owned());
+        for added in
+            core::iter::once(OFFLINE_ACCESS_SCOPE).chain(IDENTIFICATION_SCOPES.iter().copied())
+        {
+            if !scopes.iter().any(|scope| scope == added) {
+                scopes.push(added.to_owned());
+            }
         }
         scopes
     }
@@ -695,7 +757,7 @@ pub trait Authorizer {
 }
 
 /// The non-secret outcome of one successful authorization.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Authorized {
     /// The scopes that were requested.
     pub scopes: Vec<String>,
@@ -704,6 +766,15 @@ pub struct Authorized {
     /// the delivered material is short-lived; the access token itself is
     /// discarded here, since `fields auth` runs no collection.
     pub access_token_expires_at: Option<String>,
+    /// **Which account** the browser actually signed in as, read from the ID
+    /// token [`IDENTIFICATION_SCOPES`] made the authorization server return.
+    ///
+    /// `None` means the server returned no readable ID token, which is not a
+    /// failure: the credential was stored and the account is simply unknown.
+    ///
+    /// This is for display and confirmation. It is never used to grant or deny
+    /// anything; see [`fieldnotes_credentials::oauth::id_token`].
+    pub account: Option<String>,
 }
 
 /// Mints a short-lived access token for an already-authorized profile.
@@ -968,7 +1039,8 @@ mod tests {
     }
 
     #[test]
-    fn scopes_come_from_the_manifest_plus_offline_access() -> Result<(), CredentialFailure> {
+    fn scopes_come_from_the_manifest_plus_offline_access_and_identification()
+    -> Result<(), CredentialFailure> {
         let requirement = requirement_of(
             "outlook_mail_work",
             &declaration(
@@ -977,21 +1049,44 @@ mod tests {
                 &["Mail.Read"],
             ),
         )?;
+        // The Field's own declaration is untouched: the added scopes are core's,
+        // and none of them grants access to anything.
         assert_eq!(requirement.scopes, vec!["Mail.Read".to_owned()]);
         assert_eq!(
             requirement.authorization_scopes(),
-            vec!["Mail.Read".to_owned(), OFFLINE_ACCESS_SCOPE.to_owned()]
+            vec![
+                "Mail.Read".to_owned(),
+                OFFLINE_ACCESS_SCOPE.to_owned(),
+                OPENID_SCOPE.to_owned(),
+                PROFILE_SCOPE.to_owned(),
+            ]
+        );
+        // `email` is deliberately never requested: `profile` already yields a
+        // recognizable name.
+        assert!(
+            !requirement
+                .authorization_scopes()
+                .iter()
+                .any(|scope| scope == "email")
         );
         // Already declared: not added twice.
-        let declared_offline = requirement_of(
+        let declared = requirement_of(
             "outlook_mail_work",
             &declaration(
                 AuthKind::OauthAuthorizationCode,
                 RefreshOwner::Core,
-                &["Mail.Read", OFFLINE_ACCESS_SCOPE],
+                &["Mail.Read", OFFLINE_ACCESS_SCOPE, OPENID_SCOPE],
             ),
         )?;
-        assert_eq!(declared_offline.authorization_scopes().len(), 2);
+        assert_eq!(
+            declared.authorization_scopes(),
+            vec![
+                "Mail.Read".to_owned(),
+                OFFLINE_ACCESS_SCOPE.to_owned(),
+                OPENID_SCOPE.to_owned(),
+                PROFILE_SCOPE.to_owned(),
+            ]
+        );
         Ok(())
     }
 

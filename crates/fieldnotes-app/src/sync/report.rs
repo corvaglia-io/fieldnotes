@@ -8,6 +8,8 @@
 use fieldnotes_field_protocol::codes::{RejectionCode, RunOutcome};
 use fieldnotes_field_protocol::session::{DeletionAuthorization, ExitObservation};
 
+use crate::credentials::AccountMismatch;
+
 /// How one Field's run ended, as reported to a user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldRunOutcome {
@@ -204,6 +206,48 @@ pub struct CredentialReport {
     pub refused: u64,
 }
 
+/// **Which account** a Field's credential authenticates as, as this run saw it.
+///
+/// Reported on every run of an authenticating Field, including one that refused
+/// before spawning anything — which is exactly the case that motivated it: a
+/// collection that failed because "the account you authenticated as has no
+/// mailbox" should say, in the same report, which account that was.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountReport {
+    /// The recorded account, or `None` when it is unknown.
+    ///
+    /// Unknown means the credential predates Fieldnotes recording accounts. It
+    /// is never guessed, and a run never learns it: the fix is to run
+    /// `fieldnotes fields auth <field_id>` again.
+    pub account: Option<String>,
+    /// The account this Field's **previous successful sync** recorded, when it
+    /// differs from [`Self::account`].
+    ///
+    /// `Some` here means the credential was re-authenticated as somebody else
+    /// since the last run — a prominent warning, because the notebook already
+    /// holds Notes collected as the previous account under this same Field.
+    ///
+    /// Deliberately not a refusal. Two reasons, and the second is the decisive
+    /// one. First, a legitimate cause exists: a user principal name can change
+    /// (a rename, a tenant migration), and refusing would brick sync for a
+    /// notebook whose owner did nothing wrong and cannot edit the claim. Second,
+    /// refusing a run on this value *is* an authorization decision made on an
+    /// unverified display claim, which is precisely what
+    /// [`fieldnotes_credentials::oauth::id_token`] documents that this value must
+    /// never be used for. A warning that names both accounts gives the operator
+    /// everything needed to decide, without Fieldnotes deciding on evidence it
+    /// has told itself not to trust.
+    pub previous_account: Option<String>,
+}
+
+impl AccountReport {
+    /// Whether the recorded account differs from the previous successful sync's.
+    #[must_use]
+    pub fn changed_since_last_sync(&self) -> bool {
+        self.previous_account.is_some()
+    }
+}
+
 /// One Field's whole run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSyncReport {
@@ -258,6 +302,13 @@ pub struct FieldSyncReport {
     /// What crossed the protected credential channel, when this run had one.
     /// `None` for a Field that needs no credential.
     pub credential: Option<CredentialReport>,
+    /// Which account this Field's credential authenticates as.
+    ///
+    /// `None` only for a Field whose configuration names no credential profile
+    /// at all. Present — with `account: None` for "unknown" — on every run of an
+    /// authenticating Field, including a refused one, and independently of
+    /// whether a protected channel was ever opened.
+    pub credential_account: Option<AccountReport>,
 }
 
 impl FieldSyncReport {
@@ -287,6 +338,7 @@ impl FieldSyncReport {
             stderr: None,
             conflicts: Vec::new(),
             credential: None,
+            credential_account: None,
         }
     }
 }
@@ -296,6 +348,14 @@ impl FieldSyncReport {
 pub struct SyncOutcome {
     /// One report per Field, in ascending Field ID order.
     pub fields: Vec<FieldSyncReport>,
+    /// Set when this notebook's Fields do not all authenticate as the same
+    /// account.
+    ///
+    /// Computed across **every** configured Field, not only the ones this
+    /// invocation ran, because it is a fact about the notebook. A prominent
+    /// warning, never a refusal: see
+    /// [`crate::credentials::account`].
+    pub account_mismatch: Option<AccountMismatch>,
 }
 
 impl SyncOutcome {

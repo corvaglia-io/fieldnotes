@@ -115,11 +115,47 @@ pub struct FieldConfig {
     /// has been recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest: Option<serde_json::Value>,
+    /// **Which account** the credential named by this configuration's
+    /// `credential_profile` authenticates as, as observed at the last successful
+    /// `fields auth`, or `None` when it has never been recorded.
+    ///
+    /// # Why this lives here rather than in operational sync state
+    ///
+    /// `fields status` has to be able to report it **before any sync has run**,
+    /// and the only thing written before the first sync is this file. Operational
+    /// sync state is written by `sync` alone, so recording the account only there
+    /// would leave a freshly authenticated Field reporting an unknown account
+    /// until it had collected something — exactly when confirming the account
+    /// matters most.
+    ///
+    /// It also belongs beside `credential_profile`, which lives in `config`: the
+    /// profile is the name of the credential and this is the principal that
+    /// credential resolves to. Two halves of one fact.
+    ///
+    /// # Why it is not a `config` key
+    ///
+    /// `config` is *declared intent* — what a person typed at `fields add`,
+    /// validated there, and guarded by [`reject_credential_shaped_keys`]. This is
+    /// an *observation* Fieldnotes made, and putting it in `config` would let
+    /// `--config credential_account=someone.else@example.test` assert an account
+    /// nobody signed in as, turning a diagnostic into a way to lie.
+    ///
+    /// # It is personal data, not a secret
+    ///
+    /// It names a person, so a copied notebook carries it. That is true of every
+    /// file under the private `.fieldnotes/` directory equally — choosing sync
+    /// state over this file would buy no privacy — so what limits exposure is
+    /// scope rather than location: it is written once, never copied into a Note,
+    /// an artifact, a cursor, a protocol frame, or a child process's environment,
+    /// and it is removed with the Field's configuration by `fields remove`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_account: Option<String>,
 }
 
 impl FieldConfig {
     /// Builds a new, enabled Field configuration with no manifest snapshot
-    /// yet and no connector configuration yet.
+    /// yet, no connector configuration yet, and no recorded credential
+    /// account yet.
     #[must_use]
     pub fn new(id: impl Into<String>, executable: impl Into<PathBuf>) -> Self {
         FieldConfig {
@@ -128,6 +164,7 @@ impl FieldConfig {
             executable: executable.into(),
             config: BTreeMap::new(),
             manifest: None,
+            credential_account: None,
         }
     }
 }
@@ -617,6 +654,50 @@ mod tests {
             Err(StoreError::InvalidFieldConfig { .. }) => {}
             other => panic!("expected InvalidFieldConfig, got {other:?}"),
         }
+        Ok(())
+    }
+
+    #[test]
+    fn a_configuration_written_before_accounts_were_recorded_reads_back_as_unknown()
+    -> Result<(), StoreError> {
+        let temp = temp("fields-account-absent")?;
+        let (notebook, _) = Notebook::create(&temp.path().join("notebook"))?;
+        let path = field_config_path(&notebook, "outlook_mail_work");
+        std::fs::create_dir_all(fields_dir(&notebook))
+            .map_err(|error| StoreError::io("create", &path, error))?;
+        // Exactly what an installation predating the recorded-account member
+        // left on disk: no `credential_account` key at all.
+        std::fs::write(
+            &path,
+            br#"{"id":"outlook_mail_work","enabled":true,
+                 "executable":"/usr/local/bin/fieldnotes-field-outlook-mail",
+                 "config":{"credential_profile":"work"}}"#,
+        )
+        .map_err(|error| StoreError::io("write", &path, error))?;
+
+        let config = read_field_config(&notebook, "outlook_mail_work")?
+            .unwrap_or_else(|| panic!("an older configuration must still read"));
+        assert_eq!(
+            config.credential_account, None,
+            "an absent account is unknown, not an error"
+        );
+
+        // Rewriting it without recording an account must not invent one, and
+        // must not add the key.
+        write_field_config(&notebook, &config)?;
+        let text =
+            std::fs::read_to_string(&path).map_err(|error| StoreError::io("read", &path, error))?;
+        assert!(!text.contains("credential_account"), "{text}");
+
+        // Recording one round-trips.
+        let mut recorded = config;
+        recorded.credential_account = Some("mailbox.owner@example.test".to_owned());
+        write_field_config(&notebook, &recorded)?;
+        assert_eq!(
+            read_field_config(&notebook, "outlook_mail_work")?
+                .and_then(|config| config.credential_account),
+            Some("mailbox.owner@example.test".to_owned())
+        );
         Ok(())
     }
 

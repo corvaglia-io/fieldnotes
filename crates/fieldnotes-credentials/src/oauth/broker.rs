@@ -16,9 +16,31 @@
 use fieldnotes_domain::Clock;
 
 use crate::error::CredentialError;
+use crate::oauth::id_token::AccountId;
 use crate::oauth::token::{self, AccessToken, TokenTransport};
 use crate::provider::CredentialProvider;
 use crate::reference::CredentialRef;
+
+/// What one completed interactive authorization produced.
+///
+/// Carries the minted access token and, when the response's ID token could be
+/// read, **which account signed in**. The ID token itself is not here and never
+/// reaches this module: [`crate::oauth::token`] confines it to the function that
+/// parses the response body.
+///
+/// `Debug` is derived and still safe: [`AccessToken`]'s own `Debug` redacts and
+/// [`AccountId`] is non-secret display text.
+#[derive(Debug, Clone)]
+pub struct Authorization {
+    /// The minted access token.
+    pub access_token: AccessToken,
+    /// The account this credential now authenticates as, or `None` when the
+    /// authorization server returned no readable ID token.
+    ///
+    /// **For display and confirmation only.** Never an authorization input; see
+    /// [`crate::oauth::id_token`].
+    pub account: Option<AccountId>,
+}
 
 /// Mints access tokens for a configured OAuth application, backed by a
 /// [`CredentialProvider`] for refresh-token storage and a [`TokenTransport`]
@@ -61,7 +83,16 @@ impl<'a> AccessTokenProvider<'a> {
 
     /// Completes a fresh authorization: exchanges an authorization code and
     /// its PKCE verifier for a token set, stores the returned refresh token
-    /// under `reference`, and returns the minted access token.
+    /// under `reference`, and returns the minted access token together with
+    /// **which account signed in**.
+    ///
+    /// The account comes from the response's ID token, which the authorization
+    /// server returns because the request asked for the `openid` scope. It is
+    /// `None` when the server returned no readable ID token, which is not a
+    /// failure: the sign-in worked and the account is merely unknown. See
+    /// [`crate::oauth::id_token`] for why reading an ID token is correct, why
+    /// reading an access token would not be, and why this value may be
+    /// displayed but never used to authorize anything.
     ///
     /// Fails with [`CredentialError::Backend`] if the token endpoint does not
     /// return a refresh token at all (typically a missing `offline_access`
@@ -75,7 +106,7 @@ impl<'a> AccessTokenProvider<'a> {
         code: &str,
         redirect_uri: &str,
         code_verifier: &str,
-    ) -> Result<AccessToken, CredentialError> {
+    ) -> Result<Authorization, CredentialError> {
         let token_set = token::exchange_code(
             self.transport,
             self.clock,
@@ -92,7 +123,10 @@ impl<'a> AccessTokenProvider<'a> {
             ));
         };
         self.provider.store(reference, refresh_token)?;
-        Ok(token_set.access_token)
+        Ok(Authorization {
+            access_token: token_set.access_token,
+            account: token_set.account,
+        })
     }
 
     /// Mints a fresh access token for an already-authorized profile.
@@ -107,6 +141,19 @@ impl<'a> AccessTokenProvider<'a> {
     /// This crate's brief notes that an access token's typical lifetime
     /// comfortably exceeds the default collection-run ceiling, so this is
     /// meant to be called once before a run starts, not polled mid-run.
+    ///
+    /// # The account is deliberately not learned here
+    ///
+    /// A refresh response may also carry an ID token, so this call *could*
+    /// discover the signed-in account. It deliberately does not return one.
+    /// Learning the account here would mean a scheduled collection run silently
+    /// rewriting the recorded account in a Field's configuration — a
+    /// non-interactive run quietly changing durable state, and quietly erasing
+    /// the very "this credential was re-authenticated as somebody else"
+    /// discrepancy the recorded value exists to expose. A credential stored
+    /// before Fieldnotes recorded accounts therefore reports its account as
+    /// unknown until someone runs `fields auth` again, which is the honest
+    /// answer rather than a guess made during a run nobody was watching.
     pub fn mint_access_token(
         &self,
         reference: &CredentialRef,
@@ -179,14 +226,58 @@ mod tests {
             "client-id",
         );
         let reference = reference();
-        let access_token = broker.complete_authorization(
+        let authorized = broker.complete_authorization(
             &reference,
             "auth-code",
             "http://127.0.0.1:1/callback",
             "verifier",
         )?;
-        assert_eq!(access_token.expose_secret(), "AT-1");
+        assert_eq!(authorized.access_token.expose_secret(), "AT-1");
+        // No `id_token` was returned, so the account is unknown — and the
+        // authorization still succeeded.
+        assert_eq!(authorized.account, None);
         assert_eq!(provider.retrieve(&reference)?, Secret::new("RT-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn complete_authorization_reports_which_account_signed_in()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use base64::Engine;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let claims = URL_SAFE_NO_PAD.encode(br#"{"preferred_username":"owner@example.test"}"#);
+        let id_token = format!("{}.{claims}.FIXTURE-SIG", URL_SAFE_NO_PAD.encode(b"{}"));
+        let provider = FakeCredentialProvider::new();
+        let transport = ScriptedTransport {
+            body: format!(
+                r#"{{"access_token":"AT-1","refresh_token":"RT-1","expires_in":3600,"id_token":"{id_token}"}}"#
+            ),
+        };
+        let clock = FixedClock(0);
+        let broker = AccessTokenProvider::new(
+            &provider,
+            &transport,
+            &clock,
+            "https://example.invalid/token",
+            "client-id",
+        );
+        let authorized = broker.complete_authorization(
+            &reference(),
+            "auth-code",
+            "http://127.0.0.1:1/callback",
+            "verifier",
+        )?;
+        assert_eq!(
+            authorized.account.as_ref().map(|account| account.as_str()),
+            Some("owner@example.test")
+        );
+        // The ID token has no member to live in on the returned value, and the
+        // one formatting a caller can reach for carries neither it nor the
+        // access token.
+        let rendered = format!("{authorized:?}");
+        assert!(!rendered.contains(&id_token), "leaked: {rendered}");
+        assert!(!rendered.contains("AT-1"), "leaked: {rendered}");
         Ok(())
     }
 

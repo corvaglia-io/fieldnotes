@@ -407,6 +407,182 @@ fn fields_status_reports_credential_state_without_attempting_a_sync() -> std::io
     Ok(())
 }
 
+/// Rewrites one Field's configuration file with a recorded credential account,
+/// which is what a real `fields auth` writes after storing the refresh token.
+///
+/// Done by editing the file directly because reaching that write for real needs
+/// a tenant and a browser, which these tests deliberately never touch. The write
+/// itself is covered against the real code path in `fieldnotes-app`'s tests.
+fn record_account(notebook: &Path, field_id: &str, account: Option<&str>) -> std::io::Result<()> {
+    let path = notebook
+        .join(".fieldnotes")
+        .join("fields")
+        .join(format!("{field_id}.json"));
+    let text = std::fs::read_to_string(&path)?;
+    let rewritten = match account {
+        None => text,
+        Some(account) => text.replacen(
+            '{',
+            &format!("{{\n  \"credential_account\": \"{account}\","),
+            1,
+        ),
+    };
+    std::fs::write(&path, rewritten)
+}
+
+/// Configures one Outlook Field whose credential lives in a deliberately unset
+/// environment variable, so no keychain is ever consulted.
+fn add_authenticating_field(
+    notebook: &Path,
+    stem: &str,
+    label: &str,
+    profile: &str,
+) -> std::io::Result<Output> {
+    run(
+        notebook,
+        &[
+            "fields",
+            "add",
+            stem,
+            label,
+            "--executable",
+            "/nonexistent/field-binary",
+            "--config",
+            &format!("credential_profile={profile}"),
+            "--config",
+            "credential_provider=environment",
+            "--config",
+            "credential_env_var=FIELDNOTES_CLI_TEST_DELIBERATELY_UNSET_8b3e1c",
+        ],
+    )
+}
+
+#[test]
+fn fields_status_reports_which_account_a_credential_authenticates_as() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-fields-account")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+    let added = add_authenticating_field(&root, "outlook_mail", "work", "work")?;
+    assert!(added.status.success(), "{}", stderr(&added));
+
+    // Nothing recorded yet — the state a credential stored before Fieldnotes
+    // learned to record accounts is in. Unknown, with the command that fixes it.
+    let unknown = run(&root, &["fields", "status", "outlook_mail_work"])?;
+    assert!(unknown.status.success(), "{}", stderr(&unknown));
+    let text = stdout(&unknown);
+    assert!(
+        text.contains("account            unknown; run `fieldnotes fields auth outlook_mail_work`"),
+        "{text}"
+    );
+    let unknown_json = run(
+        &root,
+        &["fields", "status", "outlook_mail_work", "--format", "json"],
+    )?;
+    assert!(
+        stdout(&unknown_json).contains(r#""credential_account":null"#),
+        "{}",
+        stdout(&unknown_json)
+    );
+    assert!(
+        stdout(&unknown_json).contains(r#""credential_account_mismatch":null"#),
+        "{}",
+        stdout(&unknown_json)
+    );
+
+    // Recorded: reported before any sync has run, in both forms.
+    record_account(
+        &root,
+        "outlook_mail_work",
+        Some("mailbox.owner@example.test"),
+    )?;
+    let known = run(&root, &["fields", "status", "outlook_mail_work"])?;
+    assert!(known.status.success(), "{}", stderr(&known));
+    assert!(
+        stdout(&known).contains("account            mailbox.owner@example.test"),
+        "{}",
+        stdout(&known)
+    );
+    let known_json = run(
+        &root,
+        &["fields", "status", "outlook_mail_work", "--format", "json"],
+    )?;
+    assert!(
+        stdout(&known_json).contains(r#""credential_account":"mailbox.owner@example.test""#),
+        "{}",
+        stdout(&known_json)
+    );
+
+    // A second Field signed in as the same person: still no warning.
+    let contacts = add_authenticating_field(&root, "outlook_contacts", "work", "work")?;
+    assert!(contacts.status.success(), "{}", stderr(&contacts));
+    record_account(
+        &root,
+        "outlook_contacts_work",
+        Some("mailbox.owner@example.test"),
+    )?;
+    let agreeing = run(&root, &["fields", "status"])?;
+    assert!(
+        !stdout(&agreeing).contains("WARNING"),
+        "{}",
+        stdout(&agreeing)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn fields_status_warns_prominently_when_fields_are_signed_in_as_different_accounts()
+-> std::io::Result<()> {
+    let temp = TempDir::new("cli-fields-account-mismatch")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+    for (stem, label) in [("outlook_mail", "work"), ("outlook_contacts", "work")] {
+        let added = add_authenticating_field(&root, stem, label, "work")?;
+        assert!(added.status.success(), "{}", stderr(&added));
+    }
+    record_account(
+        &root,
+        "outlook_mail_work",
+        Some("mailbox.owner@example.test"),
+    )?;
+    record_account(
+        &root,
+        "outlook_contacts_work",
+        Some("tenant.admin@example.test"),
+    )?;
+
+    let human = run(&root, &["fields", "status"])?;
+    assert!(human.status.success(), "{}", stderr(&human));
+    let text = stdout(&human);
+    assert!(text.contains("WARNING"), "{text}");
+    assert!(text.contains("different accounts"), "{text}");
+    // Both accounts, and the Field each belongs to.
+    assert!(text.contains("mailbox.owner@example.test"), "{text}");
+    assert!(text.contains("tenant.admin@example.test"), "{text}");
+    assert!(text.contains("outlook_mail_work"), "{text}");
+    assert!(text.contains("outlook_contacts_work"), "{text}");
+    assert!(text.contains("fieldnotes fields auth"), "{text}");
+    // A warning, not a refusal.
+    assert_eq!(human.status.code(), Some(0));
+
+    // Naming one Field still reports the notebook's disagreement, because that
+    // is true of the notebook whichever Field was asked about.
+    let single = run(&root, &["fields", "status", "outlook_mail_work"])?;
+    assert!(stdout(&single).contains("WARNING"), "{}", stdout(&single));
+
+    let json = run(&root, &["fields", "status", "--format", "json"])?;
+    let json_text = stdout(&json);
+    assert!(
+        json_text.contains(
+            r#""credential_account_mismatch":{"accounts":[{"account":"mailbox.owner@example.test","field_ids":["outlook_mail_work"]},{"account":"tenant.admin@example.test","field_ids":["outlook_contacts_work"]}]"#
+        ),
+        "{json_text}"
+    );
+    // Still exactly one JSON object on standard output.
+    assert_eq!(json_text.trim_end().lines().count(), 1, "{json_text}");
+    Ok(())
+}
+
 #[test]
 fn a_credential_shaped_config_key_is_refused() -> std::io::Result<()> {
     let temp = TempDir::new("cli-fields-credential")?;

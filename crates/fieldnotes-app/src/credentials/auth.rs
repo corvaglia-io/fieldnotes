@@ -14,7 +14,19 @@
 //! 5. Run the interactive authorization-code flow with PKCE on an ephemeral
 //!    loopback redirect, and store the resulting **refresh token** under the
 //!    configured profile.
-//! 6. Report what happened, naming no material.
+//! 6. Record **which account** signed in, from the ID token the identification
+//!    scopes made the authorization server return, into the Field's non-secret
+//!    configuration.
+//! 7. Report what happened — including that account, and a prominent warning if
+//!    this notebook's Fields are now signed in as different people — naming no
+//!    material.
+//!
+//! # Why step 6 exists
+//!
+//! A browser reuses whatever sign-in session is already open, so authenticating
+//! several Fields in several flows can silently store credentials for several
+//! different principals. See [`mod@super::account`] for the incident that
+//! motivated this and for why a disagreement is a warning rather than a refusal.
 //!
 //! # Why this command runs `describe`
 //!
@@ -28,10 +40,12 @@
 //! # Nothing here prints or returns token material
 //!
 //! [`AuthOutcome`] carries only the profile name, the provider, the non-secret
-//! client and tenant identifiers, the requested scopes, and when the *access*
-//! token minted during authorization expires. The refresh token goes straight
-//! from the token endpoint into the credential provider inside
-//! `fieldnotes-credentials` and is never returned to this layer at all.
+//! client and tenant identifiers, the requested scopes, the non-secret account
+//! name, and when the *access* token minted during authorization expires. The
+//! refresh token goes straight from the token endpoint into the credential
+//! provider inside `fieldnotes-credentials` and is never returned to this layer
+//! at all, and the ID token never leaves the function in that crate that parses
+//! the token-endpoint response.
 
 use fieldnotes_domain::{Clock, RandomSource};
 use fieldnotes_store::{Notebook, read_field_config};
@@ -39,6 +53,7 @@ use fieldnotes_store::{Notebook, read_field_config};
 use crate::error::AppError;
 use crate::kernel::{Kernel, SELF_FIELD};
 
+use super::account::{AccountMismatch, account_mismatch};
 use super::{AuthRequirement, Authorizer, CredentialFailure, CredentialSettings};
 
 /// One `fields auth` invocation.
@@ -77,6 +92,21 @@ pub struct AuthOutcome {
     /// Whether the shared first-party client ID was used, which attributes
     /// reads to that application in the tenant's sign-in logs.
     pub uses_shared_client_id: bool,
+    /// **Which account** the browser signed in as, and which is now recorded
+    /// against this Field.
+    ///
+    /// `None` when the authorization server returned no readable ID token: the
+    /// credential was still stored, and the account is reported as unknown
+    /// rather than guessed. Display and confirmation only — never an
+    /// authorization input.
+    pub credential_account: Option<String>,
+    /// Set when, after this authorization, the notebook's Fields no longer all
+    /// authenticate as the same account.
+    ///
+    /// Prominent rather than fatal: differing accounts are legitimate when a
+    /// shared or delegated mailbox is collected alongside your own. See
+    /// [`mod@super::account`].
+    pub account_mismatch: Option<AccountMismatch>,
 }
 
 /// Authenticates one configured Field.
@@ -116,7 +146,20 @@ pub fn authenticate_field<C: Clock, R: RandomSource>(
     crate::fields::record_manifest(notebook, &config.id, manifest_json)?;
 
     let requirement = super::requirement_of_manifest(&request.field_id, &manifest)?;
-    authorize_resolved(request, &settings, &requirement, authorizer)
+    let mut outcome = authorize_resolved(request, &settings, &requirement, authorizer)?;
+
+    // The account is recorded *after* the credential is stored, so a
+    // half-finished authorization can never leave a recorded account with no
+    // credential behind it. The reverse order — a recorded account whose
+    // credential never landed — would claim an authentication that did not
+    // happen.
+    crate::fields::record_credential_account(
+        notebook,
+        &config.id,
+        outcome.credential_account.as_deref(),
+    )?;
+    outcome.account_mismatch = account_mismatch(notebook)?;
+    Ok(outcome)
 }
 
 /// Authorizes an already-resolved Field: the decision surface, with no process
@@ -124,6 +167,9 @@ pub fn authenticate_field<C: Clock, R: RandomSource>(
 ///
 /// Separate from [`authenticate_field`] so the ordering and the refusals are
 /// testable without a Field executable, a tenant, a browser, or a keychain.
+///
+/// Leaves [`AuthOutcome::account_mismatch`] `None`: answering that needs the
+/// notebook's other Fields, which only [`authenticate_field`] has.
 pub fn authorize_resolved(
     request: &AuthRequest,
     settings: &CredentialSettings,
@@ -154,6 +200,8 @@ pub fn authorize_resolved(
         scopes: authorized.scopes,
         access_token_expires_at: authorized.access_token_expires_at,
         uses_shared_client_id: settings.uses_shared_client_id(),
+        credential_account: authorized.account,
+        account_mismatch: None,
     })
 }
 
@@ -172,11 +220,16 @@ mod tests {
 
     impl RecordingAuthorizer {
         fn granting() -> Self {
+            RecordingAuthorizer::granting_as(Some("mailbox.owner@example.test"))
+        }
+
+        fn granting_as(account: Option<&str>) -> Self {
             RecordingAuthorizer {
                 requested: Vec::new(),
                 answer: Ok(Authorized {
                     scopes: Vec::new(),
                     access_token_expires_at: Some("2026-08-23T10:00:00+02:00".to_owned()),
+                    account: account.map(str::to_owned),
                 }),
             }
         }
@@ -201,6 +254,7 @@ mod tests {
                 Ok(authorized) => Ok(Authorized {
                     scopes: scopes.to_vec(),
                     access_token_expires_at: authorized.access_token_expires_at.clone(),
+                    account: authorized.account.clone(),
                 }),
                 Err(failure) => Err(failure.clone()),
             }
@@ -229,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn a_successful_authorization_requests_the_declared_scopes_plus_offline_access()
+    fn a_successful_authorization_requests_the_declared_scopes_plus_offline_access_and_identification()
     -> Result<(), AppError> {
         let mut authorizer = RecordingAuthorizer::granting();
         let outcome = authorize_resolved(
@@ -240,7 +294,12 @@ mod tests {
         )?;
         assert_eq!(
             authorizer.requested,
-            vec!["Mail.Read".to_owned(), "offline_access".to_owned()]
+            vec![
+                "Mail.Read".to_owned(),
+                "offline_access".to_owned(),
+                "openid".to_owned(),
+                "profile".to_owned(),
+            ]
         );
         assert_eq!(outcome.profile, "work");
         assert_eq!(outcome.provider, "keychain");
@@ -249,6 +308,26 @@ mod tests {
             outcome.access_token_expires_at.as_deref(),
             Some("2026-08-23T10:00:00+02:00")
         );
+        assert_eq!(
+            outcome.credential_account.as_deref(),
+            Some("mailbox.owner@example.test")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_authorization_server_that_names_no_account_still_succeeds_and_reports_unknown()
+    -> Result<(), AppError> {
+        let mut authorizer = RecordingAuthorizer::granting_as(None);
+        let outcome = authorize_resolved(
+            &request(true),
+            &settings(),
+            &requirement(&["Mail.Read"]),
+            &mut authorizer,
+        )?;
+        // The sign-in worked; only the account is unknown.
+        assert_eq!(outcome.credential_account, None);
+        assert_eq!(outcome.profile, "work");
         Ok(())
     }
 

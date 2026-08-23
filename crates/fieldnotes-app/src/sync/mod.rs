@@ -201,8 +201,8 @@ use fieldnotes_format::{
 use fieldnotes_store::{
     FieldConfig, IndexedNote, LastSyncOutcome, Notebook, SourceIndex, StoredCursor,
     build_source_index, clear_staging, create_staging_dir, find_artifact, list_field_configs,
-    read_cursor, read_field_config, read_instance, remove_note, replace_note, store_artifact,
-    write_cursor, write_last_sync_outcome, write_note,
+    read_cursor, read_field_config, read_instance, read_last_sync_outcome, remove_note,
+    replace_note, store_artifact, write_cursor, write_last_sync_outcome, write_note,
 };
 
 use crate::credentials::channel::{GrantSpec, ProtectedChannel};
@@ -213,8 +213,8 @@ use crate::kernel::Kernel;
 
 use project::{ArtifactProjection, RetainedArtifact, SkippedArtifact};
 pub use report::{
-    CredentialReport, DeletionReport, FieldRunOutcome, FieldSyncReport, SyncCounts, SyncDiagnostic,
-    SyncOutcome, SyncRejection, SyncWindow, exit_label,
+    AccountReport, CredentialReport, DeletionReport, FieldRunOutcome, FieldSyncReport, SyncCounts,
+    SyncDiagnostic, SyncOutcome, SyncRejection, SyncWindow, exit_label,
 };
 
 /// The bounded collection window's default length, in days, used when
@@ -367,7 +367,13 @@ pub fn sync<C: Clock, R: RandomSource>(
     for config in targets {
         fields.push(run_field(kernel, notebook, &config, options));
     }
-    Ok(SyncOutcome { fields })
+    Ok(SyncOutcome {
+        fields,
+        // A fact about the notebook, so it is answered for the notebook rather
+        // than for the Fields this invocation happened to name. Read after the
+        // runs, so a `fields auth` earlier in the same session is reflected.
+        account_mismatch: credentials::account_mismatch(notebook)?,
+    })
 }
 
 /// Runs one Field, always producing a report.
@@ -378,20 +384,67 @@ fn run_field<C: Clock, R: RandomSource>(
     options: &SyncOptions,
 ) -> FieldSyncReport {
     let mode = options.mode.as_str();
-    if !config.enabled {
-        return FieldSyncReport::not_run(
+    // Read before the run, because `prepare_and_collect` overwrites the
+    // last-sync record on its way out: comparing after it would compare the
+    // recorded account against itself.
+    let account = account_report(
+        config,
+        previous_sync_account(notebook, &config.id).as_deref(),
+    );
+    let mut report = if config.enabled {
+        match prepare_and_collect(kernel, notebook, config, options, account.clone()) {
+            Ok(report) => report,
+            Err(refusal) => {
+                FieldSyncReport::not_run(&config.id, mode, FieldRunOutcome::Failed, refusal.message)
+            }
+        }
+    } else {
+        FieldSyncReport::not_run(
             &config.id,
             mode,
             FieldRunOutcome::Skipped,
             "the Field is configured disabled; enable it before syncing",
-        );
+        )
+    };
+    // Set on every path out, including a run that refused before spawning
+    // anything — which is exactly the case where "as which account?" is the
+    // question. `prepare_and_collect` was given the same value so the reserved
+    // status file it writes records it too.
+    report.credential_account = account;
+    report
+}
+
+/// The account this Field's previous successful sync recorded, when one did.
+///
+/// Read out of the reserved last-run summary's `credential_account` member. A
+/// missing or malformed record simply yields `None`: this is a diagnostic, and a
+/// diagnostic that could fail a run would be worse than the thing it diagnoses.
+fn previous_sync_account(notebook: &Notebook, field_id: &str) -> Option<String> {
+    read_last_sync_outcome(notebook, field_id)
+        .ok()
+        .flatten()?
+        .extra
+        .get("credential_account")?
+        .as_str()
+        .map(str::to_owned)
+}
+
+/// Builds one Field's account report, or `None` when it names no credential.
+fn account_report(config: &FieldConfig, previous: Option<&str>) -> Option<AccountReport> {
+    if !credentials::config_declares_credential(&config.config) {
+        return None;
     }
-    match prepare_and_collect(kernel, notebook, config, options) {
-        Ok(report) => report,
-        Err(refusal) => {
-            FieldSyncReport::not_run(&config.id, mode, FieldRunOutcome::Failed, refusal.message)
-        }
-    }
+    let account = config.credential_account.clone();
+    Some(AccountReport {
+        // Only a *difference* is reported. Equal accounts, and an unknown
+        // account on either side, are not evidence that the credential was
+        // re-authenticated as somebody else.
+        previous_account: match (&account, previous) {
+            (Some(current), Some(previous)) if current != previous => Some(previous.to_owned()),
+            _ => None,
+        },
+        account,
+    })
 }
 
 /// A refusal to start or to continue a run, already phrased for a user.
@@ -572,6 +625,7 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
     notebook: &Notebook,
     config: &FieldConfig,
     options: &SyncOptions,
+    account: Option<AccountReport>,
 ) -> Result<FieldSyncReport, Refusal> {
     let stems = FieldStemRegistry::v1();
     let field_id = FieldId::parse(&config.id, stems).map_err(|error| {
@@ -798,6 +852,7 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
 
     let mut report = outcome?;
     report.credential = credential;
+    report.credential_account = account;
     write_last_sync_outcome(notebook, &config.id, &status_file(&report, started_at))?;
     Ok(report)
 }
@@ -1493,6 +1548,9 @@ fn collect<C: Clock, R: RandomSource>(
         exit: exit_label(exit),
         stderr: combined_stderr(&context.described_stderr, &stderr),
         conflicts,
+        // Filled in by `run_field`, which is the one place that sees both the
+        // Field's configuration and the previous run's record.
+        credential_account: None,
         // Filled in by `prepare_and_collect`, which owns the channel: the
         // counts are only final once it has stopped serving.
         credential: None,
@@ -1979,6 +2037,19 @@ fn status_file(report: &FieldSyncReport, finished_at: Datetime) -> LastSyncOutco
     }
     if let Some(failure) = &report.failure {
         extra.insert("failure".to_owned(), serde_json::json!(failure));
+    }
+    // Which account this run's credential authenticated as. This is what makes
+    // "the credential was re-authenticated as somebody else since the last run"
+    // answerable at all: the Field's configuration holds one mutable value, and
+    // a single mutable value cannot detect its own change. Written only when it
+    // is known, so an unknown account leaves no member rather than recording a
+    // null that a later run would have to tell apart from an absent one.
+    if let Some(account) = report
+        .credential_account
+        .as_ref()
+        .and_then(|report| report.account.as_ref())
+    {
+        extra.insert("credential_account".to_owned(), serde_json::json!(account));
     }
     if let Some(credential) = &report.credential {
         // The profile name and the counts, and nothing else: this file is

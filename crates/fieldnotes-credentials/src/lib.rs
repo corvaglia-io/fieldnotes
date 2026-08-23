@@ -32,6 +32,13 @@
 //!   redirect). Device-code flow is deliberately not implemented anywhere in
 //!   this crate: it is a well-documented phishing vector and Microsoft Entra
 //!   is actively restricting it.
+//! - [`oauth::id_token::AccountId`] is the third currency, and the newest: the
+//!   non-secret name of **which account** a stored credential authenticates as,
+//!   read out of the ID token the `openid` scope makes the authorization server
+//!   return. It exists so a person can confirm that a credential signs in as
+//!   the principal they meant, and it is never an authorization input. See
+//!   [`oauth::id_token`] for why reading an ID token is the documented, intended
+//!   use while reading an *access* token would not be.
 //!
 //! # What this crate deliberately does not do
 //!
