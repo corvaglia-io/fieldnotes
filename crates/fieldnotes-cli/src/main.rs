@@ -18,6 +18,8 @@
 //! - `fieldnotes.fields_list.v1`
 //! - `fieldnotes.fields_status.v1`
 //! - `fieldnotes.fields_remove.v1`
+//! - `fieldnotes.sync.v1`
+//! - `fieldnotes.config.v1`
 //! - `fieldnotes.error.v1`
 //!
 //! Failures print `fieldnotes.error.v1` on standard **error**, leaving standard
@@ -30,10 +32,14 @@
 //! |---|---|
 //! | 0 | success |
 //! | 2 | usage or input error |
-//! | 3 | notebook contract violation (including an unhealthy `inspect`) |
+//! | 3 | notebook contract violation (an unhealthy `inspect`, a required manifest migration, or a `sync` in which any Field did not complete) |
 //! | 4 | notebook state error, such as no notebook found |
 //! | 5 | filesystem failure |
 //! | 70 | internal error |
+//!
+//! A `sync` that leaves any Field short of `complete` exits 3 while still
+//! printing every Field's report, because A2 requires one Field's failure not to
+//! abandon the others and durable work committed before a failure to stand.
 //!
 //! # Secret hygiene
 //!
@@ -61,9 +67,10 @@ use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
 use fieldnotes_app::{
-    AppError, FieldStatusReport, FieldSummary, InitOutcome, InspectReport, Kernel, NoteOutcome,
-    NoteRequest, NoteSource, StatusReport, add_field, create_note, field_status, init, inspect,
-    list_fields, remove_field, status, validate_field_id,
+    AppError, FieldStatusReport, FieldSummary, FieldSyncReport, InitOutcome, InspectReport, Kernel,
+    NoteOutcome, NoteRequest, NoteSource, StatusReport, SyncMode, SyncOptions, SyncOutcome,
+    add_field, create_note, field_status, init, inspect, list_fields, remove_field, status,
+    validate_artifact_max_bytes, validate_artifact_media_types, validate_field_id,
 };
 use fieldnotes_domain::{Clock, Datetime};
 use fieldnotes_store::{FieldConfig, InitState, LastSyncOutcome, Notebook, Profile};
@@ -188,6 +195,50 @@ enum Command {
         #[command(subcommand)]
         action: FieldsAction,
     },
+    /// Collect current source state through the Field process contract.
+    ///
+    /// With a Field ID, runs that one Field. Without one, runs every enabled
+    /// configured Field; one Field's failure never abandons the others.
+    ///
+    /// Collection is read-only with respect to every source. A Note is removed
+    /// only under an authoritative tombstone or a completed authoritative
+    /// snapshot; absence from a partial, windowed, or failed run is never
+    /// deletion.
+    Sync {
+        /// The Field to sync. Omit to sync every enabled Field.
+        field_id: Option<String>,
+        /// Reconcile a whole scope instead of moving forward from the cursor.
+        ///
+        /// This is the only mode in which a Field's completeness claim can
+        /// authorize removing Notes it did not report.
+        #[arg(long)]
+        snapshot: bool,
+        /// The scope a snapshot run reconciles. Defaults to the single distinct
+        /// `source_scope` the Field's existing Notes carry.
+        #[arg(long, value_name = "SCOPE", requires = "snapshot")]
+        scope: Option<String>,
+        /// The single-artifact retention threshold in bytes, for this run only.
+        ///
+        /// Overrides the profile's `artifact_max_bytes` and the protocol
+        /// default of 26214400 (25 MiB). A larger attachment stays at its
+        /// source and its reference is recorded in `skipped_attachments`.
+        #[arg(long, value_name = "BYTES")]
+        max_artifact_bytes: Option<u64>,
+        /// A media type or subtype wildcard to retain, repeatable, for this run
+        /// only.
+        ///
+        /// Overrides the profile's `artifact_media_types` and the approved
+        /// default include set. An attachment of an excluded type stays at its
+        /// source exactly as an oversize one does.
+        #[arg(long = "media-type", value_name = "TYPE/SUBTYPE")]
+        media_types: Vec<String>,
+        /// The run wall clock in seconds, up to the frozen 3600-second ceiling.
+        #[arg(long, value_name = "SECONDS")]
+        run_seconds: Option<u64>,
+        /// Seconds without a frame before the run is considered idle.
+        #[arg(long, value_name = "SECONDS")]
+        idle_seconds: Option<u32>,
+    },
 }
 
 /// A `fieldnotes fields` action.
@@ -277,6 +328,10 @@ enum ConfigKey {
     Notebook,
     /// The default timezone.
     Timezone,
+    /// The default single-artifact retention threshold, in bytes.
+    ArtifactMaxBytes,
+    /// The default artifact media-type retention include set, comma-separated.
+    ArtifactMediaTypes,
 }
 
 /// A failure, ready to render and exit with.
@@ -503,7 +558,52 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             Ok(EXIT_OK)
         }
         Command::Fields { action } => run_fields(action, notebook_start, cli.format),
+        Command::Sync {
+            field_id,
+            snapshot,
+            scope,
+            max_artifact_bytes,
+            media_types,
+            run_seconds,
+            idle_seconds,
+        } => {
+            let notebook = open_notebook(notebook_start)?;
+            let options = SyncOptions {
+                mode: if snapshot {
+                    SyncMode::Snapshot
+                } else {
+                    SyncMode::Incremental
+                },
+                snapshot_scope: scope,
+                // Flag, then profile, then the protocol's own approved default.
+                max_artifact_bytes: max_artifact_bytes.or(profile.artifact_max_bytes),
+                artifact_media_types: resolve_media_types(
+                    &media_types,
+                    profile.artifact_media_types.as_deref(),
+                ),
+                run_seconds,
+                idle_seconds,
+                durability: fieldnotes_app::DurabilityPolicy::AllSucceed,
+                // Core builds the child's environment rather than inheriting
+                // it, and the CLI widens that allowlist by nothing at all.
+                field_environment: std::collections::BTreeMap::new(),
+            };
+            let mut kernel = Kernel::new(SystemClock, OsRandom, offset)?;
+            let outcome =
+                fieldnotes_app::sync(&mut kernel, &notebook, field_id.as_deref(), &options)?;
+            print(&render_sync(&outcome, cli.format));
+            Ok(if outcome.ok() { EXIT_OK } else { EXIT_CONTRACT })
+        }
     }
+}
+
+/// Resolves the media-type retention include set from the flag, then the
+/// profile, then `None` for the protocol's approved default set.
+fn resolve_media_types(flag: &[String], profile: Option<&str>) -> Option<Vec<String>> {
+    if !flag.is_empty() {
+        return Some(flag.to_vec());
+    }
+    profile.map(config::split_media_types)
 }
 
 /// Splits one `KEY=VALUE` argument, rejecting a missing `=` or an empty key.
@@ -1051,13 +1151,41 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                     "    enabled            {}\n",
                     if report.enabled { "yes" } else { "no" }
                 ));
-                out.push_str(&format!(
-                    "    cursor recorded    {}\n",
-                    if report.cursor_present { "yes" } else { "no" }
-                ));
+                match (
+                    report.cursor_present,
+                    report.cursor_format_version,
+                    report.cursor_coverage,
+                ) {
+                    (true, Some(version), Some(coverage)) => out.push_str(&format!(
+                        "    cursor recorded    yes (format v{version}, covering records through \
+                         seq {coverage})\n"
+                    )),
+                    (true, _, _) => out.push_str("    cursor recorded    yes\n"),
+                    (false, _, _) => out.push_str("    cursor recorded    no\n"),
+                }
+                if let Some(at) = &report.cursor_committed_at {
+                    out.push_str(&format!("    cursor committed   {at}\n"));
+                }
+                match (
+                    report.cursor_format_version,
+                    report.manifest_cursor_format_version,
+                ) {
+                    (Some(stored), Some(declared)) if stored != declared => out.push_str(&format!(
+                        "    recovery gap       the recorded cursor is format v{stored} but the \
+                         Field now declares v{declared}; the next run starts unbounded\n"
+                    )),
+                    _ => {}
+                }
                 out.push_str(&format!(
                     "    manifest recorded  {}\n",
-                    if report.manifest_present { "yes" } else { "no" }
+                    match (
+                        report.manifest_present,
+                        report.manifest_cursor_format_version
+                    ) {
+                        (true, Some(version)) => format!("yes (cursor format v{version})"),
+                        (true, None) => "yes".to_owned(),
+                        (false, _) => "no".to_owned(),
+                    }
                 ));
                 match &report.last_sync {
                     Some(outcome) => out.push_str(&format!(
@@ -1078,7 +1206,27 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                         ("built_in", Json::Bool(report.built_in)),
                         ("enabled", Json::Bool(report.enabled)),
                         ("cursor_present", Json::Bool(report.cursor_present)),
+                        (
+                            "cursor_format_version",
+                            report
+                                .cursor_format_version
+                                .map_or(Json::Null, |version| Json::Int(u64::from(version))),
+                        ),
+                        (
+                            "cursor_coverage",
+                            report.cursor_coverage.map_or(Json::Null, Json::Int),
+                        ),
+                        (
+                            "cursor_committed_at",
+                            Json::maybe_text(report.cursor_committed_at.clone()),
+                        ),
                         ("manifest_present", Json::Bool(report.manifest_present)),
+                        (
+                            "manifest_cursor_format_version",
+                            report
+                                .manifest_cursor_format_version
+                                .map_or(Json::Null, |version| Json::Int(u64::from(version))),
+                        ),
                         ("last_sync", last_sync_json(report.last_sync.as_ref())),
                     ])
                 })
@@ -1091,6 +1239,215 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
             format!("{}\n", value.render())
         }
     }
+}
+
+fn render_sync(outcome: &SyncOutcome, format: Format) -> String {
+    match format {
+        Format::Human => {
+            if outcome.fields.is_empty() {
+                return "Sync\n  no enabled Field is configured in this notebook\n".to_owned();
+            }
+            let mut out = String::from("Sync\n");
+            for report in &outcome.fields {
+                out.push_str(&format!(
+                    "  {} ({}) {}\n",
+                    report.field_id, report.mode, report.outcome
+                ));
+                let counts = &report.counts;
+                out.push_str(&format!(
+                    "    notes              {} new, {} updated, {} unchanged, {} removed\n",
+                    counts.created,
+                    counts.updated,
+                    counts.unchanged,
+                    counts.removed_by_tombstone + counts.removed_by_snapshot
+                ));
+                out.push_str(&format!(
+                    "    artifacts          {} stored, {} reused, {} attachments skipped\n",
+                    counts.artifacts_stored, counts.artifacts_reused, counts.attachments_skipped
+                ));
+                if counts.damaged > 0 || counts.truncated > 0 {
+                    out.push_str(&format!(
+                        "    integrity          {} damaged, {} truncated\n",
+                        counts.damaged, counts.truncated
+                    ));
+                }
+                out.push_str(&format!(
+                    "    cursor             {}\n",
+                    match report.cursor_coverage {
+                        Some(coverage) if report.cursor_committed =>
+                            format!("committed, covering records through seq {coverage}"),
+                        _ => "not advanced".to_owned(),
+                    }
+                ));
+                if report.cursor_recovery_gap {
+                    out.push_str(
+                        "    recovery gap       the stored cursor was written at a different \
+                         format version and was not replayed\n",
+                    );
+                }
+                for reason in &report.withheld_checkpoints {
+                    out.push_str(&format!("    withheld           {reason}\n"));
+                }
+                match &report.deletion.authorized_scope {
+                    Some(scope) => out.push_str(&format!(
+                        "    deletion           authorized inside {scope}\n"
+                    )),
+                    None => {
+                        if !report.deletion.refusals.is_empty() {
+                            out.push_str(&format!(
+                                "    deletion           refused: {}\n",
+                                report.deletion.refusals.join("; ")
+                            ));
+                        }
+                    }
+                }
+                for conflict in &report.conflicts {
+                    let rendered = conflict.replace('\t', " ");
+                    out.push_str(&format!(
+                        "    conflict           more than one active Note claims {rendered}\n"
+                    ));
+                }
+                for diagnostic in &report.diagnostics {
+                    out.push_str(&format!(
+                        "    {} {} {}\n",
+                        diagnostic.severity, diagnostic.code, diagnostic.message
+                    ));
+                }
+                if let Some(rejection) = &report.rejection {
+                    out.push_str(&format!(
+                        "    rejected           {} {}\n",
+                        rejection.code, rejection.detail
+                    ));
+                }
+                if let Some(failure) = &report.failure {
+                    out.push_str(&format!("    failed             {failure}\n"));
+                }
+            }
+            out
+        }
+        Format::Json => {
+            let fields: Vec<Json> = outcome.fields.iter().map(field_sync_json).collect();
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.sync.v1")),
+                ("ok", Json::Bool(outcome.ok())),
+                ("fields", Json::Arr(fields)),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
+fn field_sync_json(report: &FieldSyncReport) -> Json {
+    let counts = &report.counts;
+    Json::Obj(vec![
+        ("id", Json::text(report.field_id.clone())),
+        ("mode", Json::text(report.mode.clone())),
+        ("outcome", Json::text(report.outcome.as_str())),
+        (
+            "counts",
+            Json::Obj(vec![
+                ("records_accepted", Json::Int(counts.records_accepted)),
+                ("created", Json::Int(counts.created)),
+                ("updated", Json::Int(counts.updated)),
+                ("unchanged", Json::Int(counts.unchanged)),
+                (
+                    "removed_by_tombstone",
+                    Json::Int(counts.removed_by_tombstone),
+                ),
+                ("removed_by_snapshot", Json::Int(counts.removed_by_snapshot)),
+                ("renamed", Json::Int(counts.renamed)),
+                ("artifacts_stored", Json::Int(counts.artifacts_stored)),
+                ("artifacts_reused", Json::Int(counts.artifacts_reused)),
+                ("attachments_skipped", Json::Int(counts.attachments_skipped)),
+                ("damaged", Json::Int(counts.damaged)),
+                ("truncated", Json::Int(counts.truncated)),
+                (
+                    "durable_write_failures",
+                    Json::Int(counts.durable_write_failures),
+                ),
+            ]),
+        ),
+        ("cursor_committed", Json::Bool(report.cursor_committed)),
+        (
+            "cursor_coverage",
+            report.cursor_coverage.map_or(Json::Null, Json::Int),
+        ),
+        (
+            "cursor_recovery_gap",
+            Json::Bool(report.cursor_recovery_gap),
+        ),
+        (
+            "withheld_checkpoints",
+            Json::Arr(
+                report
+                    .withheld_checkpoints
+                    .iter()
+                    .map(|reason| Json::text(reason.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            "deletion",
+            Json::Obj(vec![
+                (
+                    "authorized_scope",
+                    Json::maybe_text(report.deletion.authorized_scope.clone()),
+                ),
+                (
+                    "refusals",
+                    Json::Arr(
+                        report
+                            .deletion
+                            .refusals
+                            .iter()
+                            .map(|reason| Json::text(reason.clone()))
+                            .collect(),
+                    ),
+                ),
+            ]),
+        ),
+        (
+            "diagnostics",
+            Json::Arr(
+                report
+                    .diagnostics
+                    .iter()
+                    .map(|diagnostic| {
+                        Json::Obj(vec![
+                            ("severity", Json::text(diagnostic.severity.clone())),
+                            ("code", Json::text(diagnostic.code.clone())),
+                            ("message", Json::text(diagnostic.message.clone())),
+                            (
+                                "source_identity",
+                                Json::maybe_text(diagnostic.source_identity.clone()),
+                            ),
+                        ])
+                    })
+                    .collect(),
+            ),
+        ),
+        (
+            "conflicts",
+            Json::Arr(
+                report
+                    .conflicts
+                    .iter()
+                    .map(|conflict| Json::text(conflict.clone()))
+                    .collect(),
+            ),
+        ),
+        (
+            "rejection",
+            report.rejection.as_ref().map_or(Json::Null, |rejection| {
+                Json::Obj(vec![
+                    ("code", Json::text(rejection.code.clone())),
+                    ("detail", Json::text(rejection.detail.clone())),
+                ])
+            }),
+        ),
+        ("failure", Json::maybe_text(report.failure.clone())),
+        ("exit", Json::text(report.exit.clone())),
+    ])
 }
 
 fn render_fields_remove(field_id: &str, format: Format) -> String {
@@ -1169,6 +1526,30 @@ fn run_config(
                     config::set_timezone(path, profile, &spec.to_string())
                         .map_err(|error| Failure::from(AppError::from(error)))?
                 }
+                ConfigKey::ArtifactMaxBytes => {
+                    let bytes: u64 = value.trim().parse().map_err(|_| {
+                        Failure::new(
+                            "invalid_setting",
+                            format!("`{value}` is not a byte count"),
+                            EXIT_USAGE,
+                        )
+                    })?;
+                    // Configuring up toward the ceiling is exactly as legal as
+                    // configuring down from the default; only crossing the
+                    // frozen ceiling needs a protocol revision. The rule lives
+                    // in the application layer, not here.
+                    validate_artifact_max_bytes(bytes)
+                        .map_err(|message| Failure::new("invalid_setting", message, EXIT_USAGE))?;
+                    config::set_artifact_max_bytes(path, profile, bytes)
+                        .map_err(|error| Failure::from(AppError::from(error)))?
+                }
+                ConfigKey::ArtifactMediaTypes => {
+                    let entries = config::split_media_types(&value);
+                    validate_artifact_media_types(&entries)
+                        .map_err(|message| Failure::new("invalid_setting", message, EXIT_USAGE))?;
+                    config::set_artifact_media_types(path, profile, &entries.join(","))
+                        .map_err(|error| Failure::from(AppError::from(error)))?
+                }
             };
             Ok(render_config_show(Some(path), &updated, format))
         }
@@ -1203,6 +1584,22 @@ fn render_config_show(profile_path: Option<&Path>, profile: &Profile, format: Fo
                 (Some(value), None) => out.push_str(&format!("  timezone   {value}\n")),
                 (None, _) => out.push_str("  timezone   (not set; using utc)\n"),
             }
+            match profile.artifact_max_bytes {
+                Some(bytes) => {
+                    out.push_str(&format!("  artifact_max_bytes    {bytes}\n"));
+                }
+                None => out.push_str(
+                    "  artifact_max_bytes    (not set; using the approved 26214400-byte default)\n",
+                ),
+            }
+            match &profile.artifact_media_types {
+                Some(value) => {
+                    out.push_str(&format!("  artifact_media_types  {value}\n"));
+                }
+                None => out.push_str(
+                    "  artifact_media_types  (not set; using the approved default include set)\n",
+                ),
+            }
             out
         }
         Format::Json => {
@@ -1216,6 +1613,14 @@ fn render_config_show(profile_path: Option<&Path>, profile: &Profile, format: Fo
                 ("notebook", Json::maybe_text(notebook)),
                 ("timezone", Json::maybe_text(timezone)),
                 ("resolved_offset", Json::maybe_text(resolved_offset)),
+                (
+                    "artifact_max_bytes",
+                    profile.artifact_max_bytes.map_or(Json::Null, Json::Int),
+                ),
+                (
+                    "artifact_media_types",
+                    Json::maybe_text(profile.artifact_media_types.clone()),
+                ),
             ]);
             format!("{}\n", value.render())
         }
@@ -1232,6 +1637,13 @@ fn render_config_get(key: ConfigKey, profile: &Profile, format: Format) -> Strin
                 .map(|path| path.display().to_string()),
         ),
         ConfigKey::Timezone => ("timezone", profile.timezone.clone()),
+        ConfigKey::ArtifactMaxBytes => (
+            "artifact_max_bytes",
+            profile.artifact_max_bytes.map(|bytes| bytes.to_string()),
+        ),
+        ConfigKey::ArtifactMediaTypes => {
+            ("artifact_media_types", profile.artifact_media_types.clone())
+        }
     };
     match format {
         Format::Human => match &value {

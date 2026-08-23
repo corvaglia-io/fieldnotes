@@ -1,10 +1,10 @@
 //! Field configuration and status: `fields add/list/status/remove`.
 //!
-//! `sync`, `describe` invocation, cursor writing, and record ingestion are a
-//! later phase's work. What lives here is the durable configuration a Field
-//! needs before any of that runs, plus enough state provisioning that the
-//! later phase can record cursors, manifest snapshots, and sync outcomes
-//! without a schema change to what is built here.
+//! What lives here is the durable configuration a Field needs before a run, the
+//! manifest-snapshot migration check [`mod@crate::sync`] performs after every
+//! `describe`, and the read side of the operational sync state that `sync`
+//! writes. Spawning a Field, consuming its events, and writing Notes belong to
+//! [`mod@crate::sync`].
 //!
 //! Removing a Field's configuration never touches Notes or artifacts: they
 //! are the notebook's canonical evidence (`docs/roadmap.md`'s invariants) and
@@ -18,8 +18,9 @@ use fieldnotes_domain::{FieldId, FieldStemRegistry};
 use fieldnotes_field_protocol::declared::ManifestSnapshot;
 use fieldnotes_field_protocol::message::{Manifest, Validate as ManifestValidate};
 use fieldnotes_store::{
-    FieldConfig, LastSyncOutcome, Notebook, cursor_exists, list_field_configs, read_field_config,
-    read_last_sync_outcome, remove_field_config, remove_sync_state, write_field_config,
+    FieldConfig, LastSyncOutcome, Notebook, cursor_exists, list_field_configs, read_cursor,
+    read_field_config, read_last_sync_outcome, remove_field_config, remove_sync_state,
+    write_field_config,
 };
 
 use crate::error::AppError;
@@ -119,13 +120,26 @@ pub struct FieldStatusReport {
     /// Always `false` for `self`, which never runs the external process
     /// protocol and never has a cursor.
     pub cursor_present: bool,
+    /// The `cursor_format_version` the recorded cursor was committed at.
+    ///
+    /// The pairing matters: a stored cursor is replayed only when this matches
+    /// the version the Field's current manifest declares, and otherwise the
+    /// next run starts unbounded and reports a recovery gap.
+    pub cursor_format_version: Option<u16>,
+    /// The record coverage the recorded cursor accounts for, in the run that
+    /// committed it.
+    pub cursor_coverage: Option<u64>,
+    /// When the recorded cursor was committed, as the writer recorded it.
+    pub cursor_committed_at: Option<String>,
     /// Whether a `describe` manifest snapshot is currently recorded.
     ///
-    /// This phase does not run a Field, so it cannot compare a stored
-    /// snapshot against a freshly reported one; [`check_manifest_agreement`]
-    /// is the function a later `sync` phase calls with a live manifest to do
-    /// that. This report only says whether a snapshot exists yet.
+    /// `sync` records one after every `describe` run, having first checked it
+    /// against the stored snapshot with [`check_manifest_agreement`]. This
+    /// report only says whether a snapshot exists yet.
     pub manifest_present: bool,
+    /// The `cursor_format_version` the recorded manifest declares, when one is
+    /// recorded and decodes.
+    pub manifest_cursor_format_version: Option<u16>,
     /// The last recorded sync outcome, when a `sync` implementation has
     /// written one.
     pub last_sync: Option<LastSyncOutcome>,
@@ -156,7 +170,11 @@ fn one_field_status(notebook: &Notebook, id: &str) -> Result<FieldStatusReport, 
             built_in: true,
             enabled: true,
             cursor_present: false,
+            cursor_format_version: None,
+            cursor_coverage: None,
+            cursor_committed_at: None,
             manifest_present: false,
+            manifest_cursor_format_version: None,
             last_sync: None,
         });
     }
@@ -170,9 +188,25 @@ fn status_from_config(
     config: FieldConfig,
 ) -> Result<FieldStatusReport, AppError> {
     let last_sync = read_last_sync_outcome(notebook, &config.id)?;
+    // The recorded cursor is read, not merely counted: `fields status` is where
+    // a user checks whether the next run will resume or start unbounded, and
+    // that depends on the stored format version matching what the Field's
+    // recorded manifest declares.
+    let stored = read_cursor(notebook, &config.id)?;
+    let manifest_cursor_format_version = config
+        .manifest
+        .as_ref()
+        .and_then(|value| decode_manifest(value).ok())
+        .map(|manifest| manifest.collection.cursor_format_version);
     Ok(FieldStatusReport {
-        cursor_present: cursor_exists(notebook, &config.id),
+        cursor_present: stored.is_some() || cursor_exists(notebook, &config.id),
+        cursor_format_version: stored.as_ref().map(|stored| stored.cursor_format_version),
+        cursor_coverage: stored
+            .as_ref()
+            .map(|stored| stored.covers_record_seq_through),
+        cursor_committed_at: stored.as_ref().map(|stored| stored.committed_at.clone()),
         manifest_present: config.manifest.is_some(),
+        manifest_cursor_format_version,
         id: config.id,
         built_in: false,
         enabled: config.enabled,
@@ -228,8 +262,8 @@ fn decode_manifest(manifest_json: &serde_json::Value) -> Result<Manifest, AppErr
 /// section 4: adding a declared property is allowed; changing or removing
 /// one, or changing `cursor_format_version`, requires a migration.
 ///
-/// This is the pure check a later `sync` phase runs after every `describe`,
-/// before deciding whether to proceed or to refuse with a migration message.
+/// This is the pure check [`mod@crate::sync`] runs after every `describe`, before
+/// deciding whether to proceed or to refuse with a migration message.
 pub fn check_manifest_agreement(
     stored: &serde_json::Value,
     candidate: &serde_json::Value,
@@ -245,11 +279,10 @@ pub fn check_manifest_agreement(
 
 /// Records a freshly reported manifest as `id`'s snapshot.
 ///
-/// A later `sync` phase calls this after every `describe` run. `0.1.1` does
-/// not run Fields itself, so nothing here spawns a process; this validates
-/// and persists whatever manifest value it is given, which lets both this
-/// crate's own tests and the future `sync` implementation exercise the same
-/// migration enforcement without a schema change.
+/// [`mod@crate::sync`] calls this after every `describe` run. Nothing here spawns a
+/// process: this validates and persists whatever manifest value it is given, so
+/// this crate's own tests and the live `sync` path exercise the same migration
+/// enforcement.
 ///
 /// When a snapshot is already stored, the candidate must agree with it (see
 /// [`check_manifest_agreement`]) or the call is refused with

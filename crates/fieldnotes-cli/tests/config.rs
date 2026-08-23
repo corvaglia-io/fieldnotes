@@ -74,6 +74,7 @@ fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io
         &Profile {
             notebook: Some(profiled.clone()),
             timezone: None,
+            ..Profile::default()
         },
     )
     .map_err(|error| std::io::Error::other(error.to_string()))?;
@@ -141,6 +142,7 @@ fn timezone_precedence_is_flag_then_env_then_profile_then_utc() -> std::io::Resu
         &Profile {
             notebook: None,
             timezone: Some("+02:00".to_owned()),
+            ..Profile::default()
         },
     )
     .map_err(|error| std::io::Error::other(error.to_string()))?;

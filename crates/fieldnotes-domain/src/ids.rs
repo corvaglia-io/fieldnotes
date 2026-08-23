@@ -332,10 +332,22 @@ impl<C: Clock, R: RandomSource> RecordIdGenerator<C, R> {
 
     /// Generates a new record ID whose UUIDv7 timestamp is the ID creation time.
     pub fn generate(&mut self, kind: RecordKind) -> Result<RecordId, IdError> {
+        Ok(RecordId::new(kind, self.generate_uuid()?))
+    }
+
+    /// Generates a bare UUIDv7 value, with no record-kind prefix.
+    ///
+    /// Not every identifier Fieldnotes mints is a notebook record: a Field
+    /// process run identifier is core's own name for one bounded child
+    /// process, is opaque to the Field, and never appears in a notebook file.
+    /// Such an identifier still comes from this one injected clock and
+    /// randomness source, so nothing outside the composition root reads the
+    /// wall clock or an operating-system random source, and a test that fixes
+    /// both replays the same value.
+    pub fn generate_uuid(&mut self) -> Result<Uuid7, IdError> {
         let mut random = [0u8; 10];
         self.random.fill_bytes(&mut random);
-        let uuid = Uuid7::from_parts(self.clock.unix_millis(), random)?;
-        Ok(RecordId::new(kind, uuid))
+        Uuid7::from_parts(self.clock.unix_millis(), random)
     }
 }
 

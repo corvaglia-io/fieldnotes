@@ -9,16 +9,17 @@
 //!
 //! # Precedence
 //!
-//! Both settings this feature adds — the default notebook and the timezone —
-//! resolve through the same four-tier order, implemented once in [`pick`]
-//! rather than re-derived per setting:
+//! Every setting resolves through the same four-tier order, implemented once in
+//! [`pick`] rather than re-derived per setting:
 //!
-//! 1. an explicit CLI flag (`--notebook`, `--offset`);
+//! 1. an explicit CLI flag (`--notebook`, `--offset`, and `sync`'s
+//!    `--max-artifact-bytes` / `--media-type`);
 //! 2. an environment variable (`FIELDNOTES_NOTEBOOK`; `FIELDNOTES_TIMEZONE`,
 //!    or the legacy `FIELDNOTES_UTC_OFFSET` if the newer name is unset);
 //! 3. the profile setting;
-//! 4. existing `0.1.0` behavior: notebook discovery by walking up from the
-//!    working directory, and UTC for the offset.
+//! 4. an existing documented default: notebook discovery by walking up from the
+//!    working directory, UTC for the offset, and — for the two artifact
+//!    retention settings — the protocol crate's own approved defaults.
 
 use std::path::{Path, PathBuf};
 
@@ -153,6 +154,51 @@ pub fn set_timezone(
     updated.timezone = Some(timezone.to_owned());
     write_profile(profile_path, &updated)?;
     Ok(updated)
+}
+
+/// Records `bytes` as the profile's default single-artifact retention
+/// threshold.
+///
+/// A2 section 14 makes this a configurable *default*, not a ceiling: a notebook
+/// may move it in either direction between the product's minimum and the frozen
+/// 512 MiB ceiling. The caller validates the value against that ceiling before
+/// calling this.
+pub fn set_artifact_max_bytes(
+    profile_path: &Path,
+    profile: &Profile,
+    bytes: u64,
+) -> Result<Profile, StoreError> {
+    let mut updated = profile.clone();
+    updated.artifact_max_bytes = Some(bytes);
+    write_profile(profile_path, &updated)?;
+    Ok(updated)
+}
+
+/// Records `media_types` as the profile's default artifact media-type
+/// retention include set, as written.
+///
+/// The caller validates each entry against the media-type matcher grammar
+/// before calling this.
+pub fn set_artifact_media_types(
+    profile_path: &Path,
+    profile: &Profile,
+    media_types: &str,
+) -> Result<Profile, StoreError> {
+    let mut updated = profile.clone();
+    updated.artifact_media_types = Some(media_types.to_owned());
+    write_profile(profile_path, &updated)?;
+    Ok(updated)
+}
+
+/// Splits a comma-separated media-type include set into its entries, dropping
+/// empty ones.
+#[must_use]
+pub fn split_media_types(text: &str) -> Vec<String> {
+    text.split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Records `notebook_root` as the profile's default notebook only if no

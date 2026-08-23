@@ -222,9 +222,11 @@ version = "0.1.0"
 name = "fieldnotes-field-fixture"
 version = "0.1.0"
 dependencies = [
+ "fieldnotes-app",
  "fieldnotes-domain",
  "fieldnotes-field-protocol",
  "fieldnotes-format",
+ "fieldnotes-store",
  "fieldnotes-test-support",
  "serde",
  "serde_json",
@@ -241,8 +243,11 @@ dependencies = [
 name = "fieldnotes-field-local"
 version = "0.1.0"
 dependencies = [
+ "fieldnotes-app",
  "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-format",
+ "fieldnotes-store",
  "fieldnotes-test-support",
  "sha2",
 ]

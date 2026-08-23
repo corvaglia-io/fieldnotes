@@ -50,6 +50,25 @@ pub fn replace_note(
     install(notebook, record, Some(previous_filename))
 }
 
+/// Removes one Note file, for an authoritative source deletion.
+///
+/// Returns whether a file existed to remove. No tombstone Note and no revision
+/// entry is written: A1 section 7 keeps no deletion ledger, so a later refetch
+/// simply recreates the Note under a new Note ID. Shared artifacts are left
+/// alone; reclaiming them needs the separate verified reference-analysis pass.
+pub fn remove_note(notebook: &Notebook, filename: &str) -> Result<bool, StoreError> {
+    let directory = notebook.notes_dir();
+    let path = directory.join(filename);
+    match std::fs::remove_file(&path) {
+        Ok(()) => {
+            atomic::sync_directory(&directory)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(StoreError::io("remove Note", &path, error)),
+    }
+}
+
 fn install(
     notebook: &Notebook,
     record: &CanonicalRecord,

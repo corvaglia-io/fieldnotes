@@ -16,6 +16,8 @@
 //! # Fieldnotes user profile
 //! notebook = /Users/joe/notebooks/work
 //! timezone = Europe/Zurich
+//! artifact_max_bytes = 26214400
+//! artifact_media_types = application/pdf,image/png,text/plain
 //! ```
 //!
 //! An unrecognized key, a duplicate key, an empty value, or a line that is not
@@ -30,17 +32,36 @@ use std::path::{Path, PathBuf};
 use crate::atomic;
 use crate::error::StoreError;
 
-/// The two settings a Fieldnotes user profile may record.
+/// The settings a Fieldnotes user profile may record.
 ///
-/// Both fields are plain strings/paths as written in the file. Interpreting
+/// Values are kept as close to the written text as this crate can interpret
+/// them without taking a dependency it should not have. Interpreting
 /// `timezone` (a fixed offset, `system`, or an IANA zone name) is left to the
-/// caller, so this crate never needs a timezone-database dependency.
+/// caller, so this crate never needs a timezone-database dependency, and
+/// `artifact_media_types` stays raw comma-separated text because the media-type
+/// matcher grammar belongs to the Field-protocol crate, which storage must not
+/// depend on. `artifact_max_bytes` is parsed here, because an integer needs no
+/// outside vocabulary and a value that is not one is a malformed profile the
+/// user should be told about by line number.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profile {
     /// The default notebook path, when recorded.
     pub notebook: Option<PathBuf>,
     /// The default timezone setting, when recorded, exactly as written.
     pub timezone: Option<String>,
+    /// The configured single-artifact retention threshold in bytes, when
+    /// recorded.
+    ///
+    /// A2 section 14 makes this a configurable *default* rather than a
+    /// ceiling: a notebook may move it in either direction between the
+    /// product's minimum and the frozen 512 MiB ceiling. Checking it against
+    /// that ceiling needs the protocol crate's own limit table, so it happens
+    /// where the collection request is built, not here.
+    pub artifact_max_bytes: Option<u64>,
+    /// The configured media-type retention include set, as written: a
+    /// comma-separated list of exact `type/subtype` media types or subtype
+    /// wildcards such as `image/*`.
+    pub artifact_media_types: Option<String>,
 }
 
 /// Reads a user profile from `path`.
@@ -92,8 +113,7 @@ fn parse_profile(bytes: &[u8]) -> Result<Profile, String> {
     let text =
         std::str::from_utf8(bytes).map_err(|_| "profile file is not valid UTF-8".to_owned())?;
     let mut profile = Profile::default();
-    let mut seen_notebook = false;
-    let mut seen_timezone = false;
+    let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
     for (index, raw_line) in text.lines().enumerate() {
         let line_number = index + 1;
         let line = raw_line.trim();
@@ -110,35 +130,41 @@ fn parse_profile(bytes: &[u8]) -> Result<Profile, String> {
         if value.is_empty() {
             return Err(format!("line {line_number}: `{key}` has no value"));
         }
+        if !SETTINGS.contains(&key) {
+            return Err(format!(
+                "line {line_number}: unknown setting `{key}`; recognized settings are {}",
+                SETTINGS.join(", ")
+            ));
+        }
+        if !seen.insert(key) {
+            return Err(format!("line {line_number}: `{key}` is set more than once"));
+        }
         match key {
-            "notebook" => {
-                if seen_notebook {
-                    return Err(format!(
-                        "line {line_number}: `notebook` is set more than once"
-                    ));
-                }
-                seen_notebook = true;
-                profile.notebook = Some(PathBuf::from(value));
+            "notebook" => profile.notebook = Some(PathBuf::from(value)),
+            "timezone" => profile.timezone = Some(value.to_owned()),
+            "artifact_max_bytes" => {
+                profile.artifact_max_bytes = Some(value.parse::<u64>().map_err(|_| {
+                    format!(
+                        "line {line_number}: `artifact_max_bytes` is a byte count, not `{value}`"
+                    )
+                })?);
             }
-            "timezone" => {
-                if seen_timezone {
-                    return Err(format!(
-                        "line {line_number}: `timezone` is set more than once"
-                    ));
-                }
-                seen_timezone = true;
-                profile.timezone = Some(value.to_owned());
-            }
-            other => {
-                return Err(format!(
-                    "line {line_number}: unknown setting `{other}`; recognized settings \
-                     are `notebook` and `timezone`"
-                ));
-            }
+            "artifact_media_types" => profile.artifact_media_types = Some(value.to_owned()),
+            // Unreachable: `SETTINGS` above is the single source of the
+            // recognized set, and an unrecognized key already returned.
+            other => return Err(format!("line {line_number}: unhandled setting `{other}`")),
         }
     }
     Ok(profile)
 }
+
+/// Every recognized profile setting name, in the order `show` reports them.
+const SETTINGS: [&str; 4] = [
+    "notebook",
+    "timezone",
+    "artifact_max_bytes",
+    "artifact_media_types",
+];
 
 /// Renders a profile back to text, in a fixed key order so writes of the same
 /// settings always produce the same bytes.
@@ -152,6 +178,16 @@ fn render_profile(profile: &Profile) -> String {
     if let Some(timezone) = &profile.timezone {
         text.push_str("timezone = ");
         text.push_str(timezone);
+        text.push('\n');
+    }
+    if let Some(bytes) = profile.artifact_max_bytes {
+        text.push_str("artifact_max_bytes = ");
+        text.push_str(&bytes.to_string());
+        text.push('\n');
+    }
+    if let Some(media_types) = &profile.artifact_media_types {
+        text.push_str("artifact_media_types = ");
+        text.push_str(media_types);
         text.push('\n');
     }
     text
@@ -196,6 +232,8 @@ mod tests {
         let profile = Profile {
             notebook: Some(PathBuf::from("/notebooks/work")),
             timezone: Some("Europe/Zurich".to_owned()),
+            artifact_max_bytes: Some(26_214_400),
+            artifact_media_types: Some("application/pdf,image/*".to_owned()),
         };
         write_profile(&path, &profile)?;
         assert_eq!(read_profile(&path)?, profile);
@@ -204,6 +242,8 @@ mod tests {
         let updated = Profile {
             notebook: Some(PathBuf::from("/notebooks/home")),
             timezone: Some("system".to_owned()),
+            artifact_max_bytes: None,
+            artifact_media_types: None,
         };
         write_profile(&path, &updated)?;
         assert_eq!(read_profile(&path)?, updated);
@@ -250,6 +290,29 @@ mod tests {
         )?;
         assert_rejected(&path, b"notebook = /a\nnotebook = /b\n", "more than once")?;
         assert_rejected(&path, b"timezone =   \n", "no value")?;
+        assert_rejected(
+            &path,
+            b"artifact_max_bytes = twenty-five megabytes\n",
+            "byte count",
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn the_retention_settings_round_trip() -> Result<(), StoreError> {
+        let temp = temp("profile-retention")?;
+        let path = temp.path().join("config");
+        std::fs::write(
+            &path,
+            b"artifact_max_bytes = 1048576\nartifact_media_types = image/*, application/pdf\n",
+        )
+        .map_err(|error| StoreError::io("write", &path, error))?;
+        let profile = read_profile(&path)?;
+        assert_eq!(profile.artifact_max_bytes, Some(1_048_576));
+        assert_eq!(
+            profile.artifact_media_types.as_deref(),
+            Some("image/*, application/pdf")
+        );
         Ok(())
     }
 }

@@ -14,6 +14,14 @@ fieldnotes-domain.workspace = true
 fieldnotes-format.workspace = true
 fieldnotes-test-support.workspace = true
 serde.workspace = true
+# Release gate R1 requires driving *core's* `sync` against a **real child
+# process** at every crash and malformed-output boundary, and
+# `CARGO_BIN_EXE_<name>` resolves only inside the package that owns the binary —
+# so that evidence lives in this package's tests. Dev-dependencies only: the
+# fixture Field itself depends on the protocol library and never on the notebook
+# store, exactly as A0's dependency rule requires.
+fieldnotes-app.workspace = true
+fieldnotes-store.workspace = true
 
 [lints]
 workspace = true

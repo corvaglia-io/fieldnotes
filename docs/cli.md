@@ -119,12 +119,34 @@ artifacts, or credentials.
 
 ```text
 fieldnotes sync [field_id]
+                [--snapshot [--scope <scope>]]
+                [--max-artifact-bytes <bytes>]
+                [--media-type <type/subtype> ...]
+                [--run-seconds <seconds>] [--idle-seconds <seconds>]
 ```
 
-With a Field ID, `sync` runs one bounded Field. Without one, it runs the
-configured eligible Fields according to an approved ordering and failure
-policy. It consumes records, checkpoints, and diagnostics and commits a cursor
-only after preceding notebook changes are durable.
+With a Field ID, `sync` runs one bounded Field. Without one, it runs every
+enabled configured Field in ascending Field ID order; one Field's failure never
+abandons the others. It consumes records, checkpoints, and diagnostics and
+commits a cursor only after preceding notebook changes are durable.
+
+`--snapshot` requests a scope reconciliation instead of a cursor-forward pass,
+and is the only mode in which a Field's completeness claim can authorize
+removing Notes it did not report. `--scope` names the scope reconciled;
+without it, the scope is inferred from the single distinct `source_scope` the
+Field's existing Notes carry, and the run is refused when there is not exactly
+one. A Field computes its own scope value at run time and its manifest declares
+only that value's shape, so the notebook is the only place core can learn it
+before a run (see [A2 implementation findings](approvals/A2-implementation-findings.md)).
+
+`--max-artifact-bytes` and `--media-type` are the two artifact retention
+settings. Each resolves through flag, then the profile's `artifact_max_bytes` /
+`artifact_media_types` setting, then the approved protocol default (25 MiB, and
+the [ADR 0007](decisions/0007-attachment-retention-policy.md) include set). The
+byte threshold may be configured in either direction between the product minimum
+and the frozen 512 MiB ceiling; crossing the ceiling is refused. An attachment
+excluded by either setting stays at its source, and its stable reference is
+recorded in the Note's `skipped_attachments`.
 
 Sync reconciles by the exact portable source key:
 
@@ -141,9 +163,20 @@ deletion.
 Content hashes may reuse artifact bytes but never collapse distinct source
 objects. Every sync is read-only with respect to its source.
 
-Proposed automation output should distinguish at least collected, updated,
-unchanged, removed, conflicted, damaged, truncated, and failed counts, plus the
-checkpoint outcome.
+Automation output is the schema-tagged `fieldnotes.sync.v1` object, one report
+per Field, distinguishing created, updated, unchanged, removed (by tombstone and
+by snapshot separately), renamed, artifacts stored and reused, attachments
+skipped, damaged, truncated, and durable-write failures, plus the committed
+cursor and its coverage, every withheld checkpoint and why, the deletion
+authorization or every reason it was refused, every redacted diagnostic, any
+reached conflict boundary, the rejection code when a run failed, and how the
+child process ended. A run that leaves any Field short of `complete` exits 3
+while still reporting every Field, because durable work committed before a
+failure stands.
+
+Each run also records its outcome to the reserved
+`.fieldnotes/state/sync/<field_id>.status.json`, whose reader tolerates members
+it does not interpret.
 
 ## 0.1.2 — graph, rebuild, and merge
 
@@ -362,10 +395,11 @@ successful completion, validation or usage failure, incomplete Field
 collection, authentication failure, preserved merge conflict, and internal or
 protocol failure without exposing credentials.
 
-For a multi-Field sync, the contract must state whether one Field failure makes
-the process non-zero while preserving successful durable work from the other
-Fields. The summary must identify every Field outcome and which cursors were
-committed.
+For a multi-Field sync, `0.1.1` settles this as: one Field's failure makes the
+process exit non-zero (3) while preserving every other Field's successful durable
+work, and the summary identifies every Field's outcome and which cursor each one
+committed. The full exit-code table across the whole command surface still
+requires CLI approval.
 
 ## Commands deliberately absent
 

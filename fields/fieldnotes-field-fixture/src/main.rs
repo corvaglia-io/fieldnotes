@@ -1,12 +1,10 @@
-//! The fixture Field: a deterministic child process that speaks the
-//! **proposed** Field protocol on demand, including on purpose badly.
+//! The fixture Field: a deterministic child process that speaks the approved
+//! Field protocol on demand, including on purpose badly.
 //!
-//! # This implements a proposal, not an approved contract
-//!
-//! Approval gate A2 — the Field process protocol — is **prepared but not
-//! approved**. This executable exists so the proposal in
-//! `docs/approvals/A2-field-protocol.md` can be reviewed against working code
-//! rather than prose alone. Everything it emits is subject to change on review.
+//! Protocol v1 was frozen by A2 on 2026-08-23. The capability slices, declared
+//! property names, and source scopes this executable emits remain
+//! **illustrative** rather than normative: each becomes normative only when its
+//! own Field's release gate approves that Field's manifest and fixtures.
 //!
 //! # What it is
 //!

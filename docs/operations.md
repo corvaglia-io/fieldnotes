@@ -15,12 +15,24 @@ Operational behavior follows four state classes:
 |---|---|---|
 | Public notebook | Notes, retained original artifacts, generated public Markdown | Current collected evidence is lost; refetch may recover source-backed records |
 | Durable local intent/config | instance/Field IDs, aliases, merge decisions, proposal review state, retention policy | Cannot be reconstructed reliably; restore from backup or reconfigure |
-| Operational sync state | opaque cursors, checkpoints, retry/backoff metadata | Refetch/backfill and reconcile; completeness depends on source capability |
+| Operational sync state | opaque cursors, checkpoints, last-run summaries, retry/backoff metadata, per-run artifact staging | Refetch/backfill and reconcile; completeness depends on source capability |
 | Disposable cache | search/index/graph acceleration, parsed-file caches | Delete and rebuild at any time |
 
 Operational cursors live under `.fieldnotes/state/sync/`, not
-`.fieldnotes/cache/`. Credentials live outside the notebook; only named
-credential-profile references appear in configuration.
+`.fieldnotes/cache/`. Each Field's committed cursor is
+`.fieldnotes/state/sync/<field_id>.cursor` — the opaque token paired with the
+`cursor_format_version` it was committed at, since a token is never replayed at a
+version the Field no longer declares — and its last-run summary is
+`.fieldnotes/state/sync/<field_id>.status.json`. A run's artifact staging
+directory is `.fieldnotes/state/sync/staging/<field_id>/<run_id>/`, also
+operational sync state and deliberately **not** the disposable cache: artifact
+bytes must not transit a directory whose entire contract is "always safe to
+delete", even briefly and even before they are durable. Startup recovery removes
+staging left behind by a crashed run; no Note references it, because the record
+it belonged to was never accepted.
+
+Credentials live outside the notebook; only named credential-profile references
+appear in configuration.
 
 ## Initialization
 

@@ -350,6 +350,46 @@ impl DiagnosticCode {
         DiagnosticCode::ConfigInvalid,
         DiagnosticCode::InternalError,
     ];
+
+    /// The wire spelling of this code.
+    ///
+    /// Spelled out rather than derived from the `serde` rename at run time,
+    /// because a caller that needs the label for a log line, a status file, or
+    /// stable CLI output must not have to serialize a value and handle a
+    /// failure that cannot happen.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            DiagnosticCode::AuthReauthRequired => "auth.reauth_required",
+            DiagnosticCode::AuthExpired => "auth.expired",
+            DiagnosticCode::AuthScopeInsufficient => "auth.scope_insufficient",
+            DiagnosticCode::PermissionDenied => "permission.denied",
+            DiagnosticCode::PermissionAdminConsentRequired => "permission.admin_consent_required",
+            DiagnosticCode::RateLimitThrottled => "rate_limit.throttled",
+            DiagnosticCode::SourceUnavailable => "source.unavailable",
+            DiagnosticCode::SourceHistoryUnavailable => "source.history_unavailable",
+            DiagnosticCode::ContentTruncated => "content.truncated",
+            DiagnosticCode::ContentDamaged => "content.damaged",
+            DiagnosticCode::ContentUnsupportedFormat => "content.unsupported_format",
+            DiagnosticCode::ContentSkipped => "content.skipped",
+            DiagnosticCode::CapabilityUnsupportedObject => "capability.unsupported_object",
+            DiagnosticCode::CursorResetRequired => "cursor.reset_required",
+            DiagnosticCode::CursorFormatChanged => "cursor.format_changed",
+            DiagnosticCode::SnapshotPartial => "snapshot.partial",
+            DiagnosticCode::RefetchRequired => "refetch.required",
+            DiagnosticCode::RefetchUnsupported => "refetch.unsupported",
+            DiagnosticCode::RunCancelled => "run.cancelled",
+            DiagnosticCode::RunDeadlineExceeded => "run.deadline_exceeded",
+            DiagnosticCode::ConfigInvalid => "config.invalid",
+            DiagnosticCode::InternalError => "internal.error",
+        }
+    }
+}
+
+impl fmt::Display for DiagnosticCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// A Field's exit code, which is the one signal that survives a crashed or

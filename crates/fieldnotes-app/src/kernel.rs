@@ -59,6 +59,21 @@ impl<C: Clock, R: RandomSource> Kernel<C, R> {
         let created_at = Datetime::from_unix_millis(millis, self.offset_minutes)?;
         Ok((id, created_at))
     }
+
+    /// Generates a Field process run identifier and the instant it names.
+    ///
+    /// A run identifier is core's own name for one bounded child process. It is
+    /// opaque to the Field, is never a notebook record ID, and never appears in
+    /// a notebook file, which is why it carries no record-kind prefix. It still
+    /// comes from this kernel's injected clock and randomness source, so a test
+    /// that fixes both replays the same run identifier and the same deadline.
+    pub fn new_run(&mut self) -> Result<(String, Datetime), AppError> {
+        let uuid = self.ids.generate_uuid()?;
+        let millis = i64::try_from(uuid.unix_millis())
+            .map_err(|_| AppError::Datetime(fieldnotes_domain::DatetimeError::OutOfRange))?;
+        let started_at = Datetime::from_unix_millis(millis, self.offset_minutes)?;
+        Ok((uuid.to_string(), started_at))
+    }
 }
 
 /// The built-in `self` Field ID.

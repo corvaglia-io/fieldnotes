@@ -10,4 +10,4 @@ Fieldnotes freezes shared contracts before parallel feature implementation.
 
 An approval package contains a recommendation, alternatives, consequences, and reviewable examples. Approval is explicit; implementation does not infer it from silence.
 
-Implementing an approved gate can surface contradictions between contract prose and frozen fixture bytes. Those are recorded for a coordinator ruling rather than decided in the implementation: see [A1 implementation findings](A1-implementation-findings.md).
+Implementing an approved gate can surface contradictions between contract prose and frozen fixture bytes. Those are recorded for a coordinator ruling rather than decided in the implementation: see [A1 implementation findings](A1-implementation-findings.md) and [A2 implementation findings](A2-implementation-findings.md).

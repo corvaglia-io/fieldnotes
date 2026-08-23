@@ -10,12 +10,13 @@
 //!   it, its non-secret connector configuration, whether it is enabled, and
 //!   its snapshotted `describe` manifest. This is what `fields add/list/
 //!   remove` and manifest snapshotting operate on;
-//! - **operational sync state** — an opaque per-Field cursor file and a
-//!   forward-compatible last-run summary under `.fieldnotes/state/sync/`,
-//!   named by convention here so a later `sync` implementation can start
-//!   writing them without a schema change to this module. Nothing in this
-//!   crate ever writes those files; only their paths and read side are
-//!   provided.
+//! - **operational sync state** — an opaque per-Field cursor file, a
+//!   forward-compatible last-run summary, and the per-run artifact staging
+//!   directory, all under `.fieldnotes/state/sync/`. This is *not* the
+//!   disposable cache class: A2's settled question 5 places artifact staging
+//!   under operational sync state precisely because bytes must not transit a
+//!   directory whose whole contract is "always safe to delete", and a cursor
+//!   cannot be rebuilt from Notes at all.
 //!
 //! Field configuration is not part of the public notebook contract A1
 //! governs, so this module is free to choose its own on-disk shape. JSON
@@ -277,15 +278,13 @@ fn sync_state_dir(notebook: &Notebook) -> PathBuf {
     path
 }
 
-/// The reserved path for `field_id`'s durable, opaque sync cursor.
+/// The path for `field_id`'s durable, opaque sync cursor.
 ///
-/// Nothing in this crate writes this file. A2 defines a cursor as an opaque,
-/// non-secret, bounded UTF-8 string meaningful only to the Field's own
-/// driver, paired with the manifest's declared `cursor_format_version`, so
-/// this crate deliberately does not parse it: only a later `sync`
-/// implementation, which knows the pairing rule, should read its bytes.
-/// [`cursor_exists`] answers the one question `fields status` needs without
-/// interpreting the content.
+/// A2 defines a cursor as an opaque, non-secret, bounded UTF-8 string
+/// meaningful only to the Field's own driver, paired with the manifest's
+/// declared `cursor_format_version`. This crate stores the pair verbatim and
+/// never interprets the token itself; [`cursor_exists`] answers the one
+/// question `fields status` needs without reading it at all.
 #[must_use]
 pub fn cursor_state_path(notebook: &Notebook, field_id: &str) -> PathBuf {
     sync_state_dir(notebook).join(format!("{field_id}.cursor"))
@@ -297,14 +296,149 @@ pub fn cursor_exists(notebook: &Notebook, field_id: &str) -> bool {
     cursor_state_path(notebook, field_id).is_file()
 }
 
-/// The reserved path for `field_id`'s last recorded sync outcome.
+/// A committed cursor together with the format version it was written at.
 ///
-/// Nothing in this crate writes this file; it is reserved so a later `sync`
-/// implementation can start recording outcomes here without a schema change
-/// to `fields status`.
+/// The pairing is the point: A2 section 9 requires core to refuse to replay a
+/// cursor whose stored format version differs from the version the Field's
+/// current manifest declares, so the version has to travel with the token
+/// rather than being inferred from whatever the Field happens to declare now.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredCursor {
+    /// The opaque resume token, exactly as the Field offered it.
+    pub cursor: String,
+    /// The `cursor_format_version` the Field declared when it was committed.
+    pub cursor_format_version: u16,
+    /// The last record sequence number the token accounts for, in the run that
+    /// committed it. Recorded for reporting only; it means nothing to a later
+    /// run, whose sequence numbers start again at 1.
+    pub covers_record_seq_through: u64,
+    /// When the run that committed it finished, as the writer recorded it.
+    pub committed_at: String,
+}
+
+/// Reads `field_id`'s committed cursor, when one is recorded.
+///
+/// A present but malformed file fails loudly rather than silently reporting no
+/// cursor: silently reporting none would restart an unbounded collection and
+/// look like a successful first sync.
+pub fn read_cursor(
+    notebook: &Notebook,
+    field_id: &str,
+) -> Result<Option<StoredCursor>, StoreError> {
+    let path = cursor_state_path(notebook, field_id);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(StoreError::io("read Field cursor", &path, error)),
+    };
+    let stored: StoredCursor =
+        serde_json::from_slice(&bytes).map_err(|error| StoreError::InvalidFieldConfig {
+            path,
+            message: error.to_string(),
+        })?;
+    Ok(Some(stored))
+}
+
+/// Commits `field_id`'s cursor atomically.
+///
+/// This is the last durable write of a checkpoint, and the only one whose
+/// failure is safe: a cursor that did not advance costs repeated work, whereas
+/// a cursor written before its records were durable loses an upstream object
+/// permanently.
+pub fn write_cursor(
+    notebook: &Notebook,
+    field_id: &str,
+    cursor: &StoredCursor,
+) -> Result<(), StoreError> {
+    let directory = sync_state_dir(notebook);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| StoreError::io("create sync state directory", &directory, error))?;
+    let mut text =
+        serde_json::to_string_pretty(cursor).map_err(|error| StoreError::InvalidFieldConfig {
+            path: cursor_state_path(notebook, field_id),
+            message: format!("could not serialize the cursor: {error}"),
+        })?;
+    text.push('\n');
+    atomic::write_atomic(&directory, &format!("{field_id}.cursor"), text.as_bytes())?;
+    Ok(())
+}
+
+/// The reserved path for `field_id`'s last recorded sync outcome.
 #[must_use]
 pub fn last_sync_path(notebook: &Notebook, field_id: &str) -> PathBuf {
     sync_state_dir(notebook).join(format!("{field_id}.status.json"))
+}
+
+/// Records `field_id`'s last sync outcome atomically.
+///
+/// The reader ([`read_last_sync_outcome`]) preserves members it does not
+/// interpret, so the writer may add members without a schema change here.
+pub fn write_last_sync_outcome(
+    notebook: &Notebook,
+    field_id: &str,
+    outcome: &LastSyncOutcome,
+) -> Result<(), StoreError> {
+    let directory = sync_state_dir(notebook);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| StoreError::io("create sync state directory", &directory, error))?;
+    let mut text =
+        serde_json::to_string_pretty(outcome).map_err(|error| StoreError::InvalidFieldConfig {
+            path: last_sync_path(notebook, field_id),
+            message: format!("could not serialize the sync outcome: {error}"),
+        })?;
+    text.push('\n');
+    atomic::write_atomic(
+        &directory,
+        &format!("{field_id}.status.json"),
+        text.as_bytes(),
+    )?;
+    Ok(())
+}
+
+/// The per-run artifact staging directory for one Field run.
+///
+/// Operational sync state, never the disposable cache: staged artifact bytes
+/// must not transit a directory users are told is always safe to delete, even
+/// briefly and even before those bytes are durable (A2 settled question 5).
+#[must_use]
+pub fn staging_dir(notebook: &Notebook, field_id: &str, run_id: &str) -> PathBuf {
+    sync_state_dir(notebook)
+        .join("staging")
+        .join(field_id)
+        .join(run_id)
+}
+
+/// Creates the per-run staging directory, removing any leftover contents.
+pub fn create_staging_dir(
+    notebook: &Notebook,
+    field_id: &str,
+    run_id: &str,
+) -> Result<PathBuf, StoreError> {
+    let path = staging_dir(notebook, field_id, run_id);
+    remove_staging_tree(&path)?;
+    std::fs::create_dir_all(&path)
+        .map_err(|error| StoreError::io("create artifact staging directory", &path, error))?;
+    Ok(path)
+}
+
+/// Removes every staging directory left behind for `field_id`.
+///
+/// A crash mid-run leaves staged bytes that startup recovery removes; no Note
+/// references them, because the record they belonged to was never accepted.
+pub fn clear_staging(notebook: &Notebook, field_id: &str) -> Result<(), StoreError> {
+    remove_staging_tree(&sync_state_dir(notebook).join("staging").join(field_id))
+}
+
+fn remove_staging_tree(path: &Path) -> Result<(), StoreError> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(StoreError::io(
+            "remove artifact staging directory",
+            path,
+            error,
+        )),
+    }
 }
 
 /// A minimal, forward-compatible summary of a Field's last sync run.
@@ -350,8 +484,8 @@ pub fn read_last_sync_outcome(
     Ok(Some(outcome))
 }
 
-/// Removes `field_id`'s operational sync state (cursor and last-run summary),
-/// if any is present.
+/// Removes `field_id`'s operational sync state (cursor, last-run summary, and
+/// any staged artifact bytes), if any is present.
 ///
 /// This exists for `fields remove`: dropping a Field's configuration also
 /// drops the operational state that only makes sense alongside it, while
@@ -363,7 +497,7 @@ pub fn remove_sync_state(notebook: &Notebook, field_id: &str) -> Result<(), Stor
     ] {
         remove_if_present(&path)?;
     }
-    Ok(())
+    clear_staging(notebook, field_id)
 }
 
 fn remove_if_present(path: &Path) -> Result<(), StoreError> {

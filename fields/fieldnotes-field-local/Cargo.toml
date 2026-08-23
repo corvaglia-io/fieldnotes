@@ -18,6 +18,16 @@ sha2.workspace = true
 
 [dev-dependencies]
 fieldnotes-test-support.workspace = true
+# Release gate R1 requires driving *core's* `sync` against a **real child
+# process**, and `CARGO_BIN_EXE_<name>` resolves only inside the package that
+# owns the binary — so the end-to-end sync evidence for this Field lives in this
+# package's tests. These are dev-dependencies only: the Field process itself
+# still depends on the protocol library and never on the notebook store, exactly
+# as A0's dependency rule requires.
+fieldnotes-app.workspace = true
+fieldnotes-domain.workspace = true
+fieldnotes-format.workspace = true
+fieldnotes-store.workspace = true
 
 [lints]
 workspace = true

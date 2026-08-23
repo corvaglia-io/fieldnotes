@@ -143,6 +143,40 @@ pub fn local_with_cursor_format(run_id: &str, cursor_format_version: u16) -> Val
     manifest
 }
 
+/// The `local` manifest with authoritative tombstones declared as well.
+///
+/// A2 section 10 requires deletion authority to be **declared before it can be
+/// exercised**, and it requires both authorities to be exercisable
+/// independently. The shipping `local` and `outlook_mail` manifests split them:
+/// `local` declares snapshot authority and no tombstones, while the Field that
+/// declares tombstones also requires authentication. That leaves no way to
+/// exercise an authorized tombstone against a Field a `0.1.1` sync will run at
+/// all, so this fixture flavor exists purely to close that hole: same stem,
+/// same declared properties, same cursor format, no credential, and both
+/// deletion authorities declared.
+#[must_use]
+pub fn local_with_tombstone_authority(run_id: &str) -> Value {
+    let mut manifest = local(run_id);
+    if let Some(object) = manifest.as_object_mut() {
+        object.insert(
+            "collection".to_owned(),
+            json!({
+                "incremental": true,
+                "cursor_format_version": 1,
+                "supported_modes": ["incremental", "snapshot"],
+                "window_supported": false,
+                "refetch": "supported",
+                "deletion": {
+                    "tombstones": "authoritative",
+                    "snapshot": "authoritative",
+                    "note": "A removed file inside the configured root is reported explicitly as well as being absent from a completed walk."
+                }
+            }),
+        );
+    }
+    manifest
+}
+
 /// The `local` manifest with one declared property retyped between runs.
 ///
 /// Core treats a changed declared type as a migration that blocks sync, rather

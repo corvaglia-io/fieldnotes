@@ -1635,6 +1635,24 @@ pub enum Severity {
     Error,
 }
 
+impl Severity {
+    /// The wire spelling of this severity.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Severity::Info => "info",
+            Severity::Warning => "warning",
+            Severity::Error => "error",
+        }
+    }
+}
+
+impl core::fmt::Display for Severity {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Bounded structured health, permission, rate-limit, truncation,
 /// skipped-content, refetch, or damage information.
 ///

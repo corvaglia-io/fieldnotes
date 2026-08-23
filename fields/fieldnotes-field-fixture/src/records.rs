@@ -224,6 +224,30 @@ pub fn mail_tombstone(run_id: &str, seq: u64) -> Value {
     })
 }
 
+/// An explicit tombstone for the `timeline.md` file record.
+///
+/// A delete carries the portable source key, the tombstone authority, and the
+/// observation instant, and **no content at all**: content is structurally
+/// forbidden on a delete, so a deletion can never be confused with an empty or
+/// partial collection result.
+#[must_use]
+pub fn local_tombstone(run_id: &str, seq: u64) -> Value {
+    json!({
+        "v": 1,
+        "type": "record",
+        "run_id": run_id,
+        "seq": seq,
+        "change": "delete",
+        "source": {
+            "scope": LOCAL_SCOPE,
+            "identity": "file/projects/rollout/timeline.md"
+        },
+        "object_kind": "file",
+        "authority": "tombstone",
+        "observed_at": "2026-08-22T12:40:11+02:00"
+    })
+}
+
 /// One mail message record with identity anchors, as transcript 06 shows it.
 #[must_use]
 pub fn mail_message(run_id: &str, seq: u64) -> Value {

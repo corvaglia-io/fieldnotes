@@ -55,6 +55,7 @@ enum Flavor {
     Local,
     LocalCursorFormat2,
     LocalRetypedProperty,
+    LocalWithTombstones,
     Mail,
     MailWithoutTombstones,
     FutureVersion,
@@ -121,6 +122,8 @@ scenarios! {
     DuplicateDivergent => "duplicate-divergent", Local;
     Tombstone => "tombstone", Mail;
     TombstoneUnauthorized => "tombstone-unauthorized", MailWithoutTombstones;
+    TombstoneLocal => "tombstone-local", LocalWithTombstones;
+    TombstoneLocalUnauthorized => "tombstone-local-unauthorized", Local;
     SnapshotComplete => "snapshot-complete", Local;
     SnapshotPartial => "snapshot-partial", Local;
     SnapshotScopeWidened => "snapshot-scope-widened", Local;
@@ -215,6 +218,7 @@ pub fn describe(scenario: Scenario, request: &DescribeRequest) -> ScenarioOutcom
                 Flavor::Local => manifests::local(run_id),
                 Flavor::LocalCursorFormat2 => manifests::local_with_cursor_format(run_id, 2),
                 Flavor::LocalRetypedProperty => manifests::local_with_retyped_property(run_id),
+                Flavor::LocalWithTombstones => manifests::local_with_tombstone_authority(run_id),
                 Flavor::Mail => manifests::mail(run_id),
                 Flavor::MailWithoutTombstones => {
                     manifests::mail_without_tombstone_authority(run_id)
@@ -311,6 +315,22 @@ pub fn collect<R: BufRead>(
             out.frame(records::readme(run_id, 1));
             out.frame(records::readme_divergent(run_id, 2));
             ScenarioOutcome::failed(ProtocolExit::Internal)
+        }
+        Scenario::TombstoneLocal | Scenario::TombstoneLocalUnauthorized => {
+            out.frame(records::local_tombstone(run_id, 1));
+            out.frame(records::checkpoint(
+                run_id,
+                2,
+                "walk:v1:seq=1;mtime=2026-08-22T12:40:11Z",
+                1,
+                1,
+                true,
+            ));
+            if scenario == Scenario::TombstoneLocal {
+                ScenarioOutcome::completed()
+            } else {
+                ScenarioOutcome::failed(ProtocolExit::Internal)
+            }
         }
         Scenario::Tombstone | Scenario::TombstoneUnauthorized => {
             out.frame(records::mail_tombstone(run_id, 1));

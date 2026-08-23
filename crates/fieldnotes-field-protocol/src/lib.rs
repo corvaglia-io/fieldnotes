@@ -1,17 +1,17 @@
-//! The **proposed** Fieldnotes Field process protocol, version 1.
+//! The Fieldnotes Field process protocol, version 1.
 //!
-//! # This implements a proposal, not an approved contract
+//! # This implements an approved, frozen contract
 //!
-//! Approval gate A2 — the Field process protocol — is **prepared but not
-//! approved**. The proposal lives in `docs/approvals/A2-field-protocol.md`
-//! with candidate JSON Schemas and transcripts under
-//! `tests/fixtures/protocol/proposed-v1/`. Everything in this crate implements
-//! those candidate bytes so that A2 can be reviewed against working code
-//! instead of prose alone. **Every type, code, bound, and rule here is subject
-//! to change on review**, and none of it is in force until the user approves
-//! A2 explicitly. Nothing here may be treated as settled, and no connector may
-//! amend it privately: an implementation finding returns to the A2 gate as a
-//! recorded finding and a coordinator ruling.
+//! Approval gate A2 — the Field process protocol — was **approved on
+//! 2026-08-23**. The approved package lives in
+//! `docs/approvals/A2-field-protocol.md`, with the JSON Schemas and transcripts
+//! it freezes under `tests/fixtures/protocol/proposed-v1/`. Protocol v1 is now
+//! frozen: additive-only changes increment `protocol_revision`, and a semantic
+//! change to any member, a new required member, a removed member, a raised
+//! limit ceiling, a changed exit-code meaning, or a changed code meaning
+//! requires `protocol_version` 2 and an explicit migration proposal. No
+//! connector workstream may amend v1 privately: an implementation finding
+//! returns to the A2 gate as a recorded finding and a coordinator ruling.
 //!
 //! # What this crate is
 //!

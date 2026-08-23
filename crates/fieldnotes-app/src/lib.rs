@@ -17,6 +17,7 @@ pub mod inspect;
 pub mod kernel;
 pub mod note;
 pub mod status;
+pub mod sync;
 
 pub use error::AppError;
 pub use fields::{
@@ -28,3 +29,8 @@ pub use inspect::{InspectReport, InspectedArtifact, InspectedRecord, ReportedPro
 pub use kernel::{Kernel, SELF_FIELD};
 pub use note::{NoteOutcome, NoteRequest, NoteSource, create_note};
 pub use status::{StatusReport, status};
+pub use sync::{
+    DeletionReport, DurabilityPolicy, FieldRunOutcome, FieldSyncReport, SyncCounts, SyncDiagnostic,
+    SyncMode, SyncOptions, SyncOutcome, SyncRejection, sync, validate_artifact_max_bytes,
+    validate_artifact_media_types,
+};
