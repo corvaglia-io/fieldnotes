@@ -8,3 +8,5 @@ This directory will contain sanitized, deterministic fixtures approved at the co
 
 No live credentials, proprietary account data, or unsanitized vendor payloads may be committed here.
 
+Illustrative people, addresses, machine paths, and Field labels in these fixtures are fictional. The notebook-owner persona is `sam` / `sam@example.net`; the other participants are `alice@example.com` (Alice Müller), `bob@example.net` (Bob Rossi), and `former.colleague@example.com`; illustrative absolute paths live under `/home/user/`. See [ADR 0011](../../docs/decisions/0011-neutralize-illustrative-personal-identifiers.md) for why, and for the digests it recomputed.
+

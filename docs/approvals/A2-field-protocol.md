@@ -12,6 +12,51 @@ and checkpoint durability, authoritative deletion, protected credential
 delivery, diagnostics and redaction, exit codes and partial failure, and
 untrusted-output bounds
 
+## Approved amendments
+
+**2026-08-23:** Before this repository's first publication to a public
+remote, the owner approved neutralizing the illustrative personal
+identifiers the A2 protocol corpus had inherited from the owner's own
+environment, recorded with rationale, rejected alternatives, and the full
+list of recomputed digests in
+[ADR 0011](../decisions/0011-neutralize-illustrative-personal-identifiers.md):
+
+1. Illustrative values only were substituted in the sixteen transcripts under
+   `tests/fixtures/protocol/proposed-v1/transcripts/` and in that corpus's
+   README. The illustrative `artifact_staging_dir` and local-Field `root_path`
+   values, previously rooted in the owner's real home directory, are now
+   rooted at `/home/user/`, keeping each path's shape
+   (`/home/user/notebook/.fieldnotes/cache/staging/run-…` and
+   `/home/user/reference-library`). The illustrative `outlook_mail`
+   `config.account`, the mail `to` and `participants` values, the `email`
+   identity-anchor values, and the mail body salutations now name
+   `sam@example.net` / `Sam` in place of the owner. The hostile absolute
+   artifact handle probed in `11-hostile-artifact-references.ndjson` is now
+   `/home/user/.ssh/id_ed25519`. ADR 0011 deliberately does not quote the
+   replaced values, since recording them here would publish exactly what this
+   amendment removes.
+
+   No schema file changed. No frame type, property name, grammar, limit,
+   rejection code, ordering rule, sequence number, cursor value, checkpoint
+   coverage, or exit code changed, and no transcript gained or lost a line.
+   Every `valid: false` frame still fails exactly the schema it failed before,
+   for the same reason and with the same `expect_reject` code — the hostile
+   handle above still fails `record-event.schema.json` at
+   `artifacts[0].handle` against the same single-segment handle pattern,
+   because an absolute path was substituted for an absolute path.
+
+   Re-verified after the change, exactly as the corpus was verified before it:
+   all twelve schemas parse, are UTF-8 and LF with one final LF, declare the
+   2020-12 dialect and an `$id`, and validate against the 2020-12
+   meta-schema; all 108 `$ref`s resolve inside a registry built only from
+   those twelve files; all 215 transcript lines parse and validate against
+   `transcript.schema.json`; and all 86 `frame` payloads validate against the
+   wire schema their `type` selects and against their direction's (or the
+   credential channel's) union schema, with every `valid: false` frame
+   asserted to fail.
+
+Amendment 1 changes approved bytes without changing any approved rule.
+
 ## Decision requested
 
 A2 freezes protocol v1 as the shared contract between core and every external

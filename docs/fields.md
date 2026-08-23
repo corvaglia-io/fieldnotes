@@ -151,7 +151,7 @@ for example `from`, `participants`, `occurred_at`, `source_url`, and
 from: alice@example.com
 participants:
   - alice@example.com
-  - joe@example.net
+  - sam@example.net
 teams_chat_id: "19:abc..."
 teams_message_type: message
 ```
@@ -172,7 +172,7 @@ A proposed configuration shape is:
 id: outlook_mail_work
 driver: outlook-mail
 display_name: Work mail
-account: joe@example.net
+account: sam@example.net
 credential_profile: microsoft_work
 ```
 

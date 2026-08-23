@@ -157,7 +157,7 @@ mod tests {
     }
 
     fn reference() -> CredentialRef {
-        match CredentialRef::parse("microsoft_wxs") {
+        match CredentialRef::parse("microsoft_acme") {
             Ok(reference) => reference,
             Err(error) => panic!("test fixture reference must parse: {error}"),
         }

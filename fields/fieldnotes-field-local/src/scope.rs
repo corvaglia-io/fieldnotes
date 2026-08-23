@@ -36,9 +36,9 @@ mod tests {
 
     #[test]
     fn the_scope_never_embeds_the_raw_path() {
-        let root = Path::new("/home/jgcorvaglia/reference-library");
+        let root = Path::new("/home/samkeller/reference-library");
         let scope = compute(root);
-        assert!(!scope.contains("jgcorvaglia"));
+        assert!(!scope.contains("samkeller"));
         assert!(scope.starts_with("local-root:"));
     }
 }

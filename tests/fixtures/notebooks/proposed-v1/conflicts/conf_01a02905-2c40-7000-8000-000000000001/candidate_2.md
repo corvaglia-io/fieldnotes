@@ -12,7 +12,7 @@ source_identity: mail-message/AAMkAGI2CONFLICT01
 source_scope: "microsoft-graph:tenant/8d820000-0000-7000-8000-000000000001"
 subject: Migration window
 to:
-  - joe@example.net
+  - sam@example.net
 ---
 
 # Migration window

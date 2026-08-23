@@ -369,7 +369,7 @@ mod tests {
             Err(AppError::InvalidFieldId { .. })
         ));
         assert!(matches!(
-            validate_field_id("github", "joe"),
+            validate_field_id("github", "sam"),
             Err(AppError::InvalidFieldId { .. })
         ));
     }
@@ -474,7 +474,7 @@ mod tests {
         )?;
         add_field(
             &notebook,
-            &validate_field_id("teams", "wxs")?,
+            &validate_field_id("teams", "acme")?,
             PathBuf::from("/bin/teams-field"),
             BTreeMap::new(),
             true,
@@ -484,7 +484,7 @@ mod tests {
             .into_iter()
             .map(|summary| summary.id)
             .collect();
-        assert_eq!(remaining, vec!["self".to_owned(), "teams_wxs".to_owned()]);
+        assert_eq!(remaining, vec!["self".to_owned(), "teams_acme".to_owned()]);
         Ok(())
     }
 

@@ -518,7 +518,7 @@ pub fn collect<R: BufRead>(
                 1,
                 json!({
                     "kind": "staged",
-                    "handle": "/Users/joe/.ssh/id_ed25519",
+                    "handle": "/home/user/.ssh/id_ed25519",
                     "byte_length": 464,
                     "role": "original"
                 }),

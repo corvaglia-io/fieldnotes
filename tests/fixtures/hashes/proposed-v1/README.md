@@ -270,6 +270,33 @@ The domain prefix and separator begin with these bytes:
 
 Expected value is stored in `semantic-record-canonical.sha256`.
 
+### Digest recomputed by ADR 0011
+
+[ADR 0011](../../../../docs/decisions/0011-neutralize-illustrative-personal-identifiers.md)
+neutralized the illustrative personal identifiers in this repository before
+its first publication. Two of them appear in this vector, with opposite
+effects that are worth stating because they demonstrate the exclusion rule
+above:
+
+- the illustrative recipient address in the source Note's `participants` list
+  is now `sam@example.net`. `participants` is *retained* by the semantic
+  encoding, so it is part of the hash input, and the expected value in
+  `semantic-record-canonical.sha256` was recomputed accordingly. It is now
+  `fn-record-v1-sha256:dfa17619cfa47d5a6b6736f0c99526a6b935a4d35dc596c7fdb8a7a72823d846`;
+- the illustrative Field label in the source Note's `field_id` and
+  `collected_by` is now `outlook_mail_acme`. Both properties are *excluded*
+  before serialization, so neither the canonical encoding in
+  `semantic-record-canonical.md` nor the digest moved by one byte on their
+  account.
+
+The algorithm, the exclusion list, the property ordering, and the canonical
+serialization are unchanged. `semantic-record-canonical.md` still reproduces
+byte for byte from `semantic-record-source.md`.
+
+The two artifact byte vectors and the normalized-Markdown vector above
+contain no personal identifier, so their input bytes, hexadecimal listings,
+digests, artifact IDs, and artifact paths are untouched by ADR 0011.
+
 ### Semantic-hash decisions proposed for A1 approval
 
 - `id` is excluded so independently collected Notes for the same portable
@@ -284,6 +311,8 @@ Expected value is stored in `semantic-record-canonical.sha256`.
 ## Verification commands
 
 The expected files were calculated with the system `shasum -a 256` over the exact fixture bytes. The normalized-content calculation streamed the ASCII domain prefix and NUL byte immediately before the body; it did not create an intermediate file.
+
+The one value ADR 0011 recomputed — `semantic-record-canonical.sha256` — was produced by `fieldnotes_format::record_fingerprint` over `semantic_record_string`, the crate's own implementation of the algorithm specified above, and confirmed by `crates/fieldnotes-format/tests/conformance_hashes.rs`, which reproduces every vector in this directory from its input bytes on every test run. A reviewer can still reproduce it independently with `shasum -a 256` over the domain prefix, NUL byte, and the exact bytes of `semantic-record-canonical.md`.
 
 These proposed vectors remain review-only until A1 approves normalization,
 exclusions, property ordering, and the exact canonical serializer. IG1 adds

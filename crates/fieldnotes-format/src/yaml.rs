@@ -297,7 +297,7 @@ mod tests {
 
     #[test]
     fn scans_scalars_and_lists() -> Result<(), ValidationError> {
-        let entries = scan("title: Rollout reminder\nto:\n  - joe@example.net\n  - \"x: y\"")?;
+        let entries = scan("title: Rollout reminder\nto:\n  - sam@example.net\n  - \"x: y\"")?;
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].key, "title");
         match &entries[1].value {

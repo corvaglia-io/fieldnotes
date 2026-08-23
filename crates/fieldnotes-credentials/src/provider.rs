@@ -121,7 +121,7 @@ pub(crate) mod fakes {
     #[test]
     fn round_trips_store_retrieve_and_clear() -> Result<(), Box<dyn std::error::Error>> {
         let provider = FakeCredentialProvider::new();
-        let reference = CredentialRef::parse("microsoft_wxs")?;
+        let reference = CredentialRef::parse("microsoft_acme")?;
         assert_eq!(provider.retrieve(&reference), Err(CredentialError::Absent));
         provider.store(&reference, &Secret::new("refresh-token-value"))?;
         assert_eq!(

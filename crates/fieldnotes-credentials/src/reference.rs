@@ -41,7 +41,7 @@ impl fmt::Display for CredentialRefError {
 impl std::error::Error for CredentialRefError {}
 
 /// A validated, non-secret name for a configured credential profile, such as
-/// `microsoft_wxs`.
+/// `microsoft_acme`.
 ///
 /// This is the public currency of the [`crate::provider::CredentialProvider`]
 /// abstraction: it is safe to place in ordinary Field configuration, in a
@@ -99,8 +99,8 @@ mod tests {
     #[test]
     fn accepts_lower_snake_case() -> Result<(), CredentialRefError> {
         assert_eq!(
-            CredentialRef::parse("microsoft_wxs")?.as_str(),
-            "microsoft_wxs"
+            CredentialRef::parse("microsoft_acme")?.as_str(),
+            "microsoft_acme"
         );
         assert!(CredentialRef::parse("a").is_ok());
         assert!(CredentialRef::parse("a0_9").is_ok());

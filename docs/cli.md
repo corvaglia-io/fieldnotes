@@ -236,7 +236,7 @@ entered through protected prompts or auth channels, never arguments.
 A proposed setup sequence is:
 
 ```text
-fieldnotes fields add outlook-mail work --account joe@example.net
+fieldnotes fields add outlook-mail work --account sam@example.net
 fieldnotes fields auth outlook_mail_work
 fieldnotes sync outlook_mail_work
 ```
@@ -254,8 +254,8 @@ Calendar and Contacts reuse the approved Field-management, authentication, and
 sync commands rather than adding top-level verbs.
 
 ```text
-fieldnotes fields add outlook-calendar work --account joe@example.net
-fieldnotes fields add outlook-contacts work --account joe@example.net
+fieldnotes fields add outlook-calendar work --account sam@example.net
+fieldnotes fields add outlook-contacts work --account sam@example.net
 fieldnotes fields auth outlook_calendar_work
 fieldnotes fields auth outlook_contacts_work
 fieldnotes sync outlook_calendar_work
@@ -272,7 +272,7 @@ contact.
 Teams also uses the common Field surface:
 
 ```text
-fieldnotes fields add teams work --account joe@example.net
+fieldnotes fields add teams work --account sam@example.net
 fieldnotes fields auth teams_work
 fieldnotes fields status teams_work
 fieldnotes sync teams_work

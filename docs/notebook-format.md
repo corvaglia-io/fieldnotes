@@ -97,7 +97,7 @@ byte object.
 For example:
 
 ```text
-20260822T093614Z_teams_wxs_message_note_01a028d5-90c0-7248-a74b-c8bc1085ab19.md
+20260822T093614Z_teams_acme_message_note_01a028d5-90c0-7248-a74b-c8bc1085ab19.md
 ```
 
 The timestamp is the UTC rendering of the instant in `occurred_at`, at whole
@@ -117,7 +117,7 @@ Every Note contains flat YAML frontmatter with these properties:
 ---
 id: note_01a028d5-90c0-7248-a74b-c8bc1085ab19
 instance_id: fn_01a02837-2de0-7a2b-8c41-f2481851192a
-field_id: teams_wxs
+field_id: teams_acme
 type: message
 occurred_at: 2026-08-22T11:36:14+02:00
 ---
@@ -129,8 +129,8 @@ producer references are preserved in `collected_by`:
 
 ```yaml
 collected_by:
-  - fn_01a02837-2de0-7a2b-8c41-f2481851192a/teams_wxs
-  - fn_01a02837-31c8-75ef-b4df-95d5cdcf09cc/teams_wxs
+  - fn_01a02837-2de0-7a2b-8c41-f2481851192a/teams_acme
+  - fn_01a02837-31c8-75ef-b4df-95d5cdcf09cc/teams_acme
 ```
 
 `collected_by` is a list of `<instance_id>/<field_id>` strings. On a freshly

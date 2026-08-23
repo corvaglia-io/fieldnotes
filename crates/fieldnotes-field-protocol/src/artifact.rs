@@ -571,7 +571,7 @@ mod tests {
     fn the_handle_grammar_refuses_every_way_of_spelling_a_path() {
         for hostile in [
             "../../../../etc/passwd",
-            "/Users/joe/.ssh/id_ed25519",
+            "/home/user/.ssh/id_ed25519",
             "sub/dir",
             "sub\\dir",
             "a.b",

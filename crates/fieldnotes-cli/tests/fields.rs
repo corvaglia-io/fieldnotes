@@ -57,7 +57,7 @@ fn add_list_status_remove_round_trip_through_the_binary() -> std::io::Result<()>
     // An unregistered stem is rejected the same way.
     let add_unknown = run(
         &root,
-        &["fields", "add", "github", "joe", "--executable", "/bin/x"],
+        &["fields", "add", "github", "sam", "--executable", "/bin/x"],
     )?;
     assert!(!add_unknown.status.success());
     assert_eq!(add_unknown.status.code(), Some(2));
@@ -169,7 +169,7 @@ fn removing_one_field_leaves_another_fields_configuration_and_notes_untouched()
     let init = run(&root, &["init"])?;
     assert!(init.status.success(), "{}", stderr(&init));
 
-    for (field_type, label) in [("local", "work"), ("teams", "wxs")] {
+    for (field_type, label) in [("local", "work"), ("teams", "acme")] {
         let add = run(
             &root,
             &["fields", "add", field_type, label, "--executable", "/bin/x"],
@@ -185,7 +185,7 @@ fn removing_one_field_leaves_another_fields_configuration_and_notes_untouched()
     let list = run(&root, &["fields", "list", "--format", "json"])?;
     let list_json = stdout(&list);
     assert!(!list_json.contains("local_work"));
-    assert!(list_json.contains("teams_wxs"));
+    assert!(list_json.contains("teams_acme"));
 
     let status = run(&root, &["status", "--format", "json"])?;
     assert!(stdout(&status).contains(r#""total":1"#));

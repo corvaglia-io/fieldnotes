@@ -14,7 +14,7 @@
 //!
 //! ```text
 //! # Fieldnotes user profile
-//! notebook = /Users/joe/notebooks/work
+//! notebook = /home/user/notebooks/work
 //! timezone = Europe/Zurich
 //! artifact_max_bytes = 26214400
 //! artifact_media_types = application/pdf,image/png,text/plain

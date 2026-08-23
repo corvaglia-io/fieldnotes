@@ -535,7 +535,7 @@ mod tests {
             FieldConfig::new("local_work", PathBuf::from("/usr/local/bin/local-field"));
         config
             .config
-            .insert("path".to_owned(), "/Users/joe/reference".to_owned());
+            .insert("path".to_owned(), "/home/user/reference".to_owned());
         write_field_config(&notebook, &config)?;
         assert_eq!(
             read_field_config(&notebook, "local_work")?,
@@ -565,7 +565,7 @@ mod tests {
         let (notebook, _) = Notebook::create(&temp.path().join("notebook"))?;
         write_field_config(
             &notebook,
-            &FieldConfig::new("teams_wxs", PathBuf::from("/bin/teams-field")),
+            &FieldConfig::new("teams_acme", PathBuf::from("/bin/teams-field")),
         )?;
         write_field_config(
             &notebook,
@@ -580,7 +580,7 @@ mod tests {
             .collect();
         assert_eq!(
             listed,
-            vec!["local_work".to_owned(), "teams_wxs".to_owned()]
+            vec!["local_work".to_owned(), "teams_acme".to_owned()]
         );
         Ok(())
     }
@@ -595,12 +595,12 @@ mod tests {
         )?;
         write_field_config(
             &notebook,
-            &FieldConfig::new("teams_wxs", PathBuf::from("/bin/teams-field")),
+            &FieldConfig::new("teams_acme", PathBuf::from("/bin/teams-field")),
         )?;
         assert!(remove_field_config(&notebook, "local_work")?);
         assert!(!remove_field_config(&notebook, "local_work")?);
         assert_eq!(read_field_config(&notebook, "local_work")?, None);
-        assert!(read_field_config(&notebook, "teams_wxs")?.is_some());
+        assert!(read_field_config(&notebook, "teams_acme")?.is_some());
         Ok(())
     }
 

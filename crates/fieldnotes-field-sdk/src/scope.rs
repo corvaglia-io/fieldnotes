@@ -59,8 +59,8 @@ mod tests {
 
     #[test]
     fn the_scope_never_embeds_the_raw_identifier() {
-        let scope = derive("local-root", b"/home/jgcorvaglia/reference-library");
-        assert!(!scope.contains("jgcorvaglia"));
+        let scope = derive("local-root", b"/home/samkeller/reference-library");
+        assert!(!scope.contains("samkeller"));
         assert!(scope.starts_with("local-root:"));
     }
 }

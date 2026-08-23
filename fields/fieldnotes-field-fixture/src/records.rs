@@ -269,9 +269,9 @@ pub fn mail_message(run_id: &str, seq: u64) -> Value {
         "properties": {
             "subject": "Migration Thursday",
             "from": "alice@example.com",
-            "to": ["joe@example.net"],
+            "to": ["sam@example.net"],
             "cc": ["bob@example.net"],
-            "participants": ["alice@example.com", "bob@example.net", "joe@example.net"],
+            "participants": ["alice@example.com", "bob@example.net", "sam@example.net"],
             "conversation_id": "AAQkAGI2TQ",
             "thread_id": "outlook-thread/AAQkAGI2TQ",
             "outlook_mail_importance": "normal",
@@ -282,7 +282,7 @@ pub fn mail_message(run_id: &str, seq: u64) -> Value {
         },
         "body": {
             "format": "markdown",
-            "text": "# Migration Thursday\n\nHi Joe,\n\nWe move the tenant on Thursday at 09:00.\n\nAlice\n"
+            "text": "# Migration Thursday\n\nHi Sam,\n\nWe move the tenant on Thursday at 09:00.\n\nAlice\n"
         },
         "identity_anchors": [
             {
@@ -329,8 +329,8 @@ pub fn standup_recording_declined(run_id: &str, seq: u64) -> Value {
         "properties": {
             "subject": "Team standup recording",
             "from": "alice@example.com",
-            "to": ["joe@example.net"],
-            "participants": ["alice@example.com", "joe@example.net"],
+            "to": ["sam@example.net"],
+            "participants": ["alice@example.com", "sam@example.net"],
             "conversation_id": "AAQkAGI2TS",
             "thread_id": "outlook-thread/AAQkAGI2TS",
             "outlook_mail_importance": "normal",
@@ -340,7 +340,7 @@ pub fn standup_recording_declined(run_id: &str, seq: u64) -> Value {
         },
         "body": {
             "format": "markdown",
-            "text": "# Team standup recording\n\nHi Joe,\n\nSharing this week's standup notes and the recording.\n\nAlice\n"
+            "text": "# Team standup recording\n\nHi Sam,\n\nSharing this week's standup notes and the recording.\n\nAlice\n"
         },
         "artifacts": [
             {
@@ -388,8 +388,8 @@ pub fn standup_recording_hostile_staged_video(run_id: &str, seq: u64) -> Value {
         "properties": {
             "subject": "Second copy of the recording",
             "from": "alice@example.com",
-            "to": ["joe@example.net"],
-            "participants": ["alice@example.com", "joe@example.net"],
+            "to": ["sam@example.net"],
+            "participants": ["alice@example.com", "sam@example.net"],
             "conversation_id": "AAQkAGI2TS",
             "thread_id": "outlook-thread/AAQkAGI2TS",
             "outlook_mail_importance": "normal",

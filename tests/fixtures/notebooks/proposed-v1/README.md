@@ -126,6 +126,40 @@ fixtures. This batch adds one normative fixture:
   `RecordBuilder` and `content_hash_value`, matching the process the corpus's
   own fixture limits section describes below.
 
+## ADR 0011 identifier neutralization
+
+Before this repository's first publication to a public remote,
+[ADR 0011](../../../../docs/decisions/0011-neutralize-illustrative-personal-identifiers.md)
+substituted the illustrative personal identifiers this corpus had inherited
+from the owner's own environment. The notebook-owner persona is now `sam` /
+`Sam` / `sam@example.net`, and the illustrative Field label that abbreviated
+the owner's company is now `acme`. `alice@example.com` / `Alice Müller`,
+`bob@example.net` / `Bob Rossi`, and `former.colleague@example.com` were
+already fictional and are untouched.
+
+Nothing else changed. No property name, record type, grammar, property
+ordering, list semantics, scalar form, limit, or rejection code changed; no
+fixture's structure, coverage, or isolated edge case changed; and because no
+Note's filename inputs changed, no filename changed.
+
+Two consequences for the verified vectors this corpus carries:
+
+- the `content_hash` on the five Notes whose Markdown bodies addressed or
+  named the persona was recomputed. The corpus's other fourteen embedded
+  content hashes recompute unchanged, because their bodies never named the
+  persona;
+- both semantic-record fingerprints in `conflicts/<conf-id>/conflict.md` were
+  recomputed, because both candidates' `to` lists carry the persona address.
+  Candidate ordering by ascending fingerprint did **not** change, so neither
+  candidate file was renumbered and `candidate_1.md` still holds the
+  lexicographically smaller fingerprint. The candidates' own `content_hash`
+  values are unchanged: the persona address is in their frontmatter, and
+  `fn-content-v1` hashes the body alone.
+
+`crates/fieldnotes-format/tests/conformance_valid.rs` and
+`conformance_hashes.rs` recompute every one of these from the fixture bytes
+on each test run.
+
 ## Gate classification
 
 | Corpus area | A1 approval meaning | Later gate work |

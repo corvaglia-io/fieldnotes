@@ -47,7 +47,7 @@ UX require approval before external Field distribution is enabled.
 Configuration contains a named credential-profile reference, never a secret:
 
 ```yaml
-credential_profile: microsoft_wxs
+credential_profile: microsoft_acme
 ```
 
 Default providers are:

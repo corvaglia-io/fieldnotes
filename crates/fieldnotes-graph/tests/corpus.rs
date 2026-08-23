@@ -42,7 +42,7 @@ fn the_approved_corpus_derives_three_explainable_people() -> TestResult {
                 "phone:+41441234567".to_owned()
             ],
             vec!["email:bob@example.net".to_owned()],
-            vec!["email:joe@example.net".to_owned()],
+            vec!["email:sam@example.net".to_owned()],
         ],
         "entities are ordered by primary anchor, and only the contact record's anchors join"
     );

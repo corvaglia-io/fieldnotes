@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn store_and_clear_are_never_honored() -> Result<(), Box<dyn std::error::Error>> {
         let provider = EnvCredentialProvider::new("FIELDNOTES_CREDENTIALS_TEST_ENV_PROVIDER_RO");
-        let reference = CredentialRef::parse("microsoft_wxs")?;
+        let reference = CredentialRef::parse("microsoft_acme")?;
         assert!(matches!(
             provider.store(&reference, &Secret::new("x")),
             Err(CredentialError::Unavailable(_))
@@ -171,7 +171,7 @@ mod tests {
         // unlikely name.
         let provider =
             EnvCredentialProvider::new("FIELDNOTES_CREDENTIALS_TEST_DELIBERATELY_UNSET_3f9c9d2b1a");
-        let reference = CredentialRef::parse("microsoft_wxs")?;
+        let reference = CredentialRef::parse("microsoft_acme")?;
         assert_eq!(provider.retrieve(&reference), Err(CredentialError::Absent));
         Ok(())
     }

@@ -212,7 +212,10 @@ mod tests {
             FieldId::parse("outlook_mail_work", registry)?.as_str(),
             "outlook_mail_work"
         );
-        assert_eq!(FieldId::parse("teams_wxs", registry)?.as_str(), "teams_wxs");
+        assert_eq!(
+            FieldId::parse("teams_acme", registry)?.as_str(),
+            "teams_acme"
+        );
         assert_eq!(
             FieldId::parse("jira_acme_eu", registry)?.as_str(),
             "jira_acme_eu"

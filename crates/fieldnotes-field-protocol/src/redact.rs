@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn credentials_embedded_in_a_url_are_redacted() {
         let redactor = Redactor::new();
-        let redacted = redactor.redact("fetch failed for https://joe:hunter2@example.net/mail");
+        let redacted = redactor.redact("fetch failed for https://sam:hunter2@example.net/mail");
         assert!(!redacted.contains("hunter2"), "leaked: {redacted}");
         assert!(redacted.contains("example.net/mail"));
     }

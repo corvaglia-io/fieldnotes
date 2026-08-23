@@ -90,6 +90,50 @@ consequence of a rule (source provenance never depends on retention) that
 section 6 already implied; it changes no approved byte of an existing
 fixture.
 
+**2026-08-23:** Before this repository's first publication to a public
+remote, the owner approved neutralizing the illustrative personal
+identifiers the corpus had inherited from the owner's own environment,
+recorded with rationale, rejected alternatives, and the full list of
+recomputed digests in
+[ADR 0011](../decisions/0011-neutralize-illustrative-personal-identifiers.md):
+
+9. Illustrative values only were substituted. The notebook-owner persona —
+   previously the owner's own given name and a mailbox-shaped address built
+   from it — is now `sam` / `Sam` / `sam@example.net`. The illustrative Field
+   label that abbreviated the owner's company is now `acme`: deliberately not
+   `work`, which already exists in the corpus and would have collapsed two
+   distinct Field IDs or deduplicated two `collected_by` entries. Illustrative
+   absolute paths, previously rooted in the owner's real home directory, are
+   now rooted at `/home/user/`, keeping each path's shape — a staging path
+   still reads as a staging path, a configured local root as a local root, and
+   an absolute artifact handle as an absolute path. `alice@example.com` /
+   `Alice Müller`, `bob@example.net` / `Bob Rossi`, and
+   `former.colleague@example.com` were already fictional and are untouched.
+   ADR 0011 deliberately does not quote the replaced values, since recording
+   them here would publish exactly what this amendment removes.
+
+   No property name, record type, grammar, limit, rejection code, list
+   semantics, property ordering, or filename form changed, and no fixture's
+   structure, coverage, or isolated edge case changed. No Note's
+   filename inputs changed, so no filename changed. The invalid corpus is
+   rejected with exactly the same errors, each fixture still isolating its
+   single error.
+
+   Because the persona address appears inside content-hashed Note bodies and
+   inside retained semantic-record encoding, ADR 0011 recomputed:
+   `fn-content-v1-sha256` on the five Notes whose bodies named the persona
+   (the other fourteen embedded content hashes recompute unchanged); the
+   `fn-record-v1-sha256` semantic-record vector in
+   `tests/fixtures/hashes/proposed-v1/semantic-record-canonical.sha256`; and
+   both `fn-record-v1-sha256` candidate fingerprints in the frozen conflict
+   bundle. Candidate ordering by ascending fingerprint did not change, so no
+   candidate file was renumbered. The artifact byte vectors and the
+   normalized-body vector contain no identifier and are unchanged.
+
+Ruling 9 changes approved bytes without changing any approved rule: every
+file valid under the prior contract prose is still valid, and every file
+invalid under it is still invalid for the same reason.
+
 ## Decision requested
 
 A1 freezes the byte-visible notebook contract that core writers, Fields,

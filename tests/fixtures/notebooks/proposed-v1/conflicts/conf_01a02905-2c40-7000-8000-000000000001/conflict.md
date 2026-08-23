@@ -2,8 +2,8 @@
 id: conf_01a02905-2c40-7000-8000-000000000001
 type: same_note_id
 candidate_fingerprints:
-  - "fn-record-v1-sha256:6d3c4df298a4f93db538aa1f03a69bc116eb3ed729255b9e61857895478306b1"
-  - "fn-record-v1-sha256:8daef2ad6b0785435c0883e1f24e970bbed9e72643148ecc632a9701eee5854b"
+  - "fn-record-v1-sha256:34179e54a18180b6ba011fe21c129028d2cbe8b04944a7e53fdeb5f6e296a2ba"
+  - "fn-record-v1-sha256:673055d893d0aa9e25a4abc19aa1a3a32fc59b5ab5f531e8ad00c69fff6665e1"
 detected_at: 2026-08-22T12:30:00+02:00
 involved_note_ids:
   - note_01a028ea-9f60-7000-8000-00000000000b

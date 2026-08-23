@@ -359,11 +359,11 @@ Examples:
 
 ```text
 teams_work
-teams_niivo
-outlook_wxs
+teams_contoso
+outlook_acme
 outlook_private
-jira_wxs
-twenty_wxs
+jira_acme
+twenty_acme
 contacts_private
 self
 ```
@@ -389,7 +389,7 @@ Configuration is private application state and is not constrained by the flat no
 ```yaml
 id: teams_work
 driver: teams
-account: joe@example.net
+account: sam@example.net
 tenant: Example AG
 credential_profile: microsoft_work
 ```
@@ -411,7 +411,7 @@ Every Field type owns a stable prefix. When a source concept maps cleanly to the
 from: alice@example.com
 participants:
   - alice@example.com
-  - joe@example.net
+  - sam@example.net
 teams_chat_id: "19:abc..."
 teams_message_type: message
 teams_importance: normal
@@ -741,13 +741,13 @@ source_url: https://teams.microsoft.com/l/message/...
 from: alice@example.com
 participants:
   - alice@example.com
-  - joe@example.net
+  - sam@example.net
 subject: Migration Thursday
 thread_id: "19:abc..."
 content_hash: sha256:6f4d...
 identities:
   - email:alice@example.com
-  - email:joe@example.net
+  - email:sam@example.net
 teams_chat_id: "19:abc..."
 teams_message_type: message
 ---
@@ -835,7 +835,7 @@ Every installation creates a stable global `instance_id` on initialization:
 ```yaml
 instance_id: fn_01K3M5AWZ2MN7PX1JY9M6EA54F
 created_at: 2026-08-22T11:24:00
-name: joes-macbook
+name: sams-macbook
 ```
 
 The friendly name may change. The ID does not.
@@ -847,7 +847,7 @@ A user may run separate instances on work and private systems, email or copy not
 For example:
 
 ```text
-Work Mac       fn_A → teams_work, outlook_wxs
+Work Mac       fn_A → teams_work, outlook_acme
 Private Mac    fn_B → gmail_private, calendar_private
 Laptop         fn_C → teams_work
 ```
@@ -932,7 +932,7 @@ identities:
   - entra-user:8d82...
 seen_in:
   - teams_work
-  - outlook_wxs
+  - outlook_acme
 first_seen: 2026-06-18T08:22:00
 last_seen: 2026-08-22T09:36:14
 languages_observed:
@@ -1283,7 +1283,7 @@ id: prop_01K3P2...
 type: entity_update
 created_at: 2026-08-22T12:10:00
 entity_id: ent_01K3N1...
-target_field_id: twenty_wxs
+target_field_id: twenty_acme
 target_source_id: person_83472
 status: proposed
 evidence:
@@ -1395,7 +1395,7 @@ fieldnotes fields remove <field_id>
 Example:
 
 ```text
-$ fieldnotes fields add teams wxs
+$ fieldnotes fields add teams acme
 Added field: teams_work
 
 $ fieldnotes fields auth teams_work
@@ -1441,15 +1441,15 @@ Fieldnotes/
 │   ├── fields/
 │   │   ├── self.yaml
 │   │   ├── teams_work.yaml
-│   │   ├── outlook_wxs.yaml
-│   │   └── twenty_wxs.yaml
+│   │   ├── outlook_acme.yaml
+│   │   └── twenty_acme.yaml
 │   └── cache/
 │       ├── cursors/
 │       └── graph/
 ├── notes/
 │   ├── 20260822T093614Z_teams_work_message_note_01K3M7....md
-│   ├── 20260822T101803Z_outlook_wxs_mail_note_01K3M8....md
-│   ├── 20260822T102741Z_jira_wxs_ticket_note_01K3M9....md
+│   ├── 20260822T101803Z_outlook_acme_mail_note_01K3M8....md
+│   ├── 20260822T102741Z_jira_acme_ticket_note_01K3M9....md
 │   └── 20260822T142511Z_self_voice_note_01K3MA....md
 ├── extractions/
 │   ├── ext_01K3X1_interaction_language.md

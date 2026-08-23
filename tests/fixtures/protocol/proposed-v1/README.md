@@ -199,7 +199,7 @@ one. What was verified, and how:
    these twelve files, proving the set is self-contained and needs no network;
 4. targeted accept-and-reject probes confirm the guards do what they claim,
    including that `-00:00` and a `Z` datetime are rejected while `+00:00` is
-   accepted, that `../etc/passwd`, `/Users/joe/.ssh/id_ed25519`, `sub/dir`,
+   accepted, that `../etc/passwd`, `/home/user/.ssh/id_ed25519`, `sub/dir`,
    `a.b`, `nul`, and `com3` are all rejected as artifact handles, that a mixed
    list is rejected, and that a declared list property without
    `list_semantics` and a declared scalar property with it are both rejected;
@@ -277,3 +277,40 @@ bare `image` are rejected, that a `not_retained` reference without
 `mode: "snapshot"` is rejected in each case. This is still scratch tooling,
 deliberately not committed, and still not a substitute for the Rust
 conformance kit.
+
+### Re-verification after the ADR 0011 identifier pass
+
+Before this repository's first publication to a public remote,
+[ADR 0011](../../../../docs/decisions/0011-neutralize-illustrative-personal-identifiers.md)
+substituted the illustrative personal identifiers these transcripts had
+inherited from the owner's own environment. The illustrative
+`artifact_staging_dir` and local-Field `root_path` values, previously rooted
+in the owner's real home directory, are now rooted at `/home/user/`, keeping
+each path's shape (`/home/user/notebook/.fieldnotes/cache/staging/run-…` and
+`/home/user/reference-library`). The illustrative `outlook_mail`
+`config.account`, the mail `to` and `participants` values, the `email`
+identity-anchor values, and the mail body salutations now name
+`sam@example.net` / `Sam` in place of the owner. The absolute artifact handle
+probed in `11-hostile-artifact-references.ndjson` is now
+`/home/user/.ssh/id_ed25519`; item 4 of the verification list above quotes
+that handle and has been updated to match the byte actually probed.
+
+No schema file changed, no transcript gained or lost a line, and no frame
+type, property name, grammar, limit, rejection code, sequence number, cursor
+value, checkpoint coverage, or exit code changed.
+
+This pass re-verified the corpus the same way as before, again with `python3`
+and `jsonschema` 4.26.0 in a throwaway virtual environment outside the
+repository: all twelve schemas parse, are UTF-8 and LF, end with exactly one
+final LF, declare the 2020-12 dialect and an `$id`, and validate against the
+2020-12 meta-schema; all 108 `$ref`s resolve inside a registry built only
+from those twelve files; all 215 transcript lines parse and validate against
+`transcript.schema.json`; and all 86 `frame` payloads validate against the
+wire schema their `type` selects and against their direction's — or, on the
+credential channel, the credential channel's — union schema. Every
+`valid: false` frame still fails exactly as before, for the same reason and
+under the same `expect_reject` code: in particular the substituted absolute
+handle still fails `record-event.schema.json` at `artifacts[0].handle`
+against the same single-segment handle pattern, because an absolute path was
+substituted for an absolute path. This is still scratch tooling, deliberately
+not committed, and still not a substitute for the Rust conformance kit.
