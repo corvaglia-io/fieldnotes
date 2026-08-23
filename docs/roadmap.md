@@ -161,6 +161,9 @@ Deliver:
 - exact same-Note-ID and portable-source-key cross-instance duplicate handling, producer-union metadata, and unresolved conflict preservation;
 - disposable graph/index storage rebuilt from canonical files and non-secret configuration.
 
+The identity namespace/scoping registry itself is not yet approved as fixture
+bytes; see [A1 graph implementation findings](approvals/A1-graph-implementation-findings.md).
+
 **Release gate R2:** deleting all caches and derived graph files reproduces the same semantic graph; copying two fixture notebooks together loses no provenance; identical Note IDs deduplicate exactly; divergent content for one Note ID produces a preserved conflict; content-hash equality alone never removes a Note.
 
 ### 0.1.3 — Authentication and Outlook Mail

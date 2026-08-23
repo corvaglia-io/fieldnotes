@@ -47,7 +47,7 @@ Every identity namespace has a declared matching scope. Relevant scope classes i
 
 Connectors declare the namespace, scope, normalization rule, and evidence origin of the anchors they emit. Scope is connector metadata or durable configuration, not an unqualified convention hidden in graph code. A source value that cannot be scoped safely remains unresolved rather than being treated as exact.
 
-The final v0.1 registry of namespaces and normalization vectors is part of the A1 notebook-contract approval. This document defines the semantics, not an exhaustive public schema.
+The final v0.1 registry of namespaces and normalization vectors is **not yet approved**: A1 enumerates no such registry, and the frozen corpus demonstrates only `email:` and `phone:` anchors with no fixture pinning their normalization vector, scope class, or strength as approved bytes. See [A1 graph implementation findings, finding 2](approvals/A1-graph-implementation-findings.md#finding-2-the-identity-namespace-registry-a1-was-said-to-freeze-does-not-exist). This document defines the semantics, not an exhaustive public schema.
 
 ## Identity strength
 
