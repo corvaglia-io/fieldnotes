@@ -68,6 +68,14 @@ transitively present in any Field binary via the protocol crate regardless
 of the SDK's existence; the rule above binds what the SDK crate itself may
 add on top of that.)
 
+> **Resolved by [ADR 0010](0010-property-registry-relocation.md).** The
+> parenthetical above flagged exactly the coupling that ADR 0010 later
+> closed: the registry moved to `fieldnotes-domain`, which has no byte form
+> of its own, and `fieldnotes-field-protocol` no longer depends on
+> `fieldnotes-format` at all. `cargo tree -p fieldnotes-field-local -e
+> normal` and `cargo tree -p fieldnotes-field-fixture -e normal` both now
+> show `fieldnotes-format` entirely absent, not merely unused by the SDK.
+
 ### What it contains
 
 Five modules, one per extracted helper, plus one for scaffolding that

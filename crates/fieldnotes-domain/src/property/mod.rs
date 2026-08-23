@@ -1,8 +1,12 @@
-//! Property-name grammar shared by every public notebook record.
+//! Property-name grammar and the shared property registry.
 //!
 //! Property names match `[a-z][a-z0-9_]*` and are at most 63 ASCII bytes.
 //! Source-specific properties additionally begin with their Field's registered
 //! prefix; that prefix rule lives with the stem registry in [`crate::field`].
+//! The approved names, scalar types, and list semantics themselves live in
+//! [`registry`].
+
+pub mod registry;
 
 /// Whether `name` matches `[a-z][a-z0-9_]*` and is at most 63 ASCII bytes.
 #[must_use]

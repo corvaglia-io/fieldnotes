@@ -20,8 +20,8 @@
 //! 5. spelling-based inference is retired for declared properties: the type
 //!    comes from the declaration;
 //! 6. an unprefixed name that the registry types for a **derived record**
-//!    only — [`fieldnotes_format::registry::DERIVED_RECORD_ONLY`], such as
-//!    `confidence` or `generated_at` — is **rejected**. A Field collects a
+//!    only — [`fieldnotes_domain::property::registry::DERIVED_RECORD_ONLY`],
+//!    such as `confidence` or `generated_at` — is **rejected**. A Field collects a
 //!    Note, never a derived record, so that subset of the registry is not
 //!    Note-applicable and is not a vocabulary a record may use.
 //!
@@ -36,10 +36,10 @@ use std::fmt;
 use serde::de::{self, Unexpected};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use fieldnotes_domain::{Date, Datetime, FieldStemRegistry, ScalarKind};
-use fieldnotes_format::registry::{
+use fieldnotes_domain::property::registry::{
     ListSemantics as RegistryListSemantics, PropertyRegistry, PropertyType,
 };
+use fieldnotes_domain::{Date, Datetime, FieldStemRegistry, ScalarKind};
 
 use crate::codes::RejectionCode;
 use crate::message::{DeclaredProperty, Manifest};
@@ -125,9 +125,9 @@ pub enum Cardinality {
 /// Whether a declared list's order carries meaning.
 ///
 /// These are A1's two list classes. The bridge to
-/// [`fieldnotes_format::ListSemantics`] is [`ListSemantics::registry`], so the
-/// canonical serializer and the manifest cannot disagree about which lists get
-/// sorted.
+/// [`fieldnotes_domain::property::registry::ListSemantics`] is
+/// [`ListSemantics::registry`], so the canonical serializer and the manifest
+/// cannot disagree about which lists get sorted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ListSemantics {
@@ -386,7 +386,7 @@ impl<'a> DeclaredPropertyIndex<'a> {
                     .to_owned(),
             });
         };
-        if !fieldnotes_format::registry::is_note_applicable(name) {
+        if !fieldnotes_domain::property::registry::is_note_applicable(name) {
             return Err(PropertyRejection {
                 code: RejectionCode::RecordUnknownProperty,
                 name: name.to_owned(),

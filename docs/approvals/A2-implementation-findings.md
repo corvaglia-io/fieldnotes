@@ -159,6 +159,36 @@ cursor file.
 **Candidate ruling.** A CLI presentation decision, not a protocol one; noted here
 only because it surfaced from A2's own edge case.
 
+## Finding 7: every Field binary transitively linked the canonical serializer
+
+**Resolved by [ADR 0010](../decisions/0010-property-registry-relocation.md).**
+`fieldnotes-field-protocol` depended on `fieldnotes-format` for exactly one
+thing: the A1 shared property registry `DeclaredPropertyIndex` needs to
+enforce ruling 4's closed-registry and derived-record-only checks. `cargo
+tree -p fieldnotes-field-local -e normal` showed the consequence directly:
+every Field binary transitively depended on `fieldnotes-format`, the crate
+that owns the RFC 8785 canonical number emitter, the plain-versus-quoted text
+rule, the flat-YAML frontmatter parser, and the Note filename computation —
+none of which a Field is ever supposed to need. [A2 section 6](A2-field-protocol.md#6-the-record-envelope-a-normalized-source-envelope)
+rejects a Field emitting rendered bytes specifically because duplicating the
+canonical serializer into every Field is a place it can be implemented
+incorrectly, and a Field binary that *links* the serializer, even unused, is
+one refactor away from someone reaching for it. [ADR 0009](../decisions/0009-field-sdk-extraction.md)
+flagged this dependency as pre-existing and deferred it rather than fixing it
+before the Field SDK shipped.
+
+**What shipped.** The registry moved to `fieldnotes-domain` — shared
+vocabulary with no I/O, exactly matching that crate's A0 responsibility —
+and `fieldnotes-format` now re-exports it rather than defining it.
+`fieldnotes-field-protocol` depends on `fieldnotes-domain` directly for the
+registry and no longer depends on `fieldnotes-format` at all. `cargo tree
+-p fieldnotes-field-local -e normal` and `cargo tree -p fieldnotes-field-fixture
+-e normal` both confirm `fieldnotes-format` is now absent from every Field
+binary's dependency graph. This is a pure relocation: every registry entry's
+name, type, and list semantics is byte-for-byte unchanged, and the full
+conformance suite (byte-for-byte round trips, invalid-fixture rejections,
+hash vectors) passes unmodified.
+
 ## Non-findings worth recording
 
 These were checked against implementation and needed no change:

@@ -16,6 +16,23 @@ tree and table did not name a separate SDK crate, instead folding "host/SDK
 support" into `fieldnotes-field-protocol`'s row, and that phrase is now
 removed from that row since the SDK crate owns it.
 
+**2026-08-23:** The A1 shared property registry moved from
+`fieldnotes-format` to `fieldnotes-domain`. ADR 0009 flagged, but did not
+revisit, that `fieldnotes-field-protocol` depended on `fieldnotes-format`
+solely to reach the registry, so every Field binary transitively linked the
+entire canonical notebook serializer — exactly the notebook-byte-work
+coupling A2 section 6's normalized source envelope decision exists to keep
+out of a Field process. [ADR 0010](../decisions/0010-property-registry-relocation.md)
+records the fix: the registry (names, scalar types, list semantics) is
+vocabulary with no I/O and no byte form of its own, which is
+`fieldnotes-domain`'s row below already, so it now lives there;
+`fieldnotes-format` re-exports it for its own internal use and for existing
+callers such as `fieldnotes-app`. `fieldnotes-field-protocol` no longer
+depends on `fieldnotes-format` at all, confirmed by `cargo tree
+-p fieldnotes-field-local -e normal` and `cargo tree -p fieldnotes-field-fixture
+-e normal`. The `fieldnotes-domain` row below is updated to name the
+registry explicitly.
+
 ## Recommendation
 
 Use a Cargo workspace with small core crates organized by dependency boundary, and keep each external Field as a sibling process under `fields/`.
@@ -60,7 +77,7 @@ The workspace starts with directories and minimal compiling crates only. Enhance
 
 | Path | Responsibility |
 |---|---|
-| `fieldnotes-domain` | IDs, scalar property algebra, shared vocabulary, source and producer keys; no I/O |
+| `fieldnotes-domain` | IDs, scalar property algebra, the shared property registry, shared vocabulary, source and producer keys; no I/O |
 | `fieldnotes-format` | strict Markdown/frontmatter parsing and canonical serialization |
 | `fieldnotes-store` | atomic Note/artifact/state operations and merge mechanics |
 | `fieldnotes-field-protocol` | versioned process DTOs, schemas, host support, conformance helpers |

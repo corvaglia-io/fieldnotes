@@ -282,7 +282,6 @@ name = "fieldnotes-field-protocol"
 version = "0.1.0"
 dependencies = [
  "fieldnotes-domain",
- "fieldnotes-format",
  "serde",
  "serde_json",
  "sha2",

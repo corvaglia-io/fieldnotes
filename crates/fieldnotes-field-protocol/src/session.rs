@@ -60,8 +60,11 @@ use std::fmt;
 use std::path::Path;
 
 use fieldnotes_domain::{FieldStemRegistry, NoteType};
+use sha2::{Digest, Sha256};
 
-use crate::artifact::{ArtifactDigestIndex, ArtifactOutcome, ArtifactRejection, resolve_artifact};
+use crate::artifact::{
+    ArtifactDigestIndex, ArtifactOutcome, ArtifactRejection, hex, resolve_artifact,
+};
 use crate::codes::{ExitCode, RejectionCode, RunOutcome};
 use crate::declared::{DeclaredPropertyIndex, PropertyRejection};
 use crate::grammar::{Cursor, MediaTypeMatcher};
@@ -437,7 +440,7 @@ pub fn semantic_fingerprint(record: &RecordEvent) -> Result<String, Rejection> {
             format!("record could not be encoded for duplicate detection: {error}"),
         )
     })?;
-    Ok(fieldnotes_format::sha256_hex(&encoded))
+    Ok(hex(&Sha256::digest(&encoded)))
 }
 
 /// One collect run, from core's side.

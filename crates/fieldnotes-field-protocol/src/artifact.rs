@@ -540,7 +540,12 @@ fn resolve_staged(
     })
 }
 
-fn hex(bytes: &[u8]) -> String {
+/// Lowercase hexadecimal encoding of arbitrary bytes.
+///
+/// `pub(crate)` so [`crate::session::semantic_fingerprint`] can render its own
+/// SHA-256 digest the same way, without this crate depending on
+/// `fieldnotes-format` just to reach an equivalent helper.
+pub(crate) fn hex(bytes: &[u8]) -> String {
     let mut rendered = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
         // Two lowercase hex digits per byte, matching A1's artifact identity.
