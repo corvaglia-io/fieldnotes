@@ -3,6 +3,19 @@
 **Status:** Approved and implemented on 2026-08-22  
 **Decision:** Use the proposed Rust workspace and Field process layout.
 
+## Approved amendments
+
+**2026-08-23:** Release `0.1.1` added a reusable Field-authoring SDK crate,
+`fieldnotes-field-sdk`, extracted from what the working `local` and `fixture`
+Fields actually needed rather than designed speculatively at A0 time. The
+rationale, its contents, what it deliberately excludes, and its dependency
+rule are recorded in
+[ADR 0009](../decisions/0009-field-sdk-extraction.md). The workspace tree and
+the crate-responsibility table below are updated to include it; A0's original
+tree and table did not name a separate SDK crate, instead folding "host/SDK
+support" into `fieldnotes-field-protocol`'s row, and that phrase is now
+removed from that row since the SDK crate owns it.
+
 ## Recommendation
 
 Use a Cargo workspace with small core crates organized by dependency boundary, and keep each external Field as a sibling process under `fields/`.
@@ -18,6 +31,7 @@ fieldnotes/
 │   ├── fieldnotes-format/
 │   ├── fieldnotes-store/
 │   ├── fieldnotes-field-protocol/
+│   ├── fieldnotes-field-sdk/
 │   ├── fieldnotes-app/
 │   ├── fieldnotes-graph/
 │   ├── fieldnotes-credentials/
@@ -49,7 +63,8 @@ The workspace starts with directories and minimal compiling crates only. Enhance
 | `fieldnotes-domain` | IDs, scalar property algebra, shared vocabulary, source and producer keys; no I/O |
 | `fieldnotes-format` | strict Markdown/frontmatter parsing and canonical serialization |
 | `fieldnotes-store` | atomic Note/artifact/state operations and merge mechanics |
-| `fieldnotes-field-protocol` | versioned process DTOs, schemas, host/SDK support, conformance helpers |
+| `fieldnotes-field-protocol` | versioned process DTOs, schemas, host support, conformance helpers |
+| `fieldnotes-field-sdk` | Field-authoring helpers (cursor encoding, artifact staging, truncation, scope derivation, frame emission, request dispatch); no vendor logic, no notebook byte work |
 | `fieldnotes-app` | sync orchestration and application use cases |
 | `fieldnotes-graph` | deterministic identities, entities, relationships, explanation, proposals |
 | `fieldnotes-credentials` | credential-provider interface, OS adapters, protected delivery |

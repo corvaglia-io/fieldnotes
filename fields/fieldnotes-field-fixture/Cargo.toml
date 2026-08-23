@@ -7,6 +7,11 @@ publish = false
 
 [dependencies]
 fieldnotes-field-protocol.workspace = true
+# The reusable Field-authoring SDK: the shared frame emitter, argv-parsing
+# and request-reading boilerplate. Reused here -- not just by a well-behaved
+# Field -- deliberately: if a helper does not also fit this Field's need to
+# misbehave on purpose, it does not belong in the SDK; see ADR 0009.
+fieldnotes-field-sdk.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]

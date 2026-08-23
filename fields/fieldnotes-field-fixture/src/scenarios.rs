@@ -8,17 +8,18 @@
 //! accept them; deliberately malformed output bypasses that step and is written
 //! as raw bytes, which is exactly what an untrusted child process can do.
 
-use std::io::{BufRead, Write};
+use std::io::BufRead;
 use std::path::Path;
 
 use fieldnotes_field_protocol::artifact::ArtifactHandle;
 use fieldnotes_field_protocol::codes::ExitCode as ProtocolExit;
-use fieldnotes_field_protocol::framing::FrameWriter;
 use fieldnotes_field_protocol::host::read_core_frame;
+use fieldnotes_field_protocol::limits::Limits;
 use fieldnotes_field_protocol::message::{
-    CollectRequest, CollectionMode, CoreFrame, DescribeRequest, FieldEvent,
+    CollectRequest, CollectionMode, CoreFrame, DescribeRequest,
 };
 use fieldnotes_field_protocol::version::select_version;
+use fieldnotes_field_sdk::emit::Emitter;
 use serde_json::{Value, json};
 
 use crate::records::{self, ARTIFACT_BYTES, ARTIFACT_DIGEST};
@@ -175,11 +176,16 @@ pub fn describe(scenario: Scenario, request: &DescribeRequest) -> ScenarioOutcom
     let run_id = request.run_id.as_str();
     // A describe run almost never states limits, since it has almost nothing
     // to bound; fall back to the frozen ceiling when core omitted them.
-    let max_frame_bytes = request.limits.map_or(
-        fieldnotes_field_protocol::limits::Limits::ceilings().max_frame_bytes,
-        |limits| limits.max_frame_bytes,
-    );
-    let mut emitter = Emitter::new(max_frame_bytes);
+    let max_frame_bytes = request
+        .limits
+        .map_or(Limits::ceilings().max_frame_bytes, |limits| {
+            limits.max_frame_bytes
+        });
+    let limits = Limits {
+        max_frame_bytes,
+        ..Limits::ceilings()
+    };
+    let mut emitter = Emitter::new(std::io::stdout(), limits);
     match scenario.flavor() {
         Flavor::NoSharedVersion => {
             // A Field that supports no version core offered emits no manifest:
@@ -225,7 +231,7 @@ pub fn describe(scenario: Scenario, request: &DescribeRequest) -> ScenarioOutcom
                 }
                 Flavor::FutureVersion | Flavor::NoSharedVersion => manifests::local(run_id),
             };
-            if emitter.frame(manifest) {
+            if emitter.checked_json(manifest) {
                 ScenarioOutcome::completed()
             } else {
                 ScenarioOutcome::failed(ProtocolExit::Internal)
@@ -243,7 +249,7 @@ pub fn collect<R: BufRead>(
     let run_id = request.run_id.as_str();
     let limits = request.limits;
     let staging = Path::new(&request.artifact_staging_dir);
-    let mut out = Emitter::new(limits.max_frame_bytes);
+    let mut out = Emitter::new(std::io::stdout(), limits);
     let scope = request.snapshot_scope.as_ref().map_or_else(
         || records::LOCAL_SCOPE.to_owned(),
         |scope| scope.as_str().to_owned(),
@@ -254,9 +260,9 @@ pub fn collect<R: BufRead>(
             if !stage(staging, "a0001", ARTIFACT_BYTES) {
                 return ScenarioOutcome::failed(ProtocolExit::Internal);
             }
-            out.frame(records::readme_with_staged_artifact(run_id, 1, "a0001"));
-            out.frame(records::agreement(run_id, 2));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme_with_staged_artifact(run_id, 1, "a0001"));
+            out.checked_json(records::agreement(run_id, 2));
+            out.checked_json(records::checkpoint(
                 run_id,
                 3,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -271,9 +277,9 @@ pub fn collect<R: BufRead>(
             // returns only newer material, and without one it starts unbounded.
             match &request.cursor {
                 Some(_) => {
-                    out.frame(records::skipped_diagnostic(run_id, 1));
-                    out.frame(records::timeline(run_id, 2));
-                    out.frame(records::checkpoint(
+                    out.checked_json(records::skipped_diagnostic(run_id, 1));
+                    out.checked_json(records::timeline(run_id, 2));
+                    out.checked_json(records::checkpoint(
                         run_id,
                         3,
                         "walk:v1:seq=3;mtime=2026-08-22T12:05:00Z",
@@ -283,10 +289,10 @@ pub fn collect<R: BufRead>(
                     ));
                 }
                 None => {
-                    out.frame(records::readme(run_id, 1));
-                    out.frame(records::agreement(run_id, 2));
-                    out.frame(records::timeline(run_id, 3));
-                    out.frame(records::checkpoint(
+                    out.checked_json(records::readme(run_id, 1));
+                    out.checked_json(records::agreement(run_id, 2));
+                    out.checked_json(records::timeline(run_id, 3));
+                    out.checked_json(records::checkpoint(
                         run_id,
                         4,
                         "walk:v1:seq=3;mtime=2026-08-22T12:05:00Z",
@@ -299,9 +305,9 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::completed()
         }
         Scenario::DuplicateReplay => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::readme(run_id, 2));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::readme(run_id, 2));
+            out.checked_json(records::checkpoint(
                 run_id,
                 3,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -312,13 +318,13 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::completed()
         }
         Scenario::DuplicateDivergent => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::readme_divergent(run_id, 2));
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::readme_divergent(run_id, 2));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::TombstoneLocal | Scenario::TombstoneLocalUnauthorized => {
-            out.frame(records::local_tombstone(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::local_tombstone(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=1;mtime=2026-08-22T12:40:11Z",
@@ -333,8 +339,8 @@ pub fn collect<R: BufRead>(
             }
         }
         Scenario::Tombstone | Scenario::TombstoneUnauthorized => {
-            out.frame(records::mail_tombstone(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::mail_tombstone(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "graph-delta:v1:eyJ0b2tlbiI6IjAyIn0",
@@ -349,9 +355,9 @@ pub fn collect<R: BufRead>(
             }
         }
         Scenario::SnapshotComplete => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::agreement(run_id, 2));
-            out.frame(records::snapshot_checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::agreement(run_id, 2));
+            out.checked_json(records::snapshot_checkpoint(
                 run_id,
                 3,
                 "walk:v1:snapshot;generation=7",
@@ -362,9 +368,9 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::completed()
         }
         Scenario::SnapshotPartial => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::unavailable_diagnostic(run_id, 2));
-            out.frame(records::snapshot_checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::unavailable_diagnostic(run_id, 2));
+            out.checked_json(records::snapshot_checkpoint(
                 run_id,
                 3,
                 "walk:v1:partial;prefix=projects/",
@@ -375,8 +381,8 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::SourceUnavailable)
         }
         Scenario::SnapshotScopeWidened => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::snapshot_checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::snapshot_checkpoint(
                 run_id,
                 2,
                 "walk:v1:snapshot;generation=8",
@@ -387,8 +393,8 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::RedactedDiagnostic => {
-            out.frame(records::mail_message(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::mail_message(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "graph-delta:v1:eyJ0b2tlbiI6IjAzIn0",
@@ -396,7 +402,7 @@ pub fn collect<R: BufRead>(
                 1,
                 false,
             ));
-            out.frame(records::redacted_auth_diagnostic(run_id, 3));
+            out.checked_json(records::redacted_auth_diagnostic(run_id, 3));
             report(
                 "2026-08-22T12:20:04+02:00 WARN outlook-mail: token refresh failed for profile \
                  microsoft_work; giving up after 1 attempt",
@@ -404,8 +410,8 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Authentication)
         }
         Scenario::MalformedNotJson => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -423,8 +429,8 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::MalformedSeqRegression => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -432,17 +438,17 @@ pub fn collect<R: BufRead>(
                 1,
                 false,
             ));
-            out.frame(records::readme(run_id, 1));
+            out.checked_json(records::readme(run_id, 1));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::MalformedDuplicateSeq => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::agreement(run_id, 1));
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::agreement(run_id, 1));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::MalformedSeqGap => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::agreement(run_id, 3));
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::agreement(run_id, 3));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::MalformedInvalidUtf8 => {
@@ -472,7 +478,7 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::ArtifactDigestOnly => {
-            out.frame(records::readme_with_artifact(
+            out.checked_json(records::readme_with_artifact(
                 run_id,
                 1,
                 json!({
@@ -483,7 +489,7 @@ pub fn collect<R: BufRead>(
                     "source_filename": "migration notes.txt"
                 }),
             ));
-            out.frame(records::checkpoint(
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=1;mtime=2026-08-22T09:45:00Z",
@@ -536,14 +542,14 @@ pub fn collect<R: BufRead>(
             if !stage_escape(staging, "a0004") {
                 return ScenarioOutcome::failed(ProtocolExit::Internal);
             }
-            out.frame(records::readme_with_staged_artifact(run_id, 1, "a0004"));
+            out.checked_json(records::readme_with_staged_artifact(run_id, 1, "a0004"));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::ArtifactDigestMismatch => {
             if !stage(staging, "a0005", ARTIFACT_BYTES) {
                 return ScenarioOutcome::failed(ProtocolExit::Internal);
             }
-            out.frame(records::readme_with_artifact(
+            out.checked_json(records::readme_with_artifact(
                 run_id,
                 1,
                 json!({
@@ -558,7 +564,7 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::ArtifactUnknownDigest => {
-            out.frame(records::readme_with_artifact(
+            out.checked_json(records::readme_with_artifact(
                 run_id,
                 1,
                 json!({
@@ -571,11 +577,11 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::ArtifactMissingStagedFile => {
-            out.frame(records::readme_with_staged_artifact(run_id, 1, "a0009"));
+            out.checked_json(records::readme_with_staged_artifact(run_id, 1, "a0009"));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::ArtifactOversized => {
-            out.frame(records::readme_with_artifact(
+            out.checked_json(records::readme_with_artifact(
                 run_id,
                 1,
                 json!({
@@ -592,7 +598,7 @@ pub fn collect<R: BufRead>(
             if !stage(staging, "a0011", ARTIFACT_BYTES) {
                 return ScenarioOutcome::failed(ProtocolExit::Internal);
             }
-            out.frame(records::readme_with_artifact(
+            out.checked_json(records::readme_with_artifact(
                 run_id,
                 1,
                 json!({
@@ -606,7 +612,7 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::PropertyUndeclared => {
-            out.frame(records::readme_with_property(
+            out.checked_json(records::readme_with_property(
                 run_id,
                 1,
                 "local_inode_number",
@@ -615,7 +621,7 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::PropertyForeignPrefix => {
-            out.frame(records::readme_with_property(
+            out.checked_json(records::readme_with_property(
                 run_id,
                 1,
                 "teams_chat_id",
@@ -624,7 +630,7 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::PropertyUnknown => {
-            out.frame(records::readme_with_property(
+            out.checked_json(records::readme_with_property(
                 run_id,
                 1,
                 "checksum_kind",
@@ -638,7 +644,7 @@ pub fn collect<R: BufRead>(
                 properties.insert("local_document_flag".to_owned(), json!(true));
                 properties.insert("local_tags".to_owned(), json!("contracts"));
             }
-            out.frame(record);
+            out.checked_json(record);
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::PropertyCoreOwned => {
@@ -661,7 +667,7 @@ pub fn collect<R: BufRead>(
             if let Some(object) = record.as_object_mut() {
                 object.insert("note_type".to_owned(), json!("email"));
             }
-            out.frame(record);
+            out.checked_json(record);
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::NoteTypeNotDeclared => {
@@ -669,11 +675,11 @@ pub fn collect<R: BufRead>(
             // the registry check; it simply is not what the "file" capability
             // slice declares. Declaration before exercise: a slice's
             // note_type is a bound, not decoration.
-            out.frame(records::readme_with_note_type(run_id, 1, "document"));
+            out.checked_json(records::readme_with_note_type(run_id, 1, "document"));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::PropertyInvalidDate => {
-            out.frame(records::agreement_with_property(
+            out.checked_json(records::agreement_with_property(
                 run_id,
                 1,
                 "local_document_date",
@@ -685,7 +691,7 @@ pub fn collect<R: BufRead>(
             // 'confidence' is a registered A1 property, but only for a
             // derived record generated from other Notes. A Field collects a
             // Note and must not be able to emit it.
-            out.frame(records::readme_with_property(
+            out.checked_json(records::readme_with_property(
                 run_id,
                 1,
                 "confidence",
@@ -696,7 +702,7 @@ pub fn collect<R: BufRead>(
         Scenario::ArtifactNotRetained => {
             // Bytes this large stay at the source by policy: the Field
             // declines to stage them, and the run still completes.
-            out.frame(records::readme_with_artifact(
+            out.checked_json(records::readme_with_artifact(
                 run_id,
                 1,
                 json!({
@@ -708,7 +714,7 @@ pub fn collect<R: BufRead>(
                     "attachment_ref": "file-attachment/full-export-zip-01"
                 }),
             ));
-            out.frame(records::checkpoint(
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=1;mtime=2026-08-22T09:45:00Z",
@@ -726,8 +732,8 @@ pub fn collect<R: BufRead>(
             if !stage(staging, "a0021", ARTIFACT_BYTES) {
                 return ScenarioOutcome::failed(ProtocolExit::Internal);
             }
-            out.frame(records::standup_recording_declined(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::standup_recording_declined(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "graph-delta:v1:eyJ0b2tlbiI6IjA2In0",
@@ -744,7 +750,7 @@ pub fn collect<R: BufRead>(
             if !stage(staging, "a0022", ARTIFACT_BYTES) {
                 return ScenarioOutcome::failed(ProtocolExit::Internal);
             }
-            out.frame(records::standup_recording_hostile_staged_video(run_id, 1));
+            out.checked_json(records::standup_recording_hostile_staged_video(run_id, 1));
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::CapabilityUndeclared => {
@@ -752,11 +758,11 @@ pub fn collect<R: BufRead>(
             if let Some(object) = record.as_object_mut() {
                 object.insert("object_kind".to_owned(), json!("mailbox"));
             }
-            out.frame(record);
+            out.checked_json(record);
             ScenarioOutcome::failed(ProtocolExit::Internal)
         }
         Scenario::Cancel => {
-            out.frame(records::readme(run_id, 1));
+            out.checked_json(records::readme(run_id, 1));
             // Cooperative cancellation: stop starting new work, offer one final
             // checkpoint for what was already emitted, and exit with code 8.
             match read_core_frame(input, limits.max_frame_bytes) {
@@ -773,9 +779,9 @@ pub fn collect<R: BufRead>(
                     return ScenarioOutcome::failed(ProtocolExit::Usage);
                 }
             }
-            out.frame(records::cancelled_diagnostic(run_id, 2));
+            out.checked_json(records::cancelled_diagnostic(run_id, 2));
             if request.mode == CollectionMode::Snapshot {
-                out.frame(records::snapshot_checkpoint(
+                out.checked_json(records::snapshot_checkpoint(
                     run_id,
                     3,
                     "walk:v1:partial;prefix=projects/rollout/readme.md",
@@ -784,7 +790,7 @@ pub fn collect<R: BufRead>(
                     records::claim(&scope, "partial", 1),
                 ));
             } else {
-                out.frame(records::checkpoint(
+                out.checked_json(records::checkpoint(
                     run_id,
                     3,
                     "walk:v1:partial;prefix=projects/rollout/readme.md",
@@ -796,8 +802,8 @@ pub fn collect<R: BufRead>(
             ScenarioOutcome::failed(ProtocolExit::Cancelled)
         }
         Scenario::CrashAfterCheckpoint => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -809,8 +815,8 @@ pub fn collect<R: BufRead>(
             std::process::abort();
         }
         Scenario::CrashBeforeCheckpoint => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -818,7 +824,7 @@ pub fn collect<R: BufRead>(
                 1,
                 false,
             ));
-            out.frame(records::agreement(run_id, 3));
+            out.checked_json(records::agreement(run_id, 3));
             report(
                 "fieldnotes-field-fixture: simulated crash after a durable write and before the \
                  checkpoint covering it",
@@ -826,8 +832,8 @@ pub fn collect<R: BufRead>(
             std::process::abort();
         }
         Scenario::ExitBeforeCheckpoint => {
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=2;mtime=2026-08-22T09:45:00Z",
@@ -835,7 +841,7 @@ pub fn collect<R: BufRead>(
                 1,
                 false,
             ));
-            out.frame(records::agreement(run_id, 3));
+            out.checked_json(records::agreement(run_id, 3));
             ScenarioOutcome::failed(ProtocolExit::Unclassified)
         }
         Scenario::ResumeAfterCrash => {
@@ -846,8 +852,8 @@ pub fn collect<R: BufRead>(
                 );
                 return ScenarioOutcome::failed(ProtocolExit::CursorUnusable);
             }
-            out.frame(records::agreement(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::agreement(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=3;mtime=2026-08-22T20:05:00Z",
@@ -864,8 +870,8 @@ pub fn collect<R: BufRead>(
             for index in 0..4096 {
                 report(&format!("{index:06} {line}"));
             }
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 "walk:v1:seq=1;mtime=2026-08-22T09:45:00Z",
@@ -883,9 +889,9 @@ pub fn collect<R: BufRead>(
         }
         Scenario::LeakSecretInDiagnostic => {
             let leaked = std::env::var(LEAK_VARIABLE).unwrap_or_default();
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::leaking_diagnostic(run_id, 2, &leaked));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::leaking_diagnostic(run_id, 2, &leaked));
+            out.checked_json(records::checkpoint(
                 run_id,
                 3,
                 "walk:v1:seq=1;mtime=2026-08-22T09:45:00Z",
@@ -897,8 +903,8 @@ pub fn collect<R: BufRead>(
         }
         Scenario::LeakSecretInCursor => {
             let leaked = std::env::var(LEAK_VARIABLE).unwrap_or_default();
-            out.frame(records::readme(run_id, 1));
-            out.frame(records::checkpoint(
+            out.checked_json(records::readme(run_id, 1));
+            out.checked_json(records::checkpoint(
                 run_id,
                 2,
                 &format!("walk:v1:token={leaked}"),
@@ -929,20 +935,10 @@ pub fn collect<R: BufRead>(
 /// [`Path::join`], never concatenated, so even the fixture cannot write outside
 /// the directory core named.
 fn stage(staging: &Path, handle: &str, bytes: &[u8]) -> bool {
-    let Ok(handle) = ArtifactHandle::parse(handle) else {
-        report("fieldnotes-field-fixture: refusing to stage under an invalid handle");
-        return false;
-    };
-    if std::fs::create_dir_all(staging).is_err() {
-        report("fieldnotes-field-fixture: the staging directory could not be created");
-        return false;
-    }
-    match std::fs::write(handle.resolve_in(staging), bytes) {
-        Ok(()) => true,
+    match fieldnotes_field_sdk::stage::stage_and_hash(staging, handle, bytes) {
+        Ok(_digest) => true,
         Err(error) => {
-            report(&format!(
-                "fieldnotes-field-fixture: staging failed for {handle}: {error}"
-            ));
+            report(&format!("fieldnotes-field-fixture: {error}"));
             false
         }
     }
@@ -977,62 +973,5 @@ fn stage_escape(staging: &Path, handle: &str) -> bool {
             ));
             false
         }
-    }
-}
-
-/// Writes frames to standard output, which carries protocol data and nothing
-/// else.
-struct Emitter {
-    writer: FrameWriter<std::io::Stdout>,
-}
-
-impl Emitter {
-    fn new(max_frame_bytes: u64) -> Self {
-        Emitter {
-            writer: FrameWriter::new(std::io::stdout(), max_frame_bytes),
-        }
-    }
-
-    /// Decodes the value through the protocol crate's own types and writes the
-    /// re-encoded frame, so a well-formed scenario cannot emit something the
-    /// data-transfer objects would refuse.
-    fn frame(&mut self, value: Value) -> bool {
-        match FieldEvent::decode(value) {
-            Ok(event) => match self.writer.write_event(&event) {
-                Ok(_) => true,
-                Err(error) => {
-                    report(&format!("fieldnotes-field-fixture: {error}"));
-                    false
-                }
-            },
-            Err(error) => {
-                report(&format!(
-                    "fieldnotes-field-fixture: refusing to emit a frame its own types reject: \
-                     {error}"
-                ));
-                false
-            }
-        }
-    }
-
-    /// Writes a value verbatim, without validating it.
-    ///
-    /// This is how the fixture misbehaves on purpose: an untrusted child process
-    /// is under no obligation to self-police, and core must not depend on it.
-    fn raw_json(&mut self, value: &Value) {
-        match serde_json::to_vec(value) {
-            Ok(mut bytes) => {
-                bytes.push(b'\n');
-                self.raw_bytes(&bytes);
-            }
-            Err(error) => report(&format!("fieldnotes-field-fixture: {error}")),
-        }
-    }
-
-    /// Writes bytes verbatim, terminating nothing and validating nothing.
-    fn raw_bytes(&mut self, bytes: &[u8]) {
-        let mut out = std::io::stdout();
-        let _ = out.write_all(bytes);
-        let _ = out.flush();
     }
 }

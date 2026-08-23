@@ -37,7 +37,6 @@ mod config;
 mod constants;
 mod cursor;
 mod describe;
-mod hexutil;
 mod manifest;
 mod record;
 mod scope;
@@ -46,27 +45,20 @@ mod walk;
 use std::io::{BufReader, stdin};
 use std::process::ExitCode;
 
-use fieldnotes_field_protocol::codes::ExitCode as ProtocolExit;
-use fieldnotes_field_protocol::host::Operation;
-
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    match arguments.as_slice() {
-        [token] if token == Operation::Describe.as_str() => describe::run(BufReader::new(stdin())),
-        [token] if token == Operation::Collect.as_str() => collect::run(BufReader::new(stdin())),
-        [token] => {
-            report(&format!(
-                "fieldnotes-field-local: unknown operation {token:?}; protocol v1 has exactly \
-                 two, 'describe' and 'collect'"
-            ));
-            ExitCode::from(ProtocolExit::Usage.as_raw())
+    let operation =
+        match fieldnotes_field_sdk::dispatch::parse_operation(&arguments, "fieldnotes-field-local")
+        {
+            Ok(operation) => operation,
+            Err(code) => return ExitCode::from(code),
+        };
+    match operation {
+        fieldnotes_field_protocol::host::Operation::Describe => {
+            describe::run(BufReader::new(stdin()))
         }
-        _ => {
-            report(
-                "fieldnotes-field-local: exactly one operation token is expected, either \
-                 'describe' or 'collect'",
-            );
-            ExitCode::from(ProtocolExit::Usage.as_raw())
+        fieldnotes_field_protocol::host::Operation::Collect => {
+            collect::run(BufReader::new(stdin()))
         }
     }
 }
@@ -74,8 +66,5 @@ fn main() -> ExitCode {
 /// Writes one line to standard error, which carries logs and nothing else:
 /// standard output carries protocol frames only.
 pub(crate) fn report(message: &str) {
-    use std::io::Write;
-    let mut stderr = std::io::stderr();
-    let _ = writeln!(stderr, "{message}");
-    let _ = stderr.flush();
+    fieldnotes_field_sdk::dispatch::report(message);
 }

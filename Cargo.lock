@@ -225,6 +225,7 @@ dependencies = [
  "fieldnotes-app",
  "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-field-sdk",
  "fieldnotes-format",
  "fieldnotes-store",
  "fieldnotes-test-support",
@@ -246,10 +247,10 @@ dependencies = [
  "fieldnotes-app",
  "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-field-sdk",
  "fieldnotes-format",
  "fieldnotes-store",
  "fieldnotes-test-support",
- "sha2",
 ]
 
 [[package]]
@@ -283,6 +284,16 @@ dependencies = [
  "fieldnotes-domain",
  "fieldnotes-format",
  "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "fieldnotes-field-sdk"
+version = "0.1.0"
+dependencies = [
+ "fieldnotes-field-protocol",
+ "fieldnotes-test-support",
  "serde_json",
  "sha2",
 ]

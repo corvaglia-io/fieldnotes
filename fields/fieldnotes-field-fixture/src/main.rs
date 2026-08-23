@@ -40,13 +40,13 @@ mod manifests;
 mod records;
 mod scenarios;
 
-use std::io::{BufReader, Write};
+use std::io::BufReader;
 use std::process::ExitCode;
 
 use fieldnotes_field_protocol::codes::ExitCode as ProtocolExit;
-use fieldnotes_field_protocol::host::{Operation, read_core_frame};
+use fieldnotes_field_protocol::host::Operation;
 use fieldnotes_field_protocol::limits::Limits;
-use fieldnotes_field_protocol::message::CoreFrame;
+use fieldnotes_field_sdk::dispatch::{read_collect_request, read_describe_request};
 
 use scenarios::{Scenario, ScenarioOutcome};
 
@@ -61,23 +61,12 @@ pub const LEAK_VARIABLE: &str = "FIELDNOTES_FIXTURE_LEAK_VALUE";
 
 fn main() -> ExitCode {
     let arguments: Vec<String> = std::env::args().skip(1).collect();
-    let operation = match arguments.as_slice() {
-        [token] if token == Operation::Describe.as_str() => Operation::Describe,
-        [token] if token == Operation::Collect.as_str() => Operation::Collect,
-        [token] => {
-            report(&format!(
-                "fieldnotes-field-fixture: unknown operation {token:?}; protocol v1 has exactly \
-                 two, 'describe' and 'collect'"
-            ));
-            return ExitCode::from(ProtocolExit::Usage.as_raw());
-        }
-        _ => {
-            report(
-                "fieldnotes-field-fixture: exactly one operation token is expected, either \
-                 'describe' or 'collect'",
-            );
-            return ExitCode::from(ProtocolExit::Usage.as_raw());
-        }
+    let operation = match fieldnotes_field_sdk::dispatch::parse_operation(
+        &arguments,
+        "fieldnotes-field-fixture",
+    ) {
+        Ok(operation) => operation,
+        Err(code) => return ExitCode::from(code),
     };
 
     let Some(name) = std::env::var(SCENARIO_VARIABLE).ok() else {
@@ -112,59 +101,30 @@ fn main() -> ExitCode {
 /// Writes one line to standard error, which is the only thing that ever goes
 /// there: standard output carries protocol frames and nothing else.
 fn report(message: &str) {
-    let mut stderr = std::io::stderr();
-    let _ = writeln!(stderr, "{message}");
-    let _ = stderr.flush();
+    fieldnotes_field_sdk::dispatch::report(message);
 }
 
 fn run_describe(scenario: Scenario) -> ScenarioOutcome {
     // Reading the request first is what makes negotiation a negotiation: the
     // Field selects from what core offered rather than announcing.
-    match read_core_frame(
+    match read_describe_request(
         BufReader::new(std::io::stdin()),
         Limits::ceilings().max_frame_bytes,
+        "fieldnotes-field-fixture",
     ) {
-        Ok(Some(CoreFrame::Describe(request))) => scenarios::describe(scenario, &request),
-        Ok(Some(_)) => {
-            report(
-                "fieldnotes-field-fixture: a describe run expects exactly one describe_request on \
-                 standard input",
-            );
-            ScenarioOutcome::failed(ProtocolExit::Usage)
-        }
-        Ok(None) => {
-            report("fieldnotes-field-fixture: standard input closed before any request arrived");
-            ScenarioOutcome::failed(ProtocolExit::Usage)
-        }
-        Err(error) => {
-            report(&format!(
-                "fieldnotes-field-fixture: the describe request did not validate: {error}"
-            ));
-            ScenarioOutcome::failed(ProtocolExit::Usage)
-        }
+        Ok(request) => scenarios::describe(scenario, &request),
+        Err(code) => ScenarioOutcome { exit_code: code },
     }
 }
 
 fn run_collect(scenario: Scenario) -> ScenarioOutcome {
     let mut input = BufReader::new(std::io::stdin());
-    match read_core_frame(&mut input, Limits::ceilings().max_frame_bytes) {
-        Ok(Some(CoreFrame::Collect(request))) => scenarios::collect(scenario, &request, &mut input),
-        Ok(Some(_)) => {
-            report(
-                "fieldnotes-field-fixture: a collect run expects a collect_request before any \
-                 other frame",
-            );
-            ScenarioOutcome::failed(ProtocolExit::Usage)
-        }
-        Ok(None) => {
-            report("fieldnotes-field-fixture: standard input closed before any request arrived");
-            ScenarioOutcome::failed(ProtocolExit::Usage)
-        }
-        Err(error) => {
-            report(&format!(
-                "fieldnotes-field-fixture: the collection request did not validate: {error}"
-            ));
-            ScenarioOutcome::failed(ProtocolExit::Usage)
-        }
+    match read_collect_request(
+        &mut input,
+        Limits::ceilings().max_frame_bytes,
+        "fieldnotes-field-fixture",
+    ) {
+        Ok(request) => scenarios::collect(scenario, &request, &mut input),
+        Err(code) => ScenarioOutcome { exit_code: code },
     }
 }

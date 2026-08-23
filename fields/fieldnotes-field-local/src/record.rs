@@ -20,7 +20,6 @@ use fieldnotes_field_protocol::message::{
     ArtifactKind, ArtifactRef, ArtifactRole, Body, Change, Integrity, RecordEvent, SourceRef,
 };
 use fieldnotes_field_protocol::value::{PropertyValue, RecordProperties};
-use sha2::{Digest, Sha256};
 
 use crate::classify;
 use crate::walk::WalkEntry;
@@ -81,26 +80,6 @@ fn occurred_at_from(modified_unix_seconds: i64) -> Result<OffsetDatetime, Record
         .map_err(|error| RecordError(format!("modification time out of range: {error}")))?;
     OffsetDatetime::parse(&datetime.to_string())
         .map_err(|error| RecordError(format!("rendered instant failed its own guard: {error}")))
-}
-
-/// Truncates `text` to at most `max_bytes`, on a valid UTF-8 boundary,
-/// returning the truncated text and the number of characters removed.
-pub(crate) fn truncate(text: &str, max_bytes: u64) -> (String, u64) {
-    let max = usize::try_from(max_bytes).unwrap_or(usize::MAX);
-    if text.len() <= max {
-        return (text.to_owned(), 0);
-    }
-    let mut end = max;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let kept = &text[..end];
-    let original_chars = text.chars().count();
-    let kept_chars = kept.chars().count();
-    (
-        kept.to_owned(),
-        u64::try_from(original_chars.saturating_sub(kept_chars)).unwrap_or(0),
-    )
 }
 
 fn media_type_of(text: &str) -> Result<MediaType, RecordError> {
@@ -190,9 +169,6 @@ fn build_artifact(
     let bytes = fs::read(&entry.absolute_path)
         .map_err(|error| RecordError(format!("could not read {}: {error}", entry.relative_path)))?;
     let byte_length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
-    let digest = crate::hexutil::to_hex(&hasher.finalize());
     let media_type = classify::sniff_media_type(&bytes);
     let text_content = media_type
         .filter(|kind| *kind == "text/plain")
@@ -202,6 +178,10 @@ fn build_artifact(
         media_type.is_some_and(|kind| !artifact_media_type_included(context.media_policy, kind));
 
     if policy_excluded {
+        // Not staged, so its digest is computed alone rather than by
+        // `stage_and_hash`, which also writes: only the "detection aid"
+        // digest is needed here, since core never stores these bytes.
+        let digest = fieldnotes_field_sdk::stage::sha256_hex(&bytes);
         let attachment_ref = attachment_ref_of(capability.object_kind, &entry.relative_path)?;
         let reference = ArtifactRef {
             kind: ArtifactKind::NotRetained,
@@ -226,10 +206,11 @@ fn build_artifact(
         });
     }
 
-    let handle = format!("a{seq:07}");
-    fs::write(context.staging_dir.join(&handle), &bytes).map_err(|error| {
-        RecordError(format!("could not stage {}: {error}", entry.relative_path))
-    })?;
+    let handle = fieldnotes_field_sdk::stage::handle_for_seq(seq);
+    let digest = fieldnotes_field_sdk::stage::stage_and_hash(context.staging_dir, &handle, &bytes)
+        .map_err(|error| {
+            RecordError(format!("could not stage {}: {error}", entry.relative_path))
+        })?;
     let reference = ArtifactRef {
         kind: ArtifactKind::Staged,
         handle: Some(handle),
@@ -284,8 +265,8 @@ pub(crate) fn build(
 
     let max_body_bytes = context.limits.max_body_bytes;
     let (body_text, lost_characters) = match artifact.text_content {
-        Some(content) => truncate(&content, max_body_bytes),
-        None => truncate(
+        Some(content) => fieldnotes_field_sdk::truncate::truncate_utf8(&content, max_body_bytes),
+        None => fieldnotes_field_sdk::truncate::truncate_utf8(
             artifact
                 .fallback_body
                 .as_deref()

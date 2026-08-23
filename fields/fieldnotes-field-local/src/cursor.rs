@@ -90,7 +90,7 @@ impl CursorState {
                     text.push(',');
                 }
                 first = false;
-                text.push_str(&percent_encode(path));
+                text.push_str(&fieldnotes_field_sdk::percent::encode(path));
             }
         }
         CursorToken::parse(&text)
@@ -125,7 +125,9 @@ impl CursorState {
                     continue;
                 }
                 for encoded in value.split(',') {
-                    state.at_high_water.insert(percent_decode(encoded)?);
+                    state
+                        .at_high_water
+                        .insert(fieldnotes_field_sdk::percent::decode(encoded)?);
                 }
             }
         }
@@ -172,54 +174,6 @@ fn widen_if_needed(mut state: CursorState) -> CursorState {
         state.at_high_water.clear();
     }
     state
-}
-
-/// Percent-encodes every byte outside a small safe set, byte by byte so a
-/// multi-byte UTF-8 sequence is never split incorrectly.
-fn percent_encode(text: &str) -> String {
-    let mut encoded = String::with_capacity(text.len());
-    for byte in text.bytes() {
-        let safe = byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'/' | b'-');
-        if safe {
-            encoded.push(char::from(byte));
-        } else {
-            encoded.push('%');
-            encoded.push(hex_digit(byte >> 4));
-            encoded.push(hex_digit(byte & 0x0f));
-        }
-    }
-    encoded
-}
-
-fn hex_digit(nibble: u8) -> char {
-    char::from_digit(u32::from(nibble), 16).unwrap_or('0')
-}
-
-fn percent_decode(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let mut decoded = Vec::with_capacity(bytes.len());
-    let mut index = 0;
-    while index < bytes.len() {
-        if bytes[index] == b'%' {
-            let high = hex_value(*bytes.get(index + 1)?)?;
-            let low = hex_value(*bytes.get(index + 2)?)?;
-            decoded.push((high << 4) | low);
-            index += 3;
-        } else {
-            decoded.push(bytes[index]);
-            index += 1;
-        }
-    }
-    String::from_utf8(decoded).ok()
-}
-
-fn hex_value(byte: u8) -> Option<u8> {
-    match byte {
-        b'0'..=b'9' => Some(byte - b'0'),
-        b'a'..=b'f' => Some(byte - b'a' + 10),
-        b'A'..=b'F' => Some(byte - b'A' + 10),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

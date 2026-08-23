@@ -21,17 +21,16 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use fieldnotes_field_protocol::codes::{DiagnosticCode, ExitCode as ProtocolExit};
-use fieldnotes_field_protocol::framing::FrameWriter;
 use fieldnotes_field_protocol::grammar::{
     CheckpointTag, Cursor as CursorToken, DiagnosticTag, MessageText, ProtocolV1, RunId,
     SourceScope,
 };
-use fieldnotes_field_protocol::host::read_core_frame;
 use fieldnotes_field_protocol::limits::Limits;
 use fieldnotes_field_protocol::message::{
-    CheckpointEvent, CollectRequest, CollectionMode, CoreFrame, DiagnosticEvent, FieldEvent,
-    RecordEvent, Severity, SnapshotClaim, SnapshotState,
+    CheckpointEvent, CollectRequest, CollectionMode, DiagnosticEvent, RecordEvent, Severity,
+    SnapshotClaim, SnapshotState,
 };
+use fieldnotes_field_sdk::dispatch::read_collect_request;
 
 use crate::cursor::CursorState;
 use crate::record::{RecordContext, build as build_record};
@@ -40,27 +39,13 @@ use crate::{config, scope};
 
 /// Runs the collect operation end to end.
 pub(crate) fn run(mut input: impl BufRead) -> ExitCode {
-    let request = match read_core_frame(&mut input, Limits::ceilings().max_frame_bytes) {
-        Ok(Some(CoreFrame::Collect(request))) => *request,
-        Ok(Some(_)) => {
-            crate::report(
-                "fieldnotes-field-local: a collect run expects a collect_request on standard \
-                 input first",
-            );
-            return ExitCode::from(ProtocolExit::Usage.as_raw());
-        }
-        Ok(None) => {
-            crate::report(
-                "fieldnotes-field-local: standard input closed before any request arrived",
-            );
-            return ExitCode::from(ProtocolExit::Usage.as_raw());
-        }
-        Err(error) => {
-            crate::report(&format!(
-                "fieldnotes-field-local: the collection request did not validate: {error}"
-            ));
-            return ExitCode::from(ProtocolExit::Usage.as_raw());
-        }
+    let request = match read_collect_request(
+        &mut input,
+        Limits::ceilings().max_frame_bytes,
+        "fieldnotes-field-local",
+    ) {
+        Ok(request) => request,
+        Err(code) => return ExitCode::from(code),
     };
 
     let mut emitter = Emitter::new(&request);
@@ -299,35 +284,34 @@ fn encode_within_limit(state: &CursorState, max_cursor_bytes: u64) -> CursorToke
         .unwrap_or_else(|error| panic!("a widened cursor must always encode: {error}"))
 }
 
-/// Writes protocol frames to standard output, self-policing against the
-/// run's declared diagnostic and record bounds.
+/// Writes protocol frames to standard output.
+///
+/// Delegates the run's diagnostic-, record-, and cursor-size self-policing,
+/// and the "stop after the first write failure" rule, to
+/// [`fieldnotes_field_sdk::emit::Emitter`]; this wrapper only adds this
+/// Field's own convenience for building a [`DiagnosticEvent`] from primitive
+/// severity/code/message arguments.
 struct Emitter {
-    writer: FrameWriter<std::io::Stdout>,
-    seq: u64,
-    max_diagnostics: u64,
-    diagnostics_emitted: u64,
-    write_failed: bool,
+    inner: fieldnotes_field_sdk::emit::Emitter<std::io::Stdout>,
 }
 
 impl Emitter {
     fn new(request: &CollectRequest) -> Self {
         Emitter {
-            writer: FrameWriter::new(std::io::stdout(), request.limits.max_frame_bytes),
-            seq: 0,
-            max_diagnostics: request.limits.max_run_diagnostics,
-            diagnostics_emitted: 0,
-            write_failed: false,
+            inner: fieldnotes_field_sdk::emit::Emitter::new(std::io::stdout(), request.limits),
         }
     }
 
     fn next_seq(&mut self) -> u64 {
-        self.seq += 1;
-        self.seq
+        self.inner.next_seq()
     }
 
     /// Writes a record, returning whether it was actually emitted.
     fn record(&mut self, record: RecordEvent) -> bool {
-        self.write(FieldEvent::Record(Box::new(record)))
+        let already_failed = self.inner.write_failed();
+        let emitted = self.inner.record(record);
+        self.report_if_newly_failed(already_failed);
+        emitted
     }
 
     fn diagnostic(
@@ -349,10 +333,9 @@ impl Emitter {
         code: DiagnosticCode,
         message: &str,
     ) {
-        if self.diagnostics_emitted >= self.max_diagnostics {
-            return;
-        }
-        let (truncated, _) = crate::record::truncate(message, 4096);
+        let max_message_bytes = u64::try_from(MessageText::MAX_BYTES).unwrap_or(u64::MAX);
+        let (truncated, _) =
+            fieldnotes_field_sdk::truncate::truncate_utf8(message, max_message_bytes);
         let Ok(text) = MessageText::parse(&truncated) else {
             return;
         };
@@ -370,24 +353,29 @@ impl Emitter {
             detail: None,
             redacted: None,
         };
-        if self.write(FieldEvent::Diagnostic(Box::new(diagnostic))) {
-            self.diagnostics_emitted += 1;
-        }
+        let already_failed = self.inner.write_failed();
+        self.inner.diagnostic(diagnostic);
+        self.report_if_newly_failed(already_failed);
     }
 
     fn checkpoint(&mut self, checkpoint: CheckpointEvent) {
-        self.write(FieldEvent::Checkpoint(Box::new(checkpoint)));
+        let already_failed = self.inner.write_failed();
+        self.inner.checkpoint(checkpoint);
+        self.report_if_newly_failed(already_failed);
     }
 
-    fn write(&mut self, event: FieldEvent) -> bool {
-        if self.write_failed {
-            return false;
-        }
-        if let Err(error) = self.writer.write_event(&event) {
+    /// Reports the write error to standard error the first time -- and only
+    /// the first time -- a frame write fails, matching
+    /// [`fieldnotes_field_sdk::emit::Emitter`]'s own "stop after the first
+    /// failure" rule: once `already_failed` is true, a later call is already
+    /// a silent no-op inside `inner`, so reporting again would just repeat
+    /// the same message for no new information.
+    fn report_if_newly_failed(&mut self, already_failed: bool) {
+        if !already_failed
+            && self.inner.write_failed()
+            && let Some(error) = self.inner.last_write_error()
+        {
             crate::report(&format!("fieldnotes-field-local: {error}"));
-            self.write_failed = true;
-            return false;
         }
-        true
     }
 }

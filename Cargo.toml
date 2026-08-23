@@ -6,6 +6,7 @@ members = [
     "crates/fieldnotes-credentials",
     "crates/fieldnotes-domain",
     "crates/fieldnotes-field-protocol",
+    "crates/fieldnotes-field-sdk",
     "crates/fieldnotes-format",
     "crates/fieldnotes-graph",
     "crates/fieldnotes-msgraph",
@@ -30,6 +31,7 @@ fieldnotes-app = { path = "crates/fieldnotes-app" }
 fieldnotes-credentials = { path = "crates/fieldnotes-credentials" }
 fieldnotes-domain = { path = "crates/fieldnotes-domain" }
 fieldnotes-field-protocol = { path = "crates/fieldnotes-field-protocol" }
+fieldnotes-field-sdk = { path = "crates/fieldnotes-field-sdk" }
 fieldnotes-format = { path = "crates/fieldnotes-format" }
 fieldnotes-graph = { path = "crates/fieldnotes-graph" }
 fieldnotes-msgraph = { path = "crates/fieldnotes-msgraph" }

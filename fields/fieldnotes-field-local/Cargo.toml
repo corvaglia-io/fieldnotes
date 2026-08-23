@@ -7,14 +7,17 @@ publish = false
 
 [dependencies]
 fieldnotes-field-protocol.workspace = true
+# The reusable Field-authoring SDK: percent-encoding for the cursor's
+# tie-break paths, staging-and-hashing for the artifact bytes this Field
+# reads, UTF-8-safe truncation for the body and diagnostic text, the scope
+# derivation this Field's `local-root:<sha256>` scope reuses, and the
+# describe/collect request-reading and frame-emitting boilerplate. Extracted
+# from this Field's own `0.1.1` implementation; see ADR 0009.
+fieldnotes-field-sdk.workspace = true
 # Calendar/instant math for `occurred_at`, reused from the existing internal
 # domain crate rather than reimplemented or pulled in from an external crate
 # such as `time` or `chrono`.
 fieldnotes-domain.workspace = true
-# SHA-256 for the source-scope digest, the artifact detection-aid digest, and
-# the opaque source-version token. Already a workspace dependency for the A1
-# hash domains; reused here rather than adding a second hashing crate.
-sha2.workspace = true
 
 [dev-dependencies]
 fieldnotes-test-support.workspace = true

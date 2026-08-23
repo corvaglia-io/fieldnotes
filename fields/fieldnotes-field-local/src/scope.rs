@@ -2,8 +2,6 @@
 
 use std::path::Path;
 
-use sha2::{Digest, Sha256};
-
 /// Computes the non-secret, per-root-stable portable exact-source scope.
 ///
 /// Hashing the canonical root path, rather than embedding it verbatim, keeps
@@ -15,10 +13,7 @@ use sha2::{Digest, Sha256};
 /// derivation depends on a stable upstream identifier.
 #[must_use]
 pub(crate) fn compute(canonical_root: &Path) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_root.to_string_lossy().as_bytes());
-    let digest = hasher.finalize();
-    format!("local-root:{}", crate::hexutil::to_hex(&digest))
+    fieldnotes_field_sdk::scope::derive("local-root", canonical_root.to_string_lossy().as_bytes())
 }
 
 #[cfg(test)]

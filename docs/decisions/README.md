@@ -9,6 +9,8 @@
 | [0005](0005-field-process-boundary.md) | Minimal trusted Field process boundary | Proposed; exact protocol is a later gate |
 | [0006](0006-a1-implementation-rulings.md) | A1 implementation rulings from IG1 findings | Accepted |
 | [0007](0007-attachment-retention-policy.md) | Skipped attachments, link semantics, re-collection, and media-type retention | Accepted |
+| [0008](0008-extend-canonical-extension-registry.md) | Extend the canonical extension registry for the default retention set | Accepted |
+| [0009](0009-field-sdk-extraction.md) | A Field-authoring SDK, extracted from two working Fields | Accepted |
 
 ADRs record decisions with architectural consequences. Proposed ADRs do not become implementation contracts until their roadmap approval gate is complete.
 

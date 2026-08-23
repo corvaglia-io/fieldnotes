@@ -1,0 +1,26 @@
+[package]
+name = "fieldnotes-field-sdk"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+fieldnotes-field-protocol.workspace = true
+# SHA-256 for the staging helper's returned digest and the scope-derivation
+# helper. Already a workspace dependency for the A1 hash domains and for the
+# protocol crate's own artifact-digest verification; reused here rather than
+# adding a second hashing crate.
+sha2.workspace = true
+# The wire representation `Emitter::checked_json` and `Emitter::raw_json`
+# decode and emit: both are Field-authoring conveniences for building a
+# well-formed frame from a JSON value and, deliberately, for a conformance
+# counterparty to write JSON the protocol's own types would refuse. Already a
+# workspace dependency for the A2 NDJSON frames.
+serde_json.workspace = true
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
+
+[lints]
+workspace = true
