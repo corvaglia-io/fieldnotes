@@ -103,16 +103,17 @@ As implemented in `0.1.3`:
   would need the channel on that platform is refused rather than authenticated
   some other way.
 
-**Two of A2's four channel kinds cannot be built here at all.**
-`inherited_fd` and `duplicated_handle` both require turning a raw descriptor or
-handle into an I/O object, which requires `unsafe`; `unsafe_code = "forbid"` is
-set workspace-wide and a crate cannot locally override a `forbid`. An approved
-protocol therefore names a mechanism this project's own lint policy prohibits
-implementing. This is recorded rather than worked around: core neither
-implements nor ever emits those two kinds, and every first-party Field refuses
-them on its side, so the contradiction cannot turn into a run-time failure on a
-user's machine. It needs an A2 amendment narrowing the admitted kinds to the
-path-based two.
+**Two of A2's originally admitted four channel kinds could not be built here
+at all.** `inherited_fd` and `duplicated_handle` both require turning a raw
+descriptor or handle into an I/O object, which requires `unsafe`;
+`unsafe_code = "forbid"` is set workspace-wide and a crate cannot locally
+override a `forbid`. The approved protocol named a mechanism this project's
+own lint policy prohibited implementing. This was recorded rather than worked
+around, and is now resolved:
+[ADR 0013](decisions/0013-narrow-protected-channel-to-path-based-kinds.md)
+amends A2 section 12 to admit only the two path-based kinds, so core and
+every first-party Field simply implement what the protocol admits rather than
+refusing two kinds the protocol names but forbids building.
 - **a credential failure fails the run before anything is spawned**, before any
   staging directory exists, and never advances a cursor.
 - **a collection run never authorizes interactively.** It refreshes silently or
@@ -128,12 +129,14 @@ Secrets must never be passed in command-line arguments, normal environment
 inheritance, notebook files, protocol output, process titles, cursor state, or
 logs.
 
-The exact protected channel may use a dedicated anonymous pipe, inherited
-handle, or another operating-system-appropriate mechanism. It must be separate
-from normal diagnostics and have explicit ownership/lifetime behavior. The
-precise cross-platform channel, auth messages, refresh ownership, and memory
-cleanup rules are part of the Field-protocol approval gate for `0.1.1` and the
-Microsoft authentication gate for `0.1.3`; this document does not invent them.
+The protected channel is a per-run, path-based endpoint: a Unix domain socket
+path or a Windows named pipe path, per
+[ADR 0013](decisions/0013-narrow-protected-channel-to-path-based-kinds.md).
+It must be separate from normal diagnostics and have explicit ownership/lifetime
+behavior. The precise cross-platform channel, auth messages, refresh ownership,
+and memory cleanup rules are part of the Field-protocol approval gate for
+`0.1.1` and the Microsoft authentication gate for `0.1.3`; this document does
+not invent them.
 
 Best-effort memory clearing reduces accidental retention but is not presented
 as a guarantee against a privileged debugger, core dump, compromised process,

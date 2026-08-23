@@ -189,6 +189,8 @@ Deliver:
 
 **Release gate R3:** auth-to-sync works on all supported OS families; revoked and expired credentials fail actionably; recorded-fixture tests cover pagination and throttling; source updates reconcile current state; scans find no credentials in argv, logs, diagnostics, cursors, Notes, or artifacts.
 
+**Known gap against R3, as of [ADR 0013](decisions/0013-narrow-protected-channel-to-path-based-kinds.md):** serving the protected credential channel's `windows_named_pipe` kind needs `CreateNamedPipe`, which has no safe standard-library form, so it needs either `unsafe` FFI (forbidden workspace-wide) or a safe wrapper dependency, neither of which exists yet. Until core's Windows-side server lands, an authenticating Field on Windows refuses cleanly rather than authenticating some other route, so "auth-to-sync works on all supported OS families" is not yet met on Windows.
+
 ### 0.1.4 — Calendar and Contacts
 
 **Product promise:** Microsoft calendar activity and contact records enrich the same deterministic graph while remaining distinct, prefixed Fields.

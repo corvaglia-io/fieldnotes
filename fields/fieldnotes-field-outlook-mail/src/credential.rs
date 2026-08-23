@@ -17,21 +17,19 @@
 //! registers the value with its own redactor before the first request, so even
 //! a Graph error body that echoed the token back is scrubbed.
 //!
-//! # Why only the socket and pipe channel kinds are implemented here
+//! # Why only the socket and pipe channel kinds exist at all
 //!
-//! A2 admits four channel mechanisms. `unix_socket_path` and
-//! `windows_named_pipe` are reachable from safe Rust
+//! A2 section 12 admits exactly two channel mechanisms, `unix_socket_path`
+//! and `windows_named_pipe`, both reachable from safe Rust
 //! ([`std::os::unix::net::UnixStream::connect`] and
-//! [`std::fs::OpenOptions::open`] respectively). `inherited_fd` and
-//! `duplicated_handle` are not: turning a raw descriptor or handle into an I/O
-//! object requires `unsafe`, which this workspace forbids outright
-//! (`unsafe_code = "forbid"`), or a platform crate this Field is not the right
-//! place to introduce. A2 section 12's own consequences say this belongs in
-//! the shared SDK -- "every Field needs channel-handling code, so the shared
-//! SDK crate must provide it rather than leaving each connector to reimplement
-//! it" -- so the two descriptor-passing mechanisms are refused here with an
-//! actionable diagnostic instead of being half-implemented. See the crate's
-//! final report.
+//! [`std::fs::OpenOptions::open`] respectively). It used to admit two more,
+//! `inherited_fd` and `duplicated_handle`: turning a raw descriptor or handle
+//! into an I/O object requires `unsafe`, which this workspace forbids
+//! outright (`unsafe_code = "forbid"`), so ADR 0013 removed them from
+//! [`ChannelKind`] entirely rather than leaving them to be refused here at
+//! run time. A grant naming either kind is now unrepresentable, not merely
+//! rejected: there is no [`ChannelKind`] variant to construct one with. Do
+//! not re-add them without first resolving that same `unsafe` contradiction.
 
 use std::io::{BufReader, Read, Write};
 
@@ -56,7 +54,9 @@ pub(crate) enum CredentialError {
     /// The collection request carried no credential grant, although this
     /// Field's manifest declares that it requires one.
     NoGrant,
-    /// The channel mechanism the grant names is not implemented by this build.
+    /// The channel mechanism the grant names is not implemented on this
+    /// platform. The only remaining case, now that [`ChannelKind`] admits
+    /// just two path-based kinds, is `unix_socket_path` on a non-Unix build.
     UnsupportedChannel(ChannelKind),
     /// The channel could not be opened, written to, or read from.
     Channel(String),
@@ -86,9 +86,9 @@ impl std::fmt::Display for CredentialError {
             ),
             CredentialError::UnsupportedChannel(kind) => write!(
                 f,
-                "the credential channel mechanism {kind:?} is not implemented by this build; it \
-                 needs descriptor-passing support that belongs in the shared Field SDK. A \
-                 socket- or pipe-based channel works today."
+                "the credential channel mechanism {kind:?} is not implemented on this platform \
+                 build; a unix_socket_path channel needs a Unix host, and windows_named_pipe \
+                 works on any platform."
             ),
             CredentialError::Channel(reason) => {
                 write!(f, "the protected credential channel failed: {reason}")
@@ -166,6 +166,11 @@ fn open(grant: &CredentialGrant) -> Result<Channel, CredentialError> {
                 .map_err(|error| CredentialError::Channel(error.to_string()))?;
             Ok(Box::new(stream))
         }
+        // A unix_socket_path channel needs a Unix host: this is the only
+        // ChannelKind this build cannot open, now that inherited_fd and
+        // duplicated_handle no longer exist to name the other case.
+        #[cfg(not(unix))]
+        ChannelKind::UnixSocketPath => Err(CredentialError::UnsupportedChannel(grant.channel.kind)),
         ChannelKind::WindowsNamedPipe => {
             let path = grant
                 .channel
@@ -179,7 +184,6 @@ fn open(grant: &CredentialGrant) -> Result<Channel, CredentialError> {
                 .map_err(|error| CredentialError::Channel(error.to_string()))?;
             Ok(Box::new(pipe))
         }
-        kind => Err(CredentialError::UnsupportedChannel(kind)),
     }
 }
 
@@ -300,13 +304,7 @@ mod tests {
             grant_id: GrantId::parse(GRANT).unwrap_or_else(|error| panic!("must parse: {error}")),
             channel: ChannelDescriptor {
                 kind,
-                fd: matches!(kind, ChannelKind::InheritedFd).then_some(7),
-                handle: None,
-                path: matches!(
-                    kind,
-                    ChannelKind::UnixSocketPath | ChannelKind::WindowsNamedPipe
-                )
-                .then(|| "/tmp/fieldnotes-fixture.sock".to_owned()),
+                path: Some("/tmp/fieldnotes-fixture.sock".to_owned()),
             },
             expires_at: OffsetDatetime::parse("2099-01-01T00:00:00+00:00")
                 .unwrap_or_else(|error| panic!("must parse: {error}")),
@@ -496,20 +494,11 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn a_descriptor_passing_channel_is_refused_actionably_rather_than_half_implemented() {
-        let error = match super::open(&grant(ChannelKind::InheritedFd)) {
-            Err(error) => error,
-            Ok(_) => panic!("an inherited descriptor is not implemented by this build"),
-        };
-        assert!(matches!(error, CredentialError::UnsupportedChannel(_)));
-        let message = error.to_string();
-        assert!(message.contains("shared Field SDK"), "{message}");
-        assert_eq!(
-            error.classify().1,
-            fieldnotes_field_protocol::codes::ExitCode::ConfigInvalid
-        );
-    }
+    // The former `a_descriptor_passing_channel_is_refused_actionably_rather_
+    // than_half_implemented` test is gone, not merely weakened: it exercised
+    // `ChannelKind::InheritedFd`, which ADR 0013 removed from the type
+    // entirely. There is no longer a grant to construct that names that
+    // kind, so the refusal it checked is unrepresentable rather than untested.
 
     #[test]
     fn a_missing_grant_is_reported_as_a_configuration_problem() {
@@ -525,7 +514,7 @@ mod tests {
     fn no_credential_error_message_can_carry_material() {
         let errors = [
             CredentialError::NoGrant,
-            CredentialError::UnsupportedChannel(ChannelKind::InheritedFd),
+            CredentialError::UnsupportedChannel(ChannelKind::UnixSocketPath),
             CredentialError::Channel("connection refused".to_owned()),
             CredentialError::Mismatched,
             CredentialError::Malformed("expected value".to_owned()),

@@ -135,25 +135,15 @@
           "pattern": "^[0-9a-f]{16,128}$"
         },
         "channel": {
-          "description": "How the Field reaches core to obtain credential material. The channel is separate from standard input, output, and error, and is closed by core when the run ends.",
+          "description": "How the Field reaches core to obtain credential material. The channel is separate from standard input, output, and error, and is closed by core when the run ends. Path-based only (ADR 0013): a descriptor-passing or handle-duplicating channel would require unsafe code this workspace's lint policy forbids.",
           "type": "object",
           "properties": {
-            "kind": { "enum": ["inherited_fd", "duplicated_handle", "unix_socket_path", "windows_named_pipe"] },
-            "fd": { "type": "integer", "minimum": 3, "maximum": 1024 },
-            "handle": { "type": "string", "minLength": 1, "maxLength": 32, "pattern": "^[0-9]+$" },
+            "kind": { "enum": ["unix_socket_path", "windows_named_pipe"] },
             "path": { "type": "string", "minLength": 1, "maxLength": 4096 }
           },
           "required": ["kind"],
           "additionalProperties": false,
           "allOf": [
-            {
-              "if": { "properties": { "kind": { "const": "inherited_fd" } }, "required": ["kind"] },
-              "then": { "required": ["fd"] }
-            },
-            {
-              "if": { "properties": { "kind": { "const": "duplicated_handle" } }, "required": ["kind"] },
-              "then": { "required": ["handle"] }
-            },
             {
               "if": {
                 "properties": { "kind": { "enum": ["unix_socket_path", "windows_named_pipe"] } },

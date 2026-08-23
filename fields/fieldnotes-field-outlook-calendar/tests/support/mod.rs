@@ -251,8 +251,6 @@ fn credential_grant(socket_path: &std::path::Path) -> CredentialGrant {
             .unwrap_or_else(|error| panic!("must parse: {error}")),
         channel: ChannelDescriptor {
             kind: ChannelKind::UnixSocketPath,
-            fd: None,
-            handle: None,
             path: Some(
                 socket_path
                     .to_str()

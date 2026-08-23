@@ -13,23 +13,25 @@
 //! newline-delimited-JSON shape as standard input and output, just on a
 //! different file descriptor).
 //!
-//! # Only `unix_socket_path` is implemented
+//! # Only `unix_socket_path` is implemented here
 //!
-//! [`ChannelKind`] also admits `inherited_fd`, `duplicated_handle`, and
-//! `windows_named_pipe`. The first two require wrapping a raw OS handle
-//! ([`std::os::fd::FromRawFd`] or the Windows equivalent), which needs
-//! `unsafe` -- and `unsafe_code` is `forbid`-level in this workspace's
-//! lints, a level no crate, including this one, can locally override. A
-//! Windows named pipe has no safe synchronous client in `std` either. That
-//! leaves `unix_socket_path` as the only channel kind any Field in this
-//! workspace can actually open without unsafe code, on any platform that has
-//! one. This Field refuses every other kind cleanly, with a diagnostic
-//! naming which kind it cannot open, rather than attempting one that would
-//! require unsafe code. See this crate's final report: a shared, carefully
-//! audited unsafe wrapper for the descriptor-transfer kinds -- if core ever
-//! needs to hand out a channel that way -- is exactly the kind of helper that
-//! belongs in `fieldnotes-field-sdk`, reviewed and tested once rather than
-//! rebuilt per Field.
+//! [`ChannelKind`] admits exactly two kinds: `unix_socket_path` and
+//! `windows_named_pipe`. It used to admit two more, `inherited_fd` and
+//! `duplicated_handle`, both of which require wrapping a raw OS handle
+//! ([`std::os::fd::FromRawFd`] or the Windows equivalent) -- `unsafe`, and
+//! `unsafe_code` is `forbid`-level in this workspace's lints, a level no
+//! crate, including this one, can locally override. ADR 0013 removed both
+//! variants from [`ChannelKind`] entirely rather than leaving them to be
+//! refused here at run time, so a grant naming either is now
+//! unrepresentable, not merely rejected. Do not re-add them without first
+//! resolving that same `unsafe` contradiction.
+//!
+//! `windows_named_pipe` needs no `unsafe` either -- its client end is just
+//! `std::fs::OpenOptions::open` against the pipe's path, as the Outlook Mail
+//! Field's channel module demonstrates -- this crate simply has not built
+//! that client yet. This Field refuses every kind it has not implemented
+//! cleanly, with a diagnostic naming which kind it cannot open, rather than
+//! attempting one it has not built.
 
 use std::fmt;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -56,8 +58,8 @@ pub(crate) enum CredentialFailure {
     /// `collect_request.credential` was absent, though this Field's manifest
     /// declares `auth.kind: oauth_authorization_code`.
     NoGrant,
-    /// The described channel kind cannot be opened without unsafe code (see
-    /// the module documentation).
+    /// The described channel kind is not implemented by this Field build
+    /// (see the module documentation).
     UnsupportedChannel(ChannelKind),
     /// The channel descriptor itself was malformed for its declared kind.
     MalformedChannel(String),
@@ -87,8 +89,8 @@ impl fmt::Display for CredentialFailure {
             ),
             CredentialFailure::UnsupportedChannel(kind) => write!(
                 f,
-                "the described credential channel ({}) cannot be opened without unsafe code, \
-                 which this workspace forbids; only unix_socket_path is supported",
+                "the described credential channel ({}) is not implemented by this Field; only \
+                 a unix_socket_path channel on a Unix host is currently supported here",
                 channel_kind_label(*kind)
             ),
             CredentialFailure::MalformedChannel(reason) => {
@@ -133,8 +135,6 @@ fn suffix(message: &Option<String>) -> String {
 
 fn channel_kind_label(kind: ChannelKind) -> &'static str {
     match kind {
-        ChannelKind::InheritedFd => "inherited_fd",
-        ChannelKind::DuplicatedHandle => "duplicated_handle",
         ChannelKind::UnixSocketPath => "unix_socket_path",
         ChannelKind::WindowsNamedPipe => "windows_named_pipe",
     }
@@ -305,8 +305,6 @@ mod tests {
                 .unwrap_or_else(|error| panic!("must parse: {error}")),
             channel: ChannelDescriptor {
                 kind: ChannelKind::UnixSocketPath,
-                fd: None,
-                handle: None,
                 path: Some(path.to_owned()),
             },
             expires_at: OffsetDatetime::parse("2099-01-01T00:00:00+00:00")
@@ -420,18 +418,22 @@ mod tests {
         handle.join().unwrap_or_else(|_| panic!("thread must join"));
     }
 
+    // The former `an_inherited_fd_channel_is_refused_without_unsafe_code` test
+    // is gone, not merely weakened: it exercised `ChannelKind::InheritedFd`,
+    // which ADR 0013 removed from the type entirely. There is no longer a
+    // grant to construct that names that kind. The still-real "this Field
+    // has not implemented that kind" refusal is exercised below for
+    // `windows_named_pipe`, the one remaining kind this crate does not open.
     #[test]
-    fn an_inherited_fd_channel_is_refused_without_unsafe_code() {
+    fn a_windows_named_pipe_channel_is_refused_as_not_yet_implemented_here() {
         let request = base_request(Some(CredentialGrant {
             profile_ref: ProfileRef::parse("outlook_calendar_work")
                 .unwrap_or_else(|error| panic!("must parse: {error}")),
             grant_id: GrantId::parse("abcdef0123456789")
                 .unwrap_or_else(|error| panic!("must parse: {error}")),
             channel: ChannelDescriptor {
-                kind: ChannelKind::InheritedFd,
-                fd: Some(3),
-                handle: None,
-                path: None,
+                kind: ChannelKind::WindowsNamedPipe,
+                path: Some("\\\\.\\pipe\\fieldnotes-fixture".to_owned()),
             },
             expires_at: OffsetDatetime::parse("2099-01-01T00:00:00+00:00")
                 .unwrap_or_else(|error| panic!("must parse: {error}")),
@@ -440,7 +442,7 @@ mod tests {
         assert!(matches!(
             obtain(&request),
             Err(CredentialFailure::UnsupportedChannel(
-                ChannelKind::InheritedFd
+                ChannelKind::WindowsNamedPipe
             ))
         ));
     }

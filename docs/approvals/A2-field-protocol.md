@@ -57,6 +57,55 @@ list of recomputed digests in
 
 Amendment 1 changes approved bytes without changing any approved rule.
 
+**2026-08-23:** Implementing section 12 revealed that two of its four
+admitted protected-channel kinds — file-descriptor inheritance and handle
+duplication — cannot be built anywhere in this workspace: turning a raw
+descriptor or handle into an I/O object needs `unsafe` code, and this
+workspace's `unsafe_code = "forbid"` lint, set at the workspace level, cannot
+be relaxed by any single crate. Core's own channel server and all three
+shipped Microsoft Fields reached this conclusion independently and converged
+on the same two path-based kinds without coordinating. The owner approved
+narrowing section 12 to admit only those two kinds, recorded with rationale,
+rejected alternatives, the security obligations this narrowing makes
+load-bearing, and the resulting Windows-serving gap in
+[ADR 0013](../decisions/0013-narrow-protected-channel-to-path-based-kinds.md):
+
+1. Section 12's admitted channel kinds are narrowed from `inherited_fd`,
+   `duplicated_handle`, `unix_socket_path`, and `windows_named_pipe` to just
+   the latter two, corrected in place below. The corresponding schema,
+   `tests/fixtures/protocol/proposed-v1/schemas/collect-request.schema.json`,
+   drops `inherited_fd` and `duplicated_handle` from the `credentialGrant.
+   channel` `kind` enum, drops the now-unused `fd` and `handle` fields and
+   their per-kind `required` branches, and keeps `path` as the sole
+   requirement for either remaining kind.
+
+   Five of the sixteen transcripts carried a `collect_request` naming the
+   removed `inherited_fd` kind: `04-authoritative-deletion-tombstone.ndjson`,
+   `06-diagnostic-with-redaction.ndjson`,
+   `10-artifact-transfer-and-dedup.ndjson`,
+   `15-attachment-retention-policy.ndjson`, and
+   `16-explicit-recollection.ndjson`. Each `"channel": {"kind":
+   "inherited_fd", "fd": 3}` is now `"channel": {"kind": "unix_socket_path",
+   "path": "/tmp/fn-cred-9f14c0a3b7e2/s"}` — the same per-run-directory shape
+   the reference implementation actually binds, named after the grant ID's
+   own first twelve characters inside the system temporary directory. No
+   other frame member, sequence number, `valid`, or `expect_reject` value in
+   any transcript changed.
+
+   `docs/security.md` and `docs/roadmap.md` are corrected to match: security
+   no longer describes this contradiction as still needing an amendment, and
+   the roadmap's R3 release gate now records that serving a
+   `windows_named_pipe` needs `CreateNamedPipe`, which has no safe
+   standard-library form, so an authenticating Field on Windows currently
+   refuses cleanly rather than authenticating some other route — an
+   outstanding item against R3's "works on all supported OS families"
+   requirement.
+
+Amendment 2 corrects an approved rule that named a mechanism this project's
+own approved lint policy prohibits building; no frame grammar, rejection
+code, limit, cursor rule, or checkpoint rule changed anywhere in this
+package.
+
 ## Decision requested
 
 A2 freezes protocol v1 as the shared contract between core and every external
@@ -1040,14 +1089,19 @@ credential material.
 Material crosses only on the **protected channel**, which is separate from
 standard input, output, and error. The Field writes a `credential_request`
 naming its grant and purpose; core answers `credential_response` with either
-`material` or an actionable non-granted outcome. The channel is an inherited
-descriptor, a duplicated handle, or an OS-appropriate per-run endpoint, all
-named in the request rather than in the environment. Core closes it when the
-run ends and refuses an expired grant.
+`material` or an actionable non-granted outcome. The channel is a path-based,
+OS-appropriate per-run endpoint — a Unix domain socket path or a Windows
+named pipe path — named in the request rather than in the environment. Core
+closes it when the run ends and refuses an expired grant. **Amendment 2
+narrows this from the four kinds originally admitted here**: an inherited
+file descriptor and a duplicated handle were also named, and both are
+removed because turning either into an I/O object needs `unsafe`, which this
+workspace's lint policy forbids outright — see the amendments block above and
+[ADR 0013](../decisions/0013-narrow-protected-channel-to-path-based-kinds.md).
 
 **The channel descriptor's flat object shape — one `kind` discriminator plus
-every mechanism's fields sitting as siblings, rather than a tagged union of
-four distinct shapes — is deliberate**, not an oversight to tidy up later.
+every mechanism's fields sitting as siblings, rather than a tagged union with
+one shape per kind — is deliberate**, not an oversight to tidy up later.
 `additionalProperties: false` and serde's internally tagged enums fight each
 other: a Rust enum tagged on `kind` with per-variant payload structs would
 either have to relax `additionalProperties` for the whole object (defeating
@@ -1057,6 +1111,9 @@ against the union of every variant's schema. A flat shape sidesteps the
 conflict entirely, and every implementation language pulls toward a union here
 for the same reason serde does — worth stating plainly so the shape is not
 "fixed" into something more idiomatic-looking that quietly reopens the schema.
+Amendment 2 narrows the admitted kinds to two, both path-based; it does not
+revisit this shape, which was chosen for four kinds and remains correct for
+two.
 
 `credential_response.material` is the **only member in the entire protocol that
 carries a secret**, and it exists on no other channel. Nowhere else: not in

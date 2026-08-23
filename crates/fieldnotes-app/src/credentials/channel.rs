@@ -19,22 +19,26 @@
 //!
 //! # Why a path-based channel, and never a descriptor-based one
 //!
-//! A2 admits four mechanisms, and **two of them cannot be built anywhere in
-//! this workspace.** `inherited_fd` and `duplicated_handle` both require
-//! turning a raw descriptor or handle into an I/O object, which needs `unsafe`;
-//! `unsafe_code = "forbid"` is set in the root manifest and a crate cannot
-//! locally override a `forbid`. They would also need the *spawn* to carry an
-//! extra descriptor, which
+//! A2 originally admitted four mechanisms, and **two of them could not be
+//! built anywhere in this workspace.** `inherited_fd` and `duplicated_handle`
+//! both required turning a raw descriptor or handle into an I/O object,
+//! which needs `unsafe`; `unsafe_code = "forbid"` is set in the root
+//! manifest and a crate cannot locally override a `forbid`. They would also
+//! have needed the *spawn* to carry an extra descriptor, which
 //! [`FieldSpawn`](fieldnotes_field_protocol::host::FieldSpawn) does not do.
-//! This is a genuine contradiction between two approved documents — the
-//! protocol names a mechanism the project's own lint policy prohibits — and it
-//! is recorded here rather than worked around with `unsafe`.
+//! This was a genuine contradiction between two approved documents — the
+//! protocol named a mechanism the project's own lint policy prohibits — and
+//! it is now resolved rather than worked around with `unsafe`: ADR 0013
+//! narrowed A2 section 12 to the two path-based kinds below, and
+//! [`ChannelKind`] no longer has variants for the other two at all, so a
+//! frame naming one is unrepresentable rather than merely refused.
 //!
-//! **Core therefore neither implements nor ever emits those two kinds.** A
-//! descriptor core cannot pass is also one no Field can open: the completed
-//! Outlook Mail, Calendar, and Contacts Fields independently reached the same
-//! conclusion and refuse them on their side too. Offering one would fail at run
-//! time on every platform.
+//! **Core therefore neither implements nor can even construct those two
+//! kinds.** A descriptor core cannot pass is also one no Field can open: the
+//! completed Outlook Mail, Calendar, and Contacts Fields independently
+//! reached the same conclusion before the amendment landed, and refused them
+//! on their side too. Offering one would have failed at run time on every
+//! platform.
 //!
 //! A path-based endpoint needs nothing from the spawn at all: the path travels
 //! in the request, exactly as A2 requires ("named in the request rather than in
@@ -339,8 +343,6 @@ fn start(spec: GrantSpec) -> Result<Started, CredentialFailure> {
         .to_owned();
     let descriptor = ChannelDescriptor {
         kind: ChannelKind::UnixSocketPath,
-        fd: None,
-        handle: None,
         path: Some(path_text),
     };
     descriptor

@@ -189,6 +189,43 @@ name, type, and list semantics is byte-for-byte unchanged, and the full
 conformance suite (byte-for-byte round trips, invalid-fixture rejections,
 hash vectors) passes unmodified.
 
+## Finding 8: two admitted protected-channel kinds cannot be built in this workspace
+
+**Resolved by [ADR 0013](../decisions/0013-narrow-protected-channel-to-path-based-kinds.md).**
+A2 section 12 originally admitted four protected-channel kinds:
+`inherited_fd`, `duplicated_handle`, `unix_socket_path`, and
+`windows_named_pipe`. Turning a raw file descriptor or a duplicated OS
+handle into an I/O object requires `unsafe` code, and this workspace sets
+`unsafe_code = "forbid"` workspace-wide with no per-crate override. The
+approved protocol therefore named two mechanisms this project's own approved
+lint policy prohibits building anywhere in the workspace. This was reached
+independently by core's protected-channel server
+(`crates/fieldnotes-app/src/credentials/channel.rs`) and by all three
+shipped Microsoft Fields
+(`fields/fieldnotes-field-outlook-mail`, `-outlook-calendar`, and
+`-outlook-contacts`, each in `src/credential.rs`), none of which coordinated
+with the others before converging on the same two path-based kinds.
+
+**What shipped.** Core implements and serves only `unix_socket_path`, with
+`windows_named_pipe` serving still pending a safe `CreateNamedPipe` path (see
+below). Every shipped Field's client implements `unix_socket_path` and
+`windows_named_pipe` with plain standard-library calls and refuses
+`inherited_fd` and `duplicated_handle` with an actionable
+`CredentialError::UnsupportedChannel` rather than attempting them.
+
+**Ruling.** The owner approved narrowing A2 section 12 to admit only
+`unix_socket_path` and `windows_named_pipe`, recorded in ADR 0013 along with
+the rejected alternatives (relaxing the workspace lint locally; taking a
+dependency that encapsulates the unsafe) and the security obligations the
+narrowing makes load-bearing now that the endpoint is filesystem-visible for
+the life of a run. The corresponding schema and five affected transcripts
+under `tests/fixtures/protocol/proposed-v1/` are updated to match. One
+consequence remains open rather than resolved: serving `windows_named_pipe`
+still needs `CreateNamedPipe`, which has no safe standard-library form, so an
+authenticating Field on Windows currently refuses cleanly rather than
+authenticating some other route. That gap is recorded against release gate
+R3 in `docs/roadmap.md`, not silently absorbed by this finding's resolution.
+
 ## Non-findings worth recording
 
 These were checked against implementation and needed no change:

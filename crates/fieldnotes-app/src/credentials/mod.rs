@@ -116,10 +116,16 @@ pub const DEFAULT_TENANT: &str = "organizations";
 /// The default authority base URL.
 pub const DEFAULT_AUTHORITY: &str = "https://login.microsoftonline.com";
 
-/// The default loopback redirect path. The port is always ephemeral: the
-/// listener binds `127.0.0.1:0` and the operating system picks an unused port
-/// for that one attempt.
-pub const DEFAULT_REDIRECT_PATH: &str = "/callback";
+/// The default loopback redirect path: none at all.
+///
+/// The port is always ephemeral — the listener binds `127.0.0.1:0` and the
+/// operating system picks an unused port for that one attempt — because an
+/// authorization server waives the port when matching a loopback redirect URI.
+/// It does not waive the path. A public-client loopback registration is
+/// conventionally `http://localhost` with no path, so sending any path makes
+/// the request fail as a redirect-URI mismatch. Deployments whose registration
+/// does name a path can set one through [`REDIRECT_PATH_KEY`].
+pub const DEFAULT_REDIRECT_PATH: &str = "";
 
 /// The keychain service name Fieldnotes stores its entries under.
 pub const KEYCHAIN_SERVICE: &str = "fieldnotes";
@@ -569,9 +575,10 @@ pub fn settings_from_config(
     let redirect_path = value(REDIRECT_PATH_KEY)
         .unwrap_or(DEFAULT_REDIRECT_PATH)
         .to_owned();
-    if !redirect_path.starts_with('/') {
+    if !redirect_path.is_empty() && !redirect_path.starts_with('/') {
         return Err(missing(format!(
-            "`{REDIRECT_PATH_KEY}={redirect_path}` must begin with `/`"
+            "`{REDIRECT_PATH_KEY}={redirect_path}` must begin with `/`, or be \
+             empty for a registration that names no path"
         )));
     }
     Ok(CredentialSettings {

@@ -730,14 +730,18 @@ pub struct Window {
 /// The mechanism a protected credential channel uses.
 ///
 /// The channel is named in the request rather than in the environment, and it
-/// is separate from standard input, output, and error.
+/// is separate from standard input, output, and error. Both admitted kinds
+/// are path-based. ADR 0013 removed the two descriptor-passing kinds this
+/// enum used to admit, `inherited_fd` and `duplicated_handle`: turning either
+/// into an I/O object needs `unsafe`, and this workspace sets
+/// `unsafe_code = "forbid"` workspace-wide with no per-crate override, so
+/// those kinds named a mechanism this project cannot build. They are not
+/// merely refused at run time -- this type no longer has variants for
+/// them, so a frame naming either is unrepresentable rather than rejected.
+/// Do not re-add them without first resolving that contradiction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChannelKind {
-    /// A file descriptor inherited from core.
-    InheritedFd,
-    /// A duplicated operating-system handle.
-    DuplicatedHandle,
     /// A Unix domain socket path.
     UnixSocketPath,
     /// A Windows named pipe.
@@ -754,12 +758,6 @@ pub enum ChannelKind {
 pub struct ChannelDescriptor {
     /// The channel mechanism.
     pub kind: ChannelKind,
-    /// The inherited descriptor number, for an inherited descriptor.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fd: Option<u16>,
-    /// The duplicated handle as a decimal string.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handle: Option<String>,
     /// The socket or pipe path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
@@ -767,35 +765,14 @@ pub struct ChannelDescriptor {
 
 impl Validate for ChannelDescriptor {
     fn validate(&self) -> Result<(), SchemaError> {
-        match self.kind {
-            ChannelKind::InheritedFd => match self.fd {
-                Some(fd) if (3..=1024).contains(&fd) => Ok(()),
-                Some(_) => Err(SchemaError::invalid(
-                    "an inherited credential descriptor is between 3 and 1024: standard input, \
-                     output, and error occupy 0, 1, and 2 and are never the credential channel",
-                )),
-                None => Err(SchemaError::invalid(
-                    "an inherited-descriptor channel names its descriptor",
-                )),
-            },
-            ChannelKind::DuplicatedHandle => match &self.handle {
-                Some(handle)
-                    if !handle.is_empty()
-                        && handle.len() <= 32
-                        && handle.bytes().all(|byte| byte.is_ascii_digit()) =>
-                {
-                    Ok(())
-                }
-                _ => Err(SchemaError::invalid(
-                    "a duplicated-handle channel names 1 to 32 decimal digits",
-                )),
-            },
-            ChannelKind::UnixSocketPath | ChannelKind::WindowsNamedPipe => match &self.path {
-                Some(path) if !path.is_empty() && path.len() <= 4096 => Ok(()),
-                _ => Err(SchemaError::invalid(
-                    "a socket or pipe channel names a path of 1 to 4096 bytes",
-                )),
-            },
+        // Both admitted kinds are path-based (ADR 0013), so there is no
+        // per-kind shape to branch on any more: every `ChannelKind` this type
+        // can represent names its endpoint the same way.
+        match &self.path {
+            Some(path) if !path.is_empty() && path.len() <= 4096 => Ok(()),
+            _ => Err(SchemaError::invalid(
+                "a socket or pipe channel names a path of 1 to 4096 bytes",
+            )),
         }
     }
 }

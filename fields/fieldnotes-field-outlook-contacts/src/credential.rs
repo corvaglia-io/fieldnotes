@@ -13,17 +13,19 @@
 //!
 //! # What this release can and cannot open
 //!
-//! [`ChannelKind::UnixSocketPath`] and [`ChannelKind::WindowsNamedPipe`] are
-//! addressed by path and connected to with a safe standard-library call
-//! (`UnixStream::connect`, or opening the pipe path as a file on Windows).
-//! [`ChannelKind::InheritedFd`] and [`ChannelKind::DuplicatedHandle`] name a
-//! raw OS descriptor number, and importing one safely needs
+//! [`ChannelKind`] admits exactly two kinds, both addressed by path and
+//! connected to with a safe standard-library call:
+//! [`ChannelKind::UnixSocketPath`] (`UnixStream::connect`) and
+//! [`ChannelKind::WindowsNamedPipe`] (opening the pipe path as a file). It
+//! used to admit two more: `inherited_fd` and `duplicated_handle` named a raw OS
+//! descriptor number, and importing one safely needs
 //! `std::os::fd::FromRawFd` or `std::os::windows::io::FromRawHandle` --
-//! both `unsafe fn`, in a crate where `unsafe_code` is `forbid` workspace-wide.
-//! This release therefore returns an actionable
-//! [`CredentialChannelError::UnsupportedChannelKind`] for those two kinds
-//! rather than reaching for `unsafe`; see the final report for why this is a
-//! shared-layer gap rather than something to solve per Field.
+//! both `unsafe fn`, in a crate where `unsafe_code` is `forbid`
+//! workspace-wide. ADR 0013 removed both variants from [`ChannelKind`]
+//! entirely rather than leaving them to be refused here at run time via
+//! `CredentialChannelError::UnsupportedChannelKind`, so a grant naming
+//! either is now unrepresentable, not merely rejected. Do not re-add them
+//! without first resolving that same `unsafe` contradiction.
 
 use std::io::{BufReader, Read, Write};
 
@@ -45,8 +47,11 @@ const MAX_CREDENTIAL_FRAME_BYTES: u64 = 131_072;
 /// Why obtaining credential material failed.
 #[derive(Debug)]
 pub(crate) enum CredentialChannelError {
-    /// This release cannot open a channel of this kind. Never `unsafe`; see
-    /// the module documentation.
+    /// A `unix_socket_path` channel was described on a non-Unix build. The
+    /// only other admitted kind, `windows_named_pipe`, needs no unsafe code
+    /// and works on any platform, so this is the sole remaining case
+    /// [`open`] ever refuses; see the module documentation.
+    #[cfg(not(unix))]
     UnsupportedChannelKind(ChannelKind),
     /// The channel could not be opened or read/written.
     Io(std::io::Error),
@@ -63,10 +68,11 @@ pub(crate) enum CredentialChannelError {
 impl std::fmt::Display for CredentialChannelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            #[cfg(not(unix))]
             CredentialChannelError::UnsupportedChannelKind(kind) => write!(
                 f,
-                "this release cannot open a {kind:?} protected channel; a path-based channel \
-                 (a Unix domain socket or a Windows named pipe) is required"
+                "this build cannot open a {kind:?} protected channel on this platform; a Unix \
+                 domain socket needs a Unix host, and a Windows named pipe works on any platform"
             ),
             CredentialChannelError::Io(error) => write!(f, "protected channel I/O failed: {error}"),
             CredentialChannelError::Protocol(detail) => {
@@ -136,9 +142,6 @@ pub(crate) fn open(descriptor: &ChannelDescriptor) -> Result<BoxedChannel, Crede
                 writer: Box::new(writer),
             })
         }
-        ChannelKind::InheritedFd | ChannelKind::DuplicatedHandle => Err(
-            CredentialChannelError::UnsupportedChannelKind(descriptor.kind),
-        ),
     }
 }
 

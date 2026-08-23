@@ -2,20 +2,28 @@
 //!
 //! RFC 8252 ("OAuth 2.0 for Native Apps") is what makes the authorization
 //! code flow work for a desktop application with no fixed web origin: the
-//! app opens an ephemeral, loopback-only HTTP listener, registers
-//! `http://127.0.0.1:{port}/<path>` as its redirect URI for this one attempt,
-//! and the system browser's final navigation after login delivers the
-//! authorization code to that listener instead of to a public server this
-//! crate would otherwise have to run.
+//! app opens an ephemeral, loopback-only HTTP listener, hands
+//! `http://{host}:{port}{path}` to the authorization server as its redirect
+//! URI for this one attempt, and the system browser's final navigation after
+//! login delivers the authorization code to that listener instead of to a
+//! public server this crate would otherwise have to run.
+//!
+//! The advertised host and the bound address are deliberately different
+//! things. An authorization server compares the redirect URI against the value
+//! registered for the application, waiving only the port for loopback, so the
+//! URI must use the spelling the registration names — conventionally
+//! `http://localhost` with no path. Sending `127.0.0.1`, or any path, against
+//! such a registration fails as a redirect-URI mismatch even though it names
+//! the same interface.
 //!
 //! Everything the listener reads is untrusted input: any local process (or,
 //! on a shared machine, any other local user, depending on platform
 //! permissions) can connect to a loopback port and send it anything. This
 //! module treats the request accordingly:
 //!
-//! - it binds only `127.0.0.1` (a literal loopback address, not the resolved
-//!   name `localhost`, so there is no DNS/hosts-file resolution step between
-//!   "what this crate binds" and "what it believes it bound");
+//! - it binds only `127.0.0.1` (a literal loopback address, so there is no
+//!   DNS or hosts-file resolution step between "what this crate binds" and
+//!   "what it believes it bound") regardless of the name it advertises;
 //! - it accepts exactly one connection and then stops listening;
 //! - it validates the returned `state` against the exact value generated for
 //!   this attempt before trusting anything else in the request, which is
@@ -41,22 +49,51 @@ const MAX_REQUEST_BYTES: usize = 16 * 1024;
 /// before this listener gives up on it.
 const PER_CONNECTION_READ_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The host name advertised in the redirect URI.
+///
+/// This is deliberately not the literal address the listener binds. An
+/// authorization server matches a redirect URI against the value registered
+/// for the application, and a public-client loopback registration is usually
+/// `http://localhost`: the server waives the port for loopback but compares the
+/// host and path exactly. Advertising `127.0.0.1` against such a registration
+/// is rejected with a redirect-URI mismatch even though it names the same
+/// interface. Binding stays on the literal loopback address so no name
+/// resolution sits between the browser and this process.
+pub const DEFAULT_REDIRECT_HOST: &str = "localhost";
+
 /// A bound loopback listener, ready to receive exactly one OAuth redirect.
 pub struct LoopbackListener {
     listener: TcpListener,
+    host: String,
     path: String,
 }
 
 impl LoopbackListener {
-    /// Binds an ephemeral port on the IPv4 loopback address.
+    /// Binds an ephemeral port on the IPv4 loopback address, advertising
+    /// [`DEFAULT_REDIRECT_HOST`].
     ///
     /// Binding port `0` asks the operating system to choose an unused port,
     /// which is what makes this usable without the caller reserving one in
     /// advance or racing another process for a fixed port.
     pub fn bind(path: impl Into<String>) -> std::io::Result<Self> {
+        Self::bind_advertising(DEFAULT_REDIRECT_HOST, path)
+    }
+
+    /// Binds as [`LoopbackListener::bind`] does, advertising `host` in the
+    /// redirect URI instead of the default.
+    ///
+    /// The bound address is unaffected: only the URI handed to the
+    /// authorization server changes, so a deployment whose registration names
+    /// a different loopback spelling can match it without this process
+    /// resolving a name.
+    pub fn bind_advertising(
+        host: impl Into<String>,
+        path: impl Into<String>,
+    ) -> std::io::Result<Self> {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))?;
         Ok(LoopbackListener {
             listener,
+            host: host.into(),
             path: path.into(),
         })
     }
@@ -66,10 +103,18 @@ impl LoopbackListener {
         Ok(self.listener.local_addr()?.port())
     }
 
-    /// The redirect URI to register for this attempt:
-    /// `http://127.0.0.1:{port}{path}`.
+    /// The redirect URI to hand the authorization server for this attempt:
+    /// `http://{host}:{port}{path}`.
+    ///
+    /// An empty path yields no path segment at all, which is the form a
+    /// public-client loopback registration of `http://localhost` matches.
     pub fn redirect_uri(&self) -> std::io::Result<String> {
-        Ok(format!("http://127.0.0.1:{}{}", self.port()?, self.path))
+        Ok(format!(
+            "http://{}:{}{}",
+            self.host,
+            self.port()?,
+            self.path
+        ))
     }
 
     /// Waits for the single redirect callback, validates it, and returns the
@@ -314,6 +359,11 @@ fn find_header_terminator(buffer: &[u8]) -> Option<usize> {
 
 /// Extracts and validates the query string from a request line, requiring
 /// a `GET` request to exactly `expected_path`.
+///
+/// An empty `expected_path` matches a request for `/`. A redirect URI with no
+/// path segment is the form a public-client loopback registration matches, but
+/// a browser still requests the root, so the two spellings name the same
+/// target and must compare equal.
 fn extract_query(request_line: &str, expected_path: &str) -> Result<String, LoopbackError> {
     let mut parts = request_line.split(' ');
     let method = parts.next().ok_or(LoopbackError::MalformedRequest)?;
@@ -322,7 +372,12 @@ fn extract_query(request_line: &str, expected_path: &str) -> Result<String, Loop
         return Err(LoopbackError::MalformedRequest);
     }
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
-    if path != expected_path {
+    let expected = if expected_path.is_empty() {
+        "/"
+    } else {
+        expected_path
+    };
+    if path != expected {
         return Err(LoopbackError::MalformedRequest);
     }
     Ok(query.to_owned())
@@ -409,8 +464,35 @@ mod tests {
         let port = listener.port()?;
         assert_eq!(
             listener.redirect_uri()?,
-            format!("http://127.0.0.1:{port}/callback")
+            format!("http://localhost:{port}/callback"),
+            "the advertised host is the registered loopback name, not the bound address"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn an_empty_path_advertises_no_path_segment_but_still_matches_the_root_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A public-client loopback registration of `http://localhost` waives
+        // the port but compares the path exactly, so the redirect URI must
+        // carry no path at all. The browser nonetheless requests `/`, so the
+        // two spellings have to name the same target.
+        let listener = LoopbackListener::bind("")?;
+        let port = listener.port()?;
+        assert_eq!(listener.redirect_uri()?, format!("http://localhost:{port}"));
+        assert_eq!(
+            extract_query("GET /?code=abc&state=xyz HTTP/1.1", ""),
+            Ok("code=abc&state=xyz".to_owned())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn a_deployment_may_advertise_a_different_loopback_spelling()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = LoopbackListener::bind_advertising("127.0.0.1", "")?;
+        let port = listener.port()?;
+        assert_eq!(listener.redirect_uri()?, format!("http://127.0.0.1:{port}"));
         Ok(())
     }
 
