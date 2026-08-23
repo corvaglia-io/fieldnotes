@@ -45,6 +45,22 @@ fn field_of(json: &str, key: &str) -> Option<String> {
     Some(json[start..end].replace("\\\\", "\\").replace("\\\"", "\""))
 }
 
+/// Resolves symlinks in `path`, matching what the OS reports for the current
+/// directory after `Command::current_dir`.
+///
+/// On macOS the system temporary directory is reached through a symlink
+/// (`/var` -> `/private/var`), so a subprocess that discovers its notebook by
+/// reading its own working directory reports the resolved `/private/var/...`
+/// form, while a path built directly from [`TempDir::path`] keeps the
+/// symlinked `/var/...` spelling. Only assertions against a
+/// discovered-from-cwd notebook need this; a path handed to the binary
+/// explicitly (`--notebook`, an environment variable, or the profile) is
+/// never round-tripped through the OS's working directory and needs no such
+/// resolution.
+fn canonical(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// Creates an initialized notebook under `parent` at `name` and returns its
 /// path, using a private, never-shared profile so `init`'s own default-
 /// recording behavior cannot interfere with the test.
@@ -60,10 +76,11 @@ fn init_notebook(parent: &Path, name: &str) -> std::io::Result<PathBuf> {
 }
 
 #[test]
-fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io::Result<()> {
+fn notebook_precedence_is_flag_then_env_then_discovery_then_profile() -> std::io::Result<()> {
     let temp = TempDir::new("config-notebook-precedence")?;
     let flagged = init_notebook(temp.path(), "flagged")?;
     let enved = init_notebook(temp.path(), "enved")?;
+    let discovered = init_notebook(temp.path(), "discovered")?;
     let profiled = init_notebook(temp.path(), "profiled")?;
     let unrelated = temp.path().join("unrelated-cwd");
     std::fs::create_dir_all(&unrelated)?;
@@ -79,14 +96,15 @@ fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io
     )
     .map_err(|error| std::io::Error::other(error.to_string()))?;
 
-    // Tier 1: the flag wins over everything else.
+    // Tier 1: the flag wins over everything else, even when run from inside
+    // a different notebook.
     let output = Command::new(binary())
         .arg("--notebook")
         .arg(&flagged)
         .args(["status", "--format", "json"])
         .env(NOTEBOOK_ENV, &enved)
         .env(CONFIG_ENV, &profile_path)
-        .current_dir(&unrelated)
+        .current_dir(&discovered)
         .output()?;
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
@@ -94,12 +112,13 @@ fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io
         Some(flagged.to_string_lossy().as_ref())
     );
 
-    // Tier 2: no flag, so the environment variable wins over the profile.
+    // Tier 2: no flag, so the environment variable wins over discovery from
+    // the working directory and over the profile.
     let output = Command::new(binary())
         .args(["status", "--format", "json"])
         .env(NOTEBOOK_ENV, &enved)
         .env(CONFIG_ENV, &profile_path)
-        .current_dir(&unrelated)
+        .current_dir(&discovered)
         .output()?;
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
@@ -107,8 +126,24 @@ fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io
         Some(enved.to_string_lossy().as_ref())
     );
 
-    // Tier 3: no flag, no environment variable, so the profile wins over
-    // discovery from an unrelated working directory.
+    // Tier 3 (reordered): no flag, no environment variable, so discovery
+    // from the working directory wins over the profile default. Standing
+    // inside a notebook now outranks a profile default recorded in an
+    // earlier session.
+    let output = Command::new(binary())
+        .args(["status", "--format", "json"])
+        .env(CONFIG_ENV, &profile_path)
+        .current_dir(&discovered)
+        .output()?;
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        field_of(&stdout(&output), "root").as_deref(),
+        Some(canonical(&discovered).to_string_lossy().as_ref())
+    );
+
+    // Tier 4 (reordered): no flag, no environment variable, and the working
+    // directory is not inside any notebook, so the profile default is used
+    // as the final fallback.
     let output = Command::new(binary())
         .args(["status", "--format", "json"])
         .env(CONFIG_ENV, &profile_path)
@@ -120,8 +155,8 @@ fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io
         Some(profiled.to_string_lossy().as_ref())
     );
 
-    // Tier 4: nothing at all falls back to working-directory discovery, which
-    // fails from a directory that is not inside any notebook.
+    // Nothing resolves: no flag, no environment variable, no profile
+    // default, and the working directory is not inside any notebook.
     let output = Command::new(binary())
         .args(["status", "--format", "json"])
         .env(CONFIG_ENV, temp.path().join("no-such-profile"))
@@ -129,6 +164,96 @@ fn notebook_precedence_is_flag_then_env_then_profile_then_discovery() -> std::io
         .output()?;
     assert_eq!(output.status.code(), Some(4));
     assert!(stderr(&output).contains("run `fieldnotes init`"));
+    Ok(())
+}
+
+/// The scenario that motivated reordering discovery ahead of the profile: a
+/// profile default recorded for notebook A must never redirect a command run
+/// from inside a different, valid notebook B. Before this reorder, standing
+/// inside B and running a write like `sync` silently operated on A instead,
+/// with nothing in the output revealing the redirection.
+#[test]
+fn a_command_run_from_inside_a_notebook_uses_that_notebook_over_the_profile_default()
+-> std::io::Result<()> {
+    let temp = TempDir::new("config-notebook-vs-default")?;
+    let notebook_a = init_notebook(temp.path(), "notebook-a")?;
+    let notebook_b = init_notebook(temp.path(), "notebook-b")?;
+
+    let profile_path = temp.path().join("profile");
+    write_profile(
+        &profile_path,
+        &Profile {
+            notebook: Some(notebook_a.clone()),
+            timezone: None,
+            ..Profile::default()
+        },
+    )
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
+
+    let output = Command::new(binary())
+        .args(["status", "--format", "json"])
+        .env(CONFIG_ENV, &profile_path)
+        .current_dir(&notebook_b)
+        .output()?;
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        field_of(&stdout(&output), "root").as_deref(),
+        Some(canonical(&notebook_b).to_string_lossy().as_ref()),
+        "standing inside notebook B must not be redirected to the profile's notebook A"
+    );
+
+    // Human output must stay quiet here: the notebook came from the working
+    // directory, not the profile, so there is nothing non-obvious to flag.
+    let human = Command::new(binary())
+        .args(["status"])
+        .env(CONFIG_ENV, &profile_path)
+        .current_dir(&notebook_b)
+        .output()?;
+    assert!(human.status.success(), "{}", stderr(&human));
+    assert!(!stdout(&human).contains("using the profile's default notebook"));
+    Ok(())
+}
+
+/// The profile default still does the one job it exists for: a command run
+/// from a directory that is nowhere near a notebook falls back to it.
+#[test]
+fn a_command_run_outside_any_notebook_falls_back_to_the_profile_default() -> std::io::Result<()> {
+    let temp = TempDir::new("config-notebook-fallback")?;
+    let notebook = init_notebook(temp.path(), "configured")?;
+    let unrelated = temp.path().join("nowhere-near-a-notebook");
+    std::fs::create_dir_all(&unrelated)?;
+
+    let profile_path = temp.path().join("profile");
+    write_profile(
+        &profile_path,
+        &Profile {
+            notebook: Some(notebook.clone()),
+            timezone: None,
+            ..Profile::default()
+        },
+    )
+    .map_err(|error| std::io::Error::other(error.to_string()))?;
+
+    let output = Command::new(binary())
+        .args(["status", "--format", "json"])
+        .env(CONFIG_ENV, &profile_path)
+        .current_dir(&unrelated)
+        .output()?;
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(
+        field_of(&stdout(&output), "root").as_deref(),
+        Some(notebook.to_string_lossy().as_ref())
+    );
+
+    // Human output says so here: this is the one case where a command
+    // operates on a notebook other than the one the caller is standing in.
+    let human = Command::new(binary())
+        .args(["status"])
+        .env(CONFIG_ENV, &profile_path)
+        .current_dir(&unrelated)
+        .output()?;
+    assert!(human.status.success(), "{}", stderr(&human));
+    assert!(stdout(&human).contains("using the profile's default notebook"));
     Ok(())
 }
 

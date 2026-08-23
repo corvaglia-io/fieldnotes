@@ -9,17 +9,32 @@
 //!
 //! # Precedence
 //!
-//! Every setting resolves through the same four-tier order, implemented once in
-//! [`pick`] rather than re-derived per setting:
+//! Every setting except the notebook resolves through the same four-tier
+//! order, implemented once in [`pick`] rather than re-derived per setting:
 //!
-//! 1. an explicit CLI flag (`--notebook`, `--offset`, and `sync`'s
-//!    `--max-artifact-bytes` / `--media-type`);
-//! 2. an environment variable (`FIELDNOTES_NOTEBOOK`; `FIELDNOTES_TIMEZONE`,
-//!    or the legacy `FIELDNOTES_UTC_OFFSET` if the newer name is unset);
+//! 1. an explicit CLI flag (`--offset`, and `sync`'s `--max-artifact-bytes` /
+//!    `--media-type`);
+//! 2. an environment variable (`FIELDNOTES_TIMEZONE`, or the legacy
+//!    `FIELDNOTES_UTC_OFFSET` if the newer name is unset);
 //! 3. the profile setting;
-//! 4. an existing documented default: notebook discovery by walking up from the
-//!    working directory, UTC for the offset, and — for the two artifact
-//!    retention settings — the protocol crate's own approved defaults.
+//! 4. an existing documented default: UTC for the offset, and — for the two
+//!    artifact retention settings — the protocol crate's own approved
+//!    defaults.
+//!
+//! The notebook is the one exception, implemented once in
+//! [`resolve_notebook`] rather than in [`pick`]:
+//!
+//! 1. an explicit `--notebook` flag;
+//! 2. the `FIELDNOTES_NOTEBOOK` environment variable;
+//! 3. discovery by walking up from the working directory;
+//! 4. the profile's recorded default notebook.
+//!
+//! Discovery outranks the profile default here, unlike every other setting,
+//! because standing inside a notebook is a strong, locally evident statement
+//! of intent, whereas the profile default is a convenience for when the
+//! working directory is nowhere near a notebook. A command that silently
+//! operated on the profile's notebook while the caller stood inside a
+//! different one was a real footgun this order removes.
 
 use std::path::{Path, PathBuf};
 
@@ -92,15 +107,62 @@ fn pick<T>(flag: Option<T>, env: Option<T>, profile: Option<T>) -> Option<T> {
     flag.or(env).or(profile)
 }
 
-/// Resolves the notebook starting path from the flag/env/profile tiers,
-/// leaving discovery-from-the-working-directory (tier four) to the caller.
-#[must_use]
-pub fn resolve_notebook_start(
-    flag: Option<PathBuf>,
-    env_notebook: Option<String>,
-    profile_notebook: Option<PathBuf>,
-) -> Option<PathBuf> {
-    pick(flag, env_notebook.map(PathBuf::from), profile_notebook)
+/// Where the notebook a command operates on came from.
+///
+/// Distinguished from the other settings' plain "which value won" outcome
+/// because [`Profile`] is the one source worth telling a user about: it is
+/// not locally evident the way an explicit flag or the working directory
+/// is, so a command that resolved to it can silently touch a notebook other
+/// than the one the caller is standing in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotebookSource {
+    /// An explicit `--notebook` flag, or the `FIELDNOTES_NOTEBOOK`
+    /// environment variable when the flag is absent.
+    Explicit,
+    /// Discovered by walking up from the working directory.
+    WorkingDirectory,
+    /// The profile's recorded default notebook.
+    Profile,
+}
+
+/// Resolves the notebook a command should operate on, and how that choice
+/// was made.
+///
+/// Precedence, highest to lowest:
+///
+/// 1. `explicit` — the `--notebook` flag, or [`NOTEBOOK_ENV`] when the flag
+///    is absent; the caller has already merged those two, since they share a
+///    tier;
+/// 2. discovery by walking up from `cwd`;
+/// 3. `profile_notebook`, the profile's recorded default.
+///
+/// This is the single place the notebook's precedence is decided; every
+/// caller that needs a notebook goes through this function rather than
+/// re-deriving the order. `explicit` and `profile_notebook` are each
+/// re-discovered from (rather than assumed to already be) a notebook root,
+/// matching how `--notebook` has always tolerated naming a subdirectory of
+/// the notebook.
+///
+/// On failure, the error is discovery's own `cwd`-rooted failure when no
+/// profile default exists to fall back to, since that is the message that
+/// matches what the caller actually tried.
+pub fn resolve_notebook(
+    explicit: Option<&Path>,
+    cwd: &Path,
+    profile_notebook: Option<&Path>,
+) -> Result<(Notebook, NotebookSource), StoreError> {
+    if let Some(path) = explicit {
+        return Notebook::discover(path).map(|notebook| (notebook, NotebookSource::Explicit));
+    }
+    match Notebook::discover(cwd) {
+        Ok(notebook) => Ok((notebook, NotebookSource::WorkingDirectory)),
+        Err(discovery_error) => match profile_notebook {
+            Some(path) => {
+                Notebook::discover(path).map(|notebook| (notebook, NotebookSource::Profile))
+            }
+            None => Err(discovery_error),
+        },
+    }
 }
 
 /// Resolves the raw timezone spec text from the flag/env/profile tiers,
@@ -225,34 +287,85 @@ pub fn record_default_notebook_if_absent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fieldnotes_domain::{Datetime, RecordId};
+    use fieldnotes_format::InstanceMetadata;
+    use fieldnotes_store::write_instance;
+    use fieldnotes_test_support::TempDir;
+
+    fn temp(label: &str) -> Result<TempDir, StoreError> {
+        TempDir::new(label)
+            .map_err(|error| StoreError::io("create temporary directory", ".", error))
+    }
+
+    /// Initializes a notebook under `parent` and returns its root.
+    ///
+    /// A notebook is identified by `.fieldnotes/instance.yaml`, which
+    /// `Notebook::create` alone does not write (that is `fieldnotes-app`'s
+    /// `init` use case), so this hand-writes a minimal instance record the
+    /// same way the store crate's own tests do.
+    fn notebook_at(parent: &Path, name: &str) -> Result<PathBuf, StoreError> {
+        let root = parent.join(name);
+        let (notebook, _) = Notebook::create(&root)?;
+        let instance_id =
+            RecordId::parse("fn_01a02837-2de0-7a2b-8c41-f2481851192a").map_err(|_| {
+                StoreError::NotANotebook {
+                    start: root.clone(),
+                }
+            })?;
+        let created_at =
+            Datetime::parse("2026-08-22T08:45:00+02:00").map_err(|_| StoreError::NotANotebook {
+                start: root.clone(),
+            })?;
+        let metadata = InstanceMetadata {
+            instance_id,
+            created_at,
+            name: None,
+        };
+        write_instance(&notebook, &metadata)?;
+        Ok(root)
+    }
 
     #[test]
-    fn precedence_favors_flag_then_env_then_profile_then_none() {
-        // Every tier present: the flag wins.
-        assert_eq!(
-            resolve_notebook_start(
-                Some(PathBuf::from("/flag")),
-                Some("/env".to_owned()),
-                Some(PathBuf::from("/profile")),
-            ),
-            Some(PathBuf::from("/flag"))
-        );
-        // No flag: the environment wins over the profile.
-        assert_eq!(
-            resolve_notebook_start(
-                None,
-                Some("/env".to_owned()),
-                Some(PathBuf::from("/profile"))
-            ),
-            Some(PathBuf::from("/env"))
-        );
-        // Only the profile is set.
-        assert_eq!(
-            resolve_notebook_start(None, None, Some(PathBuf::from("/profile"))),
-            Some(PathBuf::from("/profile"))
-        );
-        // Nothing is set: the caller falls back to working-directory discovery.
-        assert_eq!(resolve_notebook_start(None, None, None), None);
+    fn notebook_resolution_favors_explicit_then_discovery_then_profile() -> Result<(), StoreError> {
+        let temp = temp("notebook-resolution")?;
+        let explicit_notebook = notebook_at(temp.path(), "explicit")?;
+        let cwd_notebook = notebook_at(temp.path(), "cwd")?;
+        let profile_notebook = notebook_at(temp.path(), "profile")?;
+
+        // Tier 1: the explicit flag/environment path wins over everything
+        // else, even when standing inside a different notebook.
+        let (notebook, source) = resolve_notebook(
+            Some(&explicit_notebook),
+            &cwd_notebook,
+            Some(&profile_notebook),
+        )?;
+        assert_eq!(notebook.root(), explicit_notebook.as_path());
+        assert_eq!(source, NotebookSource::Explicit);
+
+        // Tier 2: no explicit path, so discovery from the working directory
+        // wins over the profile default. This is the motivating case: a
+        // profile default pointing elsewhere must never outrank the
+        // notebook the caller is standing in.
+        let (notebook, source) = resolve_notebook(None, &cwd_notebook, Some(&profile_notebook))?;
+        assert_eq!(notebook.root(), cwd_notebook.as_path());
+        assert_eq!(source, NotebookSource::WorkingDirectory);
+
+        // Tier 3: the working directory is not inside any notebook, so the
+        // profile default is used as the final fallback.
+        let unrelated = temp.path().join("unrelated-cwd");
+        std::fs::create_dir_all(&unrelated)
+            .map_err(|error| StoreError::io("create directory", &unrelated, error))?;
+        let (notebook, source) = resolve_notebook(None, &unrelated, Some(&profile_notebook))?;
+        assert_eq!(notebook.root(), profile_notebook.as_path());
+        assert_eq!(source, NotebookSource::Profile);
+
+        // Nothing resolves: the working directory is not in a notebook and
+        // there is no profile default, so discovery's own error is reported.
+        assert!(matches!(
+            resolve_notebook(None, &unrelated, None),
+            Err(StoreError::NotANotebook { .. })
+        ));
+        Ok(())
     }
 
     #[test]

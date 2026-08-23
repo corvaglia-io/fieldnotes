@@ -52,10 +52,18 @@
 //!
 //! A user-level profile outside any notebook can record a default notebook
 //! path and a default timezone; see [`config`] for its file location and
-//! [`timezone`] for how a timezone setting becomes a numeric UTC offset. Every
-//! setting resolves through the same order: an explicit flag, then an
-//! environment variable, then the profile, then `0.1.0`'s existing behavior
-//! (working-directory discovery for the notebook, UTC for the offset).
+//! [`timezone`] for how a timezone setting becomes a numeric UTC offset.
+//! Every setting except the notebook resolves through the same order: an
+//! explicit flag, then an environment variable, then the profile, then
+//! `0.1.0`'s existing behavior (UTC for the offset). The notebook resolves
+//! differently, in [`config::resolve_notebook`]: an explicit flag, then the
+//! environment variable, then discovery by walking up from the working
+//! directory, then the profile's recorded default, last — standing inside a
+//! notebook is a stronger, more locally evident statement of intent than a
+//! profile setting from an earlier session. When resolution falls all the
+//! way through to the profile, human-readable output says so, since that is
+//! the one case where a command operates somewhere other than where the
+//! caller is standing.
 
 mod config;
 mod environment;
@@ -97,9 +105,10 @@ const EXIT_INTERNAL: i32 = 70;
 #[command(name = "fieldnotes", version, about, long_about = None)]
 struct Cli {
     /// Notebook to operate on. Highest-precedence source; then the
-    /// FIELDNOTES_NOTEBOOK environment variable; then the profile's
-    /// `notebook` setting (see `fieldnotes config`); then the notebook
-    /// containing the working directory.
+    /// FIELDNOTES_NOTEBOOK environment variable; then the notebook
+    /// containing the working directory; then the profile's `notebook`
+    /// setting (see `fieldnotes config`), used only when the working
+    /// directory is not inside any notebook.
     #[arg(long, global = true, value_name = "PATH")]
     notebook: Option<PathBuf>,
 
@@ -179,8 +188,9 @@ enum Command {
         target: Option<String>,
     },
     /// Show or change the persistent user profile (default notebook and
-    /// timezone). Not part of any notebook: see the module documentation for
-    /// its file location.
+    /// timezone). Not part of any notebook: it lives in a per-platform user
+    /// configuration directory. Run `fieldnotes config show` to see its
+    /// exact file path.
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -438,11 +448,13 @@ fn print(text: &str) {
 }
 
 fn run(cli: Cli) -> Result<i32, Failure> {
-    // The profile is loaded once, in this one place, and everything below
-    // resolves through the same flag-then-environment-then-profile order
-    // implemented in `config::resolve_notebook_start` and
-    // `config::resolve_timezone_text`. A malformed profile fails here for
-    // every command rather than being silently skipped.
+    // The profile is loaded once, in this one place. Every setting except
+    // the notebook resolves through the same flag-then-environment-then-
+    // profile order implemented in `config::resolve_timezone_text`; the
+    // notebook resolves through `config::resolve_notebook` instead, which
+    // puts working-directory discovery ahead of the profile default (see
+    // that function's documentation for why). A malformed profile fails
+    // here for every command rather than being silently skipped.
     let profile_path = config::resolve_profile_path();
     let profile = match &profile_path {
         Some(path) => fieldnotes_store::read_profile(path)
@@ -450,11 +462,14 @@ fn run(cli: Cli) -> Result<i32, Failure> {
         None => Profile::default(),
     };
 
-    let notebook_start = config::resolve_notebook_start(
-        cli.notebook.clone(),
-        non_empty_env(config::NOTEBOOK_ENV),
-        profile.notebook.clone(),
-    );
+    // The explicit flag/environment tiers for the notebook: resolved eagerly
+    // since neither touches the filesystem, unlike the discovery and profile
+    // tiers `open_notebook` resolves lazily, only for commands that need a
+    // notebook at all.
+    let explicit_notebook = cli
+        .notebook
+        .clone()
+        .or_else(|| non_empty_env(config::NOTEBOOK_ENV).map(PathBuf::from));
     let timezone_text = config::resolve_timezone_text(
         cli.offset.clone(),
         non_empty_env(config::TIMEZONE_ENV),
@@ -508,7 +523,9 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             file,
             voice,
         } => {
-            let notebook = open_notebook(notebook_start)?;
+            let (notebook, notebook_source) =
+                open_notebook(explicit_notebook.clone(), profile.notebook.clone())?;
+            notify_notebook_source(&notebook, notebook_source, cli.format);
             let source = match (file, voice) {
                 (Some(path), _) => NoteSource::File(path),
                 (None, Some(path)) => NoteSource::Voice(path),
@@ -537,13 +554,17 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             Ok(EXIT_OK)
         }
         Command::Status => {
-            let notebook = open_notebook(notebook_start)?;
+            let (notebook, notebook_source) =
+                open_notebook(explicit_notebook.clone(), profile.notebook.clone())?;
+            notify_notebook_source(&notebook, notebook_source, cli.format);
             let report = status(&notebook)?;
             print(&render_status(&report, cli.format));
             Ok(EXIT_OK)
         }
         Command::Inspect { target } => {
-            let notebook = open_notebook(notebook_start)?;
+            let (notebook, notebook_source) =
+                open_notebook(explicit_notebook.clone(), profile.notebook.clone())?;
+            notify_notebook_source(&notebook, notebook_source, cli.format);
             let report = inspect(&notebook, target.as_deref())?;
             print(&render_inspect(&report, cli.format));
             Ok(if report.healthy {
@@ -557,7 +578,12 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             print(&text);
             Ok(EXIT_OK)
         }
-        Command::Fields { action } => run_fields(action, notebook_start, cli.format),
+        Command::Fields { action } => run_fields(
+            action,
+            explicit_notebook.clone(),
+            profile.notebook.clone(),
+            cli.format,
+        ),
         Command::Sync {
             field_id,
             snapshot,
@@ -567,7 +593,9 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             run_seconds,
             idle_seconds,
         } => {
-            let notebook = open_notebook(notebook_start)?;
+            let (notebook, notebook_source) =
+                open_notebook(explicit_notebook.clone(), profile.notebook.clone())?;
+            notify_notebook_source(&notebook, notebook_source, cli.format);
             let options = SyncOptions {
                 mode: if snapshot {
                     SyncMode::Snapshot
@@ -639,10 +667,12 @@ fn parse_config_pairs(
 
 fn run_fields(
     action: FieldsAction,
-    notebook_start: Option<PathBuf>,
+    explicit_notebook: Option<PathBuf>,
+    profile_notebook: Option<PathBuf>,
     format: Format,
 ) -> Result<i32, Failure> {
-    let notebook = open_notebook(notebook_start)?;
+    let (notebook, notebook_source) = open_notebook(explicit_notebook, profile_notebook)?;
+    notify_notebook_source(&notebook, notebook_source, format);
     match action {
         FieldsAction::Add {
             r#type,
@@ -682,20 +712,45 @@ fn non_empty_env(key: &str) -> Option<String> {
         .filter(|value| !value.trim().is_empty())
 }
 
-/// Locates the notebook to operate on, falling back to the working directory
-/// when no flag, environment variable, or profile setting names a start path.
-fn open_notebook(start: Option<PathBuf>) -> Result<Notebook, Failure> {
-    let start = match start {
-        Some(path) => path,
-        None => std::env::current_dir().map_err(|error| {
-            Failure::new(
-                "io",
-                format!("could not read the working directory: {error}"),
-                EXIT_IO,
-            )
-        })?,
-    };
-    Notebook::discover(&start).map_err(|error| Failure::from(AppError::Store(error)))
+/// Locates the notebook to operate on and reports which precedence tier
+/// resolved it, through [`config::resolve_notebook`]: `explicit` (the
+/// `--notebook` flag or `FIELDNOTES_NOTEBOOK`), then discovery by walking up
+/// from the working directory, then `profile_notebook` as the final
+/// fallback.
+fn open_notebook(
+    explicit: Option<PathBuf>,
+    profile_notebook: Option<PathBuf>,
+) -> Result<(Notebook, config::NotebookSource), Failure> {
+    let cwd = std::env::current_dir().map_err(|error| {
+        Failure::new(
+            "io",
+            format!("could not read the working directory: {error}"),
+            EXIT_IO,
+        )
+    })?;
+    config::resolve_notebook(explicit.as_deref(), &cwd, profile_notebook.as_deref())
+        .map_err(|error| Failure::from(AppError::Store(error)))
+}
+
+/// Tells a user, in human-readable output only, when a command is about to
+/// operate on the profile's default notebook rather than one discovered from
+/// the working directory.
+///
+/// Silent for [`config::NotebookSource::Explicit`] and
+/// [`config::NotebookSource::WorkingDirectory`]: an explicit flag or
+/// environment variable is the caller's own instruction, and discovery from
+/// the working directory is exactly what standing inside a notebook is
+/// expected to do. The profile default is the one source that is not
+/// locally evident, so it is the one case worth a line of output — without
+/// this, a write landing in a different notebook than the one the caller is
+/// standing in would be discoverable only much later.
+fn notify_notebook_source(notebook: &Notebook, source: config::NotebookSource, format: Format) {
+    if format == Format::Human && source == config::NotebookSource::Profile {
+        print(&format!(
+            "notebook: using the profile's default notebook at {} (the working directory is not inside a notebook)\n",
+            notebook.root().display()
+        ));
+    }
 }
 
 /// Collects the Note text from the chosen input.
