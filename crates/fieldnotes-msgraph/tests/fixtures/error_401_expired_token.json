@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "InvalidAuthenticationToken",
+    "message": "Access token has expired or is not yet valid.",
+    "innerError": {
+      "date": "2026-08-23T00:00:00",
+      "request-id": "00000000-0000-0000-0000-0000000000a3",
+      "client-request-id": "00000000-0000-0000-0000-0000000000a4"
+    }
+  }
+}

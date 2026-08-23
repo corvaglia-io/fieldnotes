@@ -1,0 +1,6 @@
+{
+  "@odata.nextLink": "https://evil.example.net/v1.0/me/messages?$skiptoken=FIXTURE-STOLEN",
+  "value": [
+    { "id": "AAMkFIXTURE0001", "subject": "Weekly status" }
+  ]
+}

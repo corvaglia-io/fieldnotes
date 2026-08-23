@@ -1,0 +1,7 @@
+{
+  "@odata.nextLink": "https://graph.example.test/v1.0/me/messages?$skiptoken=FIXTURE-PAGE-2",
+  "value": [
+    { "id": "AAMkFIXTURE0001", "subject": "Weekly status" },
+    { "id": "AAMkFIXTURE0002", "subject": "Lunch plans" }
+  ]
+}

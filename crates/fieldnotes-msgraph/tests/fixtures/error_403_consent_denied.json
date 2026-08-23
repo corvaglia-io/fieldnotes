@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "ErrorAccessDenied",
+    "message": "Access is denied. Check credentials and try again.",
+    "innerError": {
+      "request-id": "00000000-0000-0000-0000-0000000000a5"
+    }
+  }
+}

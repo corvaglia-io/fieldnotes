@@ -6,7 +6,27 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+# Redaction is reused, not reinvented: `Redactor` is registered with the
+# caller-supplied access token as a known secret and applied to every string
+# this crate puts into a `GraphError`, matching the two-layer redaction model
+# `fieldnotes_field_protocol::redact` documents for the rest of the workspace.
 fieldnotes-field-protocol.workspace = true
+# Supplies the injected `RandomSource` trait only (no I/O, no other
+# vocabulary pulled in). Reusing the exact trait A1 record-ID generation
+# already uses for its injected randomness means one production RNG
+# implementation, wired by whichever binary composes this crate, serves both
+# without this crate inventing a second randomness abstraction.
+fieldnotes-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Blocking (synchronous) HTTP client with a pure-Rust TLS stack, chosen as
+# this workspace's first HTTP dependency. See the module docs on
+# `transport::UreqTransport` for the full comparison against reqwest,
+# curl-backed clients, and attohttpc.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

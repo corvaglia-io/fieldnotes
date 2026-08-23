@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "TooManyRequests",
+    "message": "Please retry after some time.",
+    "innerError": {
+      "request-id": "00000000-0000-0000-0000-0000000000a1"
+    }
+  }
+}

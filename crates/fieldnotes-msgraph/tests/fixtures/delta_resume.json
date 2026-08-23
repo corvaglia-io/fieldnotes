@@ -1,0 +1,6 @@
+{
+  "@odata.deltaLink": "https://graph.example.test/v1.0/me/messages/delta?$deltatoken=FIXTURE-DELTA-TOKEN-0002",
+  "value": [
+    { "id": "AAMkFIXTURE0006", "subject": "New message since last sync" }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "error": {
+    "code": "ServiceNotAvailable",
+    "message": "The service is temporarily unavailable.",
+    "innerError": {
+      "request-id": "00000000-0000-0000-0000-0000000000a2"
+    }
+  }
+}
