@@ -358,7 +358,7 @@ Configuring a Field returns a stable, human-readable ID:
 Examples:
 
 ```text
-teams_wxs
+teams_work
 teams_niivo
 outlook_wxs
 outlook_private
@@ -387,11 +387,11 @@ Display names, account addresses, tenant names, and machine names may change wit
 Configuration is private application state and is not constrained by the flat notebook-frontmatter rule.
 
 ```yaml
-id: teams_wxs
+id: teams_work
 driver: teams
-account: joe@worxspace.ch
-tenant: Worxspace AG
-credential_profile: microsoft_wxs
+account: joe@example.net
+tenant: Example AG
+credential_profile: microsoft_work
 ```
 
 Secrets must not appear in this file.
@@ -411,7 +411,7 @@ Every Field type owns a stable prefix. When a source concept maps cleanly to the
 from: alice@example.com
 participants:
   - alice@example.com
-  - joe@worxspace.ch
+  - joe@example.net
 teams_chat_id: "19:abc..."
 teams_message_type: message
 teams_importance: normal
@@ -474,7 +474,7 @@ Logs go to standard error. Secrets must never appear in either stream.
 A conceptual exchange is:
 
 ```json
-{"protocol":1,"operation":"collect","field_id":"teams_wxs","cursor":"opaque"}
+{"protocol":1,"operation":"collect","field_id":"teams_work","cursor":"opaque"}
 {"event":"record","source_identity":"msg-123","type":"message","occurred_at":"2026-08-22T09:36:14Z","properties":{"from":"alice@example.com","teams_chat_id":"19:abc"},"body":"Alice asked about the migration."}
 {"event":"checkpoint","cursor":"next-opaque"}
 ```
@@ -523,7 +523,7 @@ The exact wire schema and exit-code table are open questions for v0.1; the bound
 Configuration refers to a named credential profile. It never embeds a refresh token, client secret, password, API key, or session cookie.
 
 ```yaml
-credential_profile: microsoft_wxs
+credential_profile: microsoft_work
 ```
 
 The core resolves that profile through a `CredentialProvider` abstraction and supplies credentials to a Field without placing secrets in command-line arguments, notebook files, cursors, logs, or process listings.
@@ -567,7 +567,7 @@ Every note filename follows:
 Example:
 
 ```text
-20260822T093614Z_teams_wxs_message_note_01K3M7K6CZQ7F6PX4V8G0XWJ83.md
+20260822T093614Z_teams_work_message_note_01K3M7K6CZQ7F6PX4V8G0XWJ83.md
 ```
 
 The timestamp is UTC and filename-safe on Windows, Linux, and macOS. It is derived from `occurred_at`, so lexicographic sorting produces a global timeline and the time the Note happened acts as its primary human-facing locator.
@@ -575,7 +575,7 @@ The timestamp is UTC and filename-safe on Windows, Linux, and macOS. It is deriv
 Components:
 
 - `utc-timestamp`: `YYYYMMDDTHHMMSSZ`, using the best event time available;
-- `field-id`: the configured stable ID such as `teams_wxs`;
+- `field-id`: the configured stable ID such as `teams_work`;
 - `type`: one lowercase primary note type;
 - `note-id`: a globally unique, stable Fieldnotes ID.
 
@@ -611,7 +611,7 @@ Every note contains these five structural properties:
 ---
 id: note_01K3M7K6CZQ7F6PX4V8G0XWJ83
 instance_id: fn_01K3M5AWZ2MN7PX1JY9M6EA54F
-field_id: teams_wxs
+field_id: teams_work
 type: message
 occurred_at: 2026-08-22T09:36:14
 ---
@@ -732,7 +732,7 @@ The body should not be replaced by a model-generated summary when original or de
 ---
 id: note_01K3M7K6CZQ7F6PX4V8G0XWJ83
 instance_id: fn_01K3M5AWZ2MN7PX1JY9M6EA54F
-field_id: teams_wxs
+field_id: teams_work
 type: message
 occurred_at: 2026-08-22T09:36:14
 captured_at: 2026-08-22T09:38:02
@@ -741,13 +741,13 @@ source_url: https://teams.microsoft.com/l/message/...
 from: alice@example.com
 participants:
   - alice@example.com
-  - joe@worxspace.ch
+  - joe@example.net
 subject: Migration Thursday
 thread_id: "19:abc..."
 content_hash: sha256:6f4d...
 identities:
   - email:alice@example.com
-  - email:joe@worxspace.ch
+  - email:joe@example.net
 teams_chat_id: "19:abc..."
 teams_message_type: message
 ---
@@ -847,12 +847,12 @@ A user may run separate instances on work and private systems, email or copy not
 For example:
 
 ```text
-Work Mac       fn_A → teams_wxs, outlook_wxs
+Work Mac       fn_A → teams_work, outlook_wxs
 Private Mac    fn_B → gmail_private, calendar_private
-Laptop         fn_C → teams_wxs
+Laptop         fn_C → teams_work
 ```
 
-Both `fn_A` and `fn_C` may legitimately contain a Field named `teams_wxs`. Their producer identities remain distinct because the true provenance key is `(instance_id, field_id)`.
+Both `fn_A` and `fn_C` may legitimately contain a Field named `teams_work`. Their producer identities remain distinct because the true provenance key is `(instance_id, field_id)`.
 
 ### 13.3 Identity layers used during merge
 
@@ -931,7 +931,7 @@ identities:
   - email:alice@example.com
   - entra-user:8d82...
 seen_in:
-  - teams_wxs
+  - teams_work
   - outlook_wxs
 first_seen: 2026-06-18T08:22:00
 last_seen: 2026-08-22T09:36:14
@@ -1334,7 +1334,7 @@ A Base over `notes/` can display a shared timeline:
 occurred_at | type | field_id | subject | participants
 ```
 
-A Teams-specific view can filter `field_id == "teams_wxs"` and add `teams_chat_id`. A Jira-specific view can display `jira_key` and `jira_status`. Notes without those properties simply have empty cells.
+A Teams-specific view can filter `field_id == "teams_work"` and add `teams_chat_id`. A Jira-specific view can display `jira_key` and `jira_status`. Notes without those properties simply have empty cells.
 
 ### 19.3 Optional Base file
 
@@ -1396,12 +1396,12 @@ Example:
 
 ```text
 $ fieldnotes fields add teams wxs
-Added field: teams_wxs
+Added field: teams_work
 
-$ fieldnotes fields auth teams_wxs
+$ fieldnotes fields auth teams_work
 Authentication stored in the operating-system credential store.
 
-$ fieldnotes sync teams_wxs
+$ fieldnotes sync teams_work
 Collected 142 records; wrote 119 notes; reused 23 existing artifacts.
 ```
 
@@ -1440,14 +1440,14 @@ Fieldnotes/
 │   ├── config.yaml
 │   ├── fields/
 │   │   ├── self.yaml
-│   │   ├── teams_wxs.yaml
+│   │   ├── teams_work.yaml
 │   │   ├── outlook_wxs.yaml
 │   │   └── twenty_wxs.yaml
 │   └── cache/
 │       ├── cursors/
 │       └── graph/
 ├── notes/
-│   ├── 20260822T093614Z_teams_wxs_message_note_01K3M7....md
+│   ├── 20260822T093614Z_teams_work_message_note_01K3M7....md
 │   ├── 20260822T101803Z_outlook_wxs_mail_note_01K3M8....md
 │   ├── 20260822T102741Z_jira_wxs_ticket_note_01K3M9....md
 │   └── 20260822T142511Z_self_voice_note_01K3MA....md
@@ -1569,7 +1569,7 @@ The following areas need implementation evidence or small spikes. They should no
 Fieldnotes v0.1 is coherent when all of the following are true:
 
 - A user can initialize a notebook and receive a stable `instance_id`.
-- A user can add and authenticate a read-only Field with a stable ID such as `teams_wxs`.
+- A user can add and authenticate a read-only Field with a stable ID such as `teams_work`.
 - A user can create a typed Note through the built-in `self` Field.
 - A user can import a voice recording as a playable, attributable Note without enabling inference.
 - Sync works with inference disabled and produces useful Notes and a deterministic graph.
