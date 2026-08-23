@@ -44,7 +44,12 @@ pub fn init<C: Clock, R: RandomSource>(
         }
     };
     Ok(InitOutcome {
-        root: notebook.root().to_path_buf(),
+        // Reported in its normalized spelling, so `init` and every later
+        // command name the notebook the same way. Without this, `init
+        // C:\Users\RUNNER~1\...\nb` would report one path and `status` inside
+        // that notebook another, and a user comparing the two would reasonably
+        // conclude they were different notebooks. See [`crate::paths`].
+        root: crate::paths::normalize(notebook.root()),
         instance,
         state,
     })

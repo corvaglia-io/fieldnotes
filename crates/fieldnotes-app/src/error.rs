@@ -83,6 +83,20 @@ pub enum AppError {
         /// The disagreement, in reviewable terms.
         detail: String,
     },
+    /// A `describe` run did not produce a usable manifest.
+    ///
+    /// Separate from [`AppError::InvalidManifest`], which is about a manifest
+    /// value that exists: this is about not getting one at all, because the
+    /// executable could not be started, answered nothing, or answered
+    /// something that is not a manifest.
+    FieldDescribe {
+        /// What happened, already phrased for a user.
+        message: String,
+    },
+    /// A credential could not be resolved, obtained, or delivered.
+    ///
+    /// Never carries material: see [`crate::credentials::CredentialFailure`].
+    Credential(crate::credentials::CredentialFailure),
 }
 
 impl AppError {
@@ -104,6 +118,8 @@ impl AppError {
             AppError::FieldNotConfigured { .. } => "field_not_configured",
             AppError::InvalidManifest { .. } => "invalid_manifest",
             AppError::ManifestMigrationRequired { .. } => "manifest_migration_required",
+            AppError::FieldDescribe { .. } => "field_describe",
+            AppError::Credential(failure) => failure.kind(),
         }
     }
 }
@@ -158,6 +174,8 @@ impl fmt::Display for AppError {
             AppError::ManifestMigrationRequired { detail } => {
                 write!(f, "manifest change requires a migration: {detail}")
             }
+            AppError::FieldDescribe { message } => write!(f, "{message}"),
+            AppError::Credential(failure) => write!(f, "{failure}"),
         }
     }
 }
@@ -170,8 +188,15 @@ impl std::error::Error for AppError {
             AppError::Id(error) => Some(error),
             AppError::Datetime(error) => Some(error),
             AppError::InvalidFieldId { source, .. } => Some(source),
+            AppError::Credential(failure) => Some(failure),
             _ => None,
         }
+    }
+}
+
+impl From<crate::credentials::CredentialFailure> for AppError {
+    fn from(failure: crate::credentials::CredentialFailure) -> Self {
+        AppError::Credential(failure)
     }
 }
 

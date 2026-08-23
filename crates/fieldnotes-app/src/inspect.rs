@@ -139,6 +139,12 @@ pub fn inspect(notebook: &Notebook, target: Option<&str>) -> Result<InspectRepor
 ///
 /// A record is addressable by its logical ID independently of its current
 /// filename, and by filename or path for convenience.
+///
+/// Path comparison goes through [`crate::paths`] rather than `==`, because one
+/// file has more than one spelling: a macOS temporary directory reached through
+/// a symlink, and on Windows an 8.3 short component, a different letter case,
+/// or the verbatim `\\?\` prefix. A user who pasted any of those spellings
+/// means the file it names, and `==` would answer "no such record".
 fn matches_target(notebook: &Notebook, note: &ScannedNote, target: &str) -> bool {
     if note.filename == target {
         return true;
@@ -149,8 +155,22 @@ fn matches_target(notebook: &Notebook, note: &ScannedNote, target: &str) -> bool
         return true;
     }
     let target_path = Path::new(target);
-    note.path == target_path
-        || notebook.relative_display(&note.path) == notebook.relative_display(target_path)
+    if crate::paths::same_path(&note.path, target_path) {
+        return true;
+    }
+    crate::paths::same_relative_display(
+        &notebook_relative(notebook, &note.path),
+        &notebook_relative(notebook, target_path),
+    )
+}
+
+/// One path's notebook-relative display, falling back to the notebook's own
+/// rendering for a path that is not inside the notebook (a
+/// working-directory-relative target a user typed, most often).
+fn notebook_relative(notebook: &Notebook, path: &Path) -> String {
+    crate::paths::relative_to(path, notebook.root())
+        .map(|relative| crate::paths::slash_display(&relative))
+        .unwrap_or_else(|| notebook.relative_display(path))
 }
 
 fn text_value(record: &fieldnotes_format::ParsedRecord, key: &str) -> Option<String> {

@@ -15,6 +15,7 @@
 //! - `fieldnotes.status.v1`
 //! - `fieldnotes.inspect.v1`
 //! - `fieldnotes.fields_add.v1`
+//! - `fieldnotes.fields_auth.v1`
 //! - `fieldnotes.fields_list.v1`
 //! - `fieldnotes.fields_status.v1`
 //! - `fieldnotes.fields_remove.v1`
@@ -48,6 +49,13 @@
 //! can be captured by shell history; only the Note's own declared content is
 //! ever persisted.
 //!
+//! No command accepts a credential as an argument, and none prints one. `fields
+//! auth` is the only command that authenticates: it opens a browser, and the
+//! refresh token it obtains goes straight into the platform credential store.
+//! `sync` never authenticates interactively — it refreshes silently or refuses
+//! with an instruction — so a scheduled run cannot open a browser. Setting
+//! [`NON_INTERACTIVE_ENV`] makes even `fields auth` refuse rather than trying.
+//!
 //! # Persistent profile
 //!
 //! A user-level profile outside any notebook can record a default notebook
@@ -74,10 +82,12 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand, ValueEnum};
+use fieldnotes_app::credentials::system::{SystemCredentials, SystemTokenSource};
 use fieldnotes_app::{
-    AppError, FieldStatusReport, FieldSummary, FieldSyncReport, InitOutcome, InspectReport, Kernel,
-    NoteOutcome, NoteRequest, NoteSource, StatusReport, SyncMode, SyncOptions, SyncOutcome,
-    add_field, create_note, field_status, init, inspect, list_fields, remove_field, status,
+    AppError, AuthOutcome, AuthRequest, CredentialState, FieldStatusReport, FieldSummary,
+    FieldSyncReport, InitOutcome, InspectReport, Kernel, NoteOutcome, NoteRequest, NoteSource,
+    StatusReport, SyncMode, SyncOptions, SyncOutcome, add_field, authenticate_field, create_note,
+    field_status_with, init, inspect, list_fields, remove_field, status,
     validate_artifact_max_bytes, validate_artifact_media_types, validate_field_id,
 };
 use fieldnotes_domain::{Clock, Datetime};
@@ -86,6 +96,15 @@ use fieldnotes_store::{FieldConfig, InitState, LastSyncOutcome, Notebook, Profil
 use crate::environment::{OFFSET_ENV, OsRandom, SystemClock};
 use crate::json::Json;
 use crate::timezone::TimeZoneSpec;
+
+/// Environment variable that declares this invocation non-interactive.
+///
+/// Set it in a scheduled job, a container, or any context where opening a
+/// browser would be wrong. `fields auth` then refuses with the instruction to
+/// run it from an interactive session instead of launching one. `sync` never
+/// authorizes interactively regardless of this variable; this exists so the one
+/// command that does can be told not to.
+pub const NON_INTERACTIVE_ENV: &str = "FIELDNOTES_NON_INTERACTIVE";
 
 /// Success.
 const EXIT_OK: i32 = 0;
@@ -273,27 +292,69 @@ enum FieldsAction {
         #[arg(long, value_name = "PATH")]
         executable: PathBuf,
         /// Non-secret `key=value` connector configuration, repeatable.
+        ///
         /// Credential material must never appear here: a handful of
         /// obviously credential-shaped key names (`password`, `token`,
-        /// `api_key`, and similar) are refused outright, and a future
-        /// release's credential-profile reference belongs here as a name,
-        /// never as a secret value.
+        /// `api_key`, and similar) are refused outright.
+        ///
+        /// A Field that authenticates is configured here too, by reference and
+        /// never by value:
+        ///
+        /// - `credential_profile=<name>` names the profile the credential is
+        ///   stored under. Required for a Field that authenticates; it is a
+        ///   name, not a secret.
+        /// - `credential_provider=keychain|environment` selects the store.
+        ///   Defaults to the platform keychain. `environment` is the explicit,
+        ///   read-only provider for CI and headless use.
+        /// - `credential_env_var=<NAME>` names the variable that provider
+        ///   reads. Defaults to `FIELDNOTES_CREDENTIAL_<PROFILE>`.
+        /// - `oauth_client_id=<guid>` overrides the OAuth public client ID.
+        /// - `oauth_tenant_id=<tenant>` overrides the authority tenant.
+        /// - `oauth_authority=<https url>` overrides the authority base URL.
+        /// - `oauth_redirect_path=</path>` overrides the loopback redirect
+        ///   path. The port is always ephemeral.
         #[arg(long = "config", value_name = "KEY=VALUE")]
         config: Vec<String>,
         /// Configure the Field disabled rather than enabled.
         #[arg(long)]
         disabled: bool,
     },
+    /// Authenticate one configured Field, interactively, once.
+    ///
+    /// Opens the source's sign-in page in a browser, and stores the resulting
+    /// long-lived credential in the platform credential store under the
+    /// profile named by `--config credential_profile=<name>`. Nothing is
+    /// printed, logged, or written to the notebook that could carry a
+    /// credential.
+    ///
+    /// Core keeps the long-lived credential and never gives it to a Field. At
+    /// collection time it mints a short-lived access token and hands only that
+    /// over, on a protected channel separate from the Field's standard input,
+    /// output, and error.
+    ///
+    /// `sync` never opens a browser: it refreshes silently, or it fails
+    /// telling you to run this command. A scheduled or otherwise
+    /// non-interactive invocation of this command (see
+    /// FIELDNOTES_NON_INTERACTIVE) is refused for the same reason.
+    Auth {
+        /// The Field to authenticate.
+        field_id: String,
+        /// Print the sign-in URL without opening a browser.
+        #[arg(long)]
+        no_browser: bool,
+    },
     /// List every Field: the built-in `self` Field plus every configured
     /// external Field.
     List,
     /// Show per-Field state useful before and after a sync: enabled or not,
     /// whether a durable cursor is recorded, whether a `describe` manifest
-    /// snapshot is recorded, and the last recorded sync outcome, if any.
+    /// snapshot is recorded, whether the Field is authenticated, and the last
+    /// recorded sync outcome, if any.
     ///
-    /// `0.1.1` does not run Fields itself, so a freshly configured Field
-    /// normally shows no cursor, no manifest, and no sync outcome yet; that
-    /// state is populated once a later `sync` implementation runs it.
+    /// The credential check reads the credential store to answer "is this
+    /// Field authenticated?" without attempting a sync. It makes no network
+    /// call and starts no process. Your operating system may ask you to
+    /// approve the read.
     Status {
         /// Show only this Field. Omit to show every Field.
         field_id: Option<String>,
@@ -386,6 +447,23 @@ impl From<AppError> for Failure {
             // unhealthy notebook (`inspect`'s EXIT_CONTRACT), not a usage
             // mistake or an internal bug.
             "manifest_migration_required" => EXIT_CONTRACT,
+            // Every credential outcome is something the caller acts on: fix
+            // the configuration, authenticate, re-authenticate, unlock the
+            // keychain, or run the command interactively. None of them is an
+            // internal error, and none is a notebook contract violation.
+            "credential_not_configured"
+            | "credential_unsupported"
+            | "credential_absent"
+            | "credential_expired"
+            | "credential_revoked"
+            | "credential_denied"
+            | "credential_provider_unavailable"
+            | "credential_backend"
+            | "credential_not_interactive"
+            | "credential_channel"
+            // A Field that could not be asked what it is: a pinned path that
+            // does not exist, or a build that answers nothing.
+            | "field_describe" => EXIT_USAGE,
             _ => EXIT_INTERNAL,
         };
         Failure::new(error.kind(), error.to_string(), code)
@@ -583,6 +661,7 @@ fn run(cli: Cli) -> Result<i32, Failure> {
             explicit_notebook.clone(),
             profile.notebook.clone(),
             cli.format,
+            offset,
         ),
         Command::Sync {
             field_id,
@@ -615,6 +694,14 @@ fn run(cli: Cli) -> Result<i32, Failure> {
                 // Core builds the child's environment rather than inheriting
                 // it, and the CLI widens that allowlist by nothing at all.
                 field_environment: std::collections::BTreeMap::new(),
+                // The composition root supplies the real keychain-and-network
+                // token source; the library refuses an authenticating Field
+                // rather than reaching for either itself. This mints silently
+                // and never opens a browser, so a scheduled run stays
+                // non-interactive.
+                credentials: fieldnotes_app::credentials::CredentialSource::Injected(
+                    std::sync::Arc::new(SystemTokenSource::new(SystemClock)),
+                ),
             };
             let mut kernel = Kernel::new(SystemClock, OsRandom, offset)?;
             let outcome =
@@ -670,6 +757,7 @@ fn run_fields(
     explicit_notebook: Option<PathBuf>,
     profile_notebook: Option<PathBuf>,
     format: Format,
+    offset: i16,
 ) -> Result<i32, Failure> {
     let (notebook, notebook_source) = open_notebook(explicit_notebook, profile_notebook)?;
     notify_notebook_source(&notebook, notebook_source, format);
@@ -692,8 +780,43 @@ fn run_fields(
             print(&render_fields_list(&fields, format));
             Ok(EXIT_OK)
         }
+        FieldsAction::Auth {
+            field_id,
+            no_browser,
+        } => {
+            // The one command that may authenticate interactively, and the one
+            // place a browser is ever opened. Progress text goes to standard
+            // output in human mode and to standard error in JSON mode, so a
+            // JSON consumer still sees exactly one object on standard output.
+            let announce: Box<dyn Fn(&str)> = match format {
+                Format::Human => Box::new(|text: &str| print(text)),
+                Format::Json => Box::new(|text: &str| {
+                    let mut stderr = std::io::stderr();
+                    let _ = stderr.write_all(text.as_bytes());
+                }),
+            };
+            let mut random = OsRandom;
+            let mut credentials = SystemCredentials::new(
+                &SystemClock,
+                &mut random,
+                announce.as_ref(),
+                offset,
+                !no_browser,
+            );
+            let mut kernel = Kernel::new(SystemClock, OsRandom, offset)?;
+            let request = AuthRequest {
+                field_id,
+                interactive: non_empty_env(NON_INTERACTIVE_ENV).is_none(),
+            };
+            let outcome = authenticate_field(&mut kernel, &notebook, &request, &mut credentials)?;
+            print(&render_fields_auth(&outcome, format));
+            Ok(EXIT_OK)
+        }
         FieldsAction::Status { field_id } => {
-            let reports = field_status(&notebook, field_id.as_deref())?;
+            // The real inspector: reading the credential store is what makes
+            // "authenticated or not" answerable without attempting a sync.
+            let inspector = SystemTokenSource::new(SystemClock);
+            let reports = field_status_with(&notebook, field_id.as_deref(), &inspector)?;
             print(&render_fields_status(&reports, format));
             Ok(EXIT_OK)
         }
@@ -1124,6 +1247,66 @@ fn render_fields_add(config: &FieldConfig, format: Format) -> String {
     }
 }
 
+/// Renders `fields auth`'s result.
+///
+/// Names the profile, the provider, the non-secret client and tenant, and the
+/// scopes; never anything that could be material. The shared-client-ID notice
+/// is printed every time on purpose: it is the one consequence of the
+/// out-of-the-box default that an administrator would otherwise discover only
+/// in a sign-in log.
+fn render_fields_auth(outcome: &AuthOutcome, format: Format) -> String {
+    match format {
+        Format::Human => {
+            let mut out = format!("Authenticated Field {}\n", outcome.field_id);
+            out.push_str(&format!("  profile     {}\n", outcome.profile));
+            out.push_str(&format!("  stored in   {}\n", outcome.provider));
+            out.push_str(&format!("  client      {}\n", outcome.client_id));
+            out.push_str(&format!("  tenant      {}\n", outcome.tenant));
+            out.push_str(&format!("  scopes      {}\n", outcome.scopes.join(" ")));
+            if let Some(expires) = &outcome.access_token_expires_at {
+                out.push_str(&format!("  token until {expires}\n"));
+            }
+            out.push_str(
+                "  Core keeps the long-lived credential and gives a Field only a short-lived \
+                 access token.\n",
+            );
+            if outcome.uses_shared_client_id {
+                out.push_str(
+                    "  note        this used the shared Microsoft Graph PowerShell client ID, so \
+                     your tenant's\n              sign-in logs attribute these reads to that \
+                     application. For a deployment,\n              register your own application \
+                     and set --config oauth_client_id=<guid>.\n",
+                );
+            }
+            out
+        }
+        Format::Json => {
+            let value = Json::Obj(vec![
+                ("schema", Json::text("fieldnotes.fields_auth.v1")),
+                ("ok", Json::Bool(true)),
+                ("id", Json::text(outcome.field_id.clone())),
+                ("credential_profile", Json::text(outcome.profile.clone())),
+                ("credential_provider", Json::text(outcome.provider.clone())),
+                ("client_id", Json::text(outcome.client_id.clone())),
+                ("tenant", Json::text(outcome.tenant.clone())),
+                (
+                    "scopes",
+                    Json::Arr(outcome.scopes.iter().cloned().map(Json::Str).collect()),
+                ),
+                (
+                    "access_token_expires_at",
+                    Json::maybe_text(outcome.access_token_expires_at.clone()),
+                ),
+                (
+                    "uses_shared_client_id",
+                    Json::Bool(outcome.uses_shared_client_id),
+                ),
+            ]);
+            format!("{}\n", value.render())
+        }
+    }
+}
+
 fn config_map_json(config: &std::collections::BTreeMap<String, String>) -> Json {
     Json::Arr(
         config
@@ -1196,6 +1379,30 @@ fn last_sync_json(last_sync: Option<&LastSyncOutcome>) -> Json {
     }
 }
 
+/// One Field's credential state as a line a user can act on.
+fn credential_line(report: &FieldStatusReport) -> String {
+    let profile = report.credential_profile.as_deref().unwrap_or("(none)");
+    match &report.credential_state {
+        CredentialState::NotRequired => "not required".to_owned(),
+        CredentialState::NotConfigured => format!(
+            "not configured; set `--config {}=<name>` and run `fieldnotes fields auth {}`",
+            fieldnotes_app::credentials::PROFILE_KEY,
+            report.id
+        ),
+        CredentialState::Stored => format!(
+            "stored for profile `{profile}` in {}",
+            report.credential_provider.as_deref().unwrap_or("keychain")
+        ),
+        CredentialState::Absent => format!(
+            "none stored for profile `{profile}`; run `fieldnotes fields auth {}`",
+            report.id
+        ),
+        CredentialState::Unavailable(reason) => {
+            format!("could not be read for profile `{profile}`: {reason}")
+        }
+    }
+}
+
 fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String {
     match format {
         Format::Human => {
@@ -1242,6 +1449,10 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                         (false, _) => "no".to_owned(),
                     }
                 ));
+                out.push_str(&format!(
+                    "    credential         {}\n",
+                    credential_line(report)
+                ));
                 match &report.last_sync {
                     Some(outcome) => out.push_str(&format!(
                         "    last sync          {} at {}\n",
@@ -1283,6 +1494,18 @@ fn render_fields_status(reports: &[FieldStatusReport], format: Format) -> String
                                 .map_or(Json::Null, |version| Json::Int(u64::from(version))),
                         ),
                         ("last_sync", last_sync_json(report.last_sync.as_ref())),
+                        (
+                            "credential_profile",
+                            Json::maybe_text(report.credential_profile.clone()),
+                        ),
+                        (
+                            "credential_provider",
+                            Json::maybe_text(report.credential_provider.clone()),
+                        ),
+                        (
+                            "credential_state",
+                            Json::text(report.credential_state.as_str()),
+                        ),
                     ])
                 })
                 .collect();
@@ -1334,6 +1557,15 @@ fn render_sync(outcome: &SyncOutcome, format: Format) -> String {
                         _ => "not advanced".to_owned(),
                     }
                 ));
+                if let Some(credential) = &report.credential {
+                    out.push_str(&format!(
+                        "    credential         profile `{}` in {}; {} delivered, {} refused\n",
+                        credential.profile,
+                        credential.provider,
+                        credential.granted,
+                        credential.refused
+                    ));
+                }
                 if report.cursor_recovery_gap {
                     out.push_str(
                         "    recovery gap       the stored cursor was written at a different \
@@ -1502,6 +1734,22 @@ fn field_sync_json(report: &FieldSyncReport) -> Json {
         ),
         ("failure", Json::maybe_text(report.failure.clone())),
         ("exit", Json::text(report.exit.clone())),
+        (
+            "credential",
+            report.credential.as_ref().map_or(Json::Null, |credential| {
+                Json::Obj(vec![
+                    ("profile", Json::text(credential.profile.clone())),
+                    ("provider", Json::text(credential.provider.clone())),
+                    (
+                        "scopes",
+                        Json::Arr(credential.scopes.iter().cloned().map(Json::Str).collect()),
+                    ),
+                    ("requests", Json::Int(credential.requests)),
+                    ("granted", Json::Int(credential.granted)),
+                    ("refused", Json::Int(credential.refused)),
+                ])
+            }),
+        ),
     ])
 }
 

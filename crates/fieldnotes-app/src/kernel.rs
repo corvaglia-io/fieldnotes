@@ -74,6 +74,25 @@ impl<C: Clock, R: RandomSource> Kernel<C, R> {
         let started_at = Datetime::from_unix_millis(millis, self.offset_minutes)?;
         Ok((uuid.to_string(), started_at))
     }
+
+    /// Generates a single-use authorization token for one run's protected
+    /// credential channel: 64 lowercase hexadecimal characters.
+    ///
+    /// A2 section 12's `grant_id` is not credential material — it authorizes
+    /// nothing outside this run's channel — but it is the value that
+    /// distinguishes this run's Field from any other local process that finds
+    /// the endpoint, so it comes from two freshly generated identifiers rather
+    /// than being derived from the run identifier the Field already knows.
+    pub fn new_grant_id(&mut self) -> Result<String, AppError> {
+        let mut hex = String::with_capacity(64);
+        for _ in 0..2 {
+            let uuid = self.ids.generate_uuid()?;
+            for character in uuid.to_string().chars().filter(|c| *c != '-') {
+                hex.push(character.to_ascii_lowercase());
+            }
+        }
+        Ok(hex)
+    }
 }
 
 /// The built-in `self` Field ID.

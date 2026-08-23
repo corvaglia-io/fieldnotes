@@ -71,10 +71,57 @@ and a local file requires explicit warnings and restrictive permission checks.
 
 ## Authentication and protected Field IPC
 
-`fieldnotes fields auth <field_id>` performs the source-appropriate interactive
-or device flow. Long-lived credentials go directly to the selected credential
-provider. Short-lived access material remains in memory for the minimum useful
-time.
+`fieldnotes fields auth <field_id>` performs the interactive authorization-code
+flow with PKCE on an ephemeral loopback redirect. Long-lived credentials go
+directly to the selected credential provider. Short-lived access material
+remains in memory for the minimum useful time.
+
+**Device-code flow is implemented nowhere.** It is a phishing vector — a user
+can be walked into approving an attacker-generated code on a genuine login page,
+with nothing distinguishing the two attempts — and it is blocked by Conditional
+Access in tenants that require a compliant device (observed returning
+`AADSTS53003` even on a compliant device). A Field declaring it is refused with
+that explanation rather than accommodated.
+
+As implemented in `0.1.3`:
+
+- **core owns refresh.** The refresh token is stored by the credential provider
+  and never leaves the Fieldnotes process. A Field never sees one, and a
+  manifest declaring `refresh_owner: field` is refused.
+- **a Field receives only an access token**, minted immediately before its run
+  and expiring on its own.
+- **the protected channel is a per-run, path-based endpoint core creates, names
+  in the collection request, serves for the length of one run, and destroys when
+  the run ends.** On Unix it is a Unix-domain socket, created inside a directory
+  whose `0700` mode is set at creation, with the socket itself `0600`. A
+  connection must present that run's `grant_id`; core refuses an expired grant,
+  refuses a purpose it cannot serve, and refuses a scope outside the grant. The
+  endpoint is removed on every exit path, including a refusal or a panic.
+  Windows is the same design as `windows_named_pipe`; what is missing is the
+  server end, which belongs with the rest of the per-platform child-process
+  handling in the Field-protocol host crate. Until it lands there, a run that
+  would need the channel on that platform is refused rather than authenticated
+  some other way.
+
+**Two of A2's four channel kinds cannot be built here at all.**
+`inherited_fd` and `duplicated_handle` both require turning a raw descriptor or
+handle into an I/O object, which requires `unsafe`; `unsafe_code = "forbid"` is
+set workspace-wide and a crate cannot locally override a `forbid`. An approved
+protocol therefore names a mechanism this project's own lint policy prohibits
+implementing. This is recorded rather than worked around: core neither
+implements nor ever emits those two kinds, and every first-party Field refuses
+them on its side, so the contradiction cannot turn into a run-time failure on a
+user's machine. It needs an A2 amendment narrowing the admitted kinds to the
+path-based two.
+- **a credential failure fails the run before anything is spawned**, before any
+  staging directory exists, and never advances a cursor.
+- **a collection run never authorizes interactively.** It refreshes silently or
+  refuses with an instruction, so a scheduled run cannot open a browser.
+
+The out-of-the-box OAuth client ID is a shared first-party public client, which
+makes reads attributable to *that application* in the tenant's sign-in logs
+rather than to Fieldnotes; it is overridable per Field, and a deployment should
+override it. See `docs/cli.md`'s `0.1.3` section.
 
 Fields receive only the credential material and scope needed for their run.
 Secrets must never be passed in command-line arguments, normal environment

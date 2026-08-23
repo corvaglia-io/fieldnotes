@@ -13,10 +13,10 @@
 //!    removed declared-property type or cardinality, or a changed
 //!    `cursor_format_version`, is a **migration, not a sync**, and core refuses
 //!    (A2 section 4).
-//! 4. Refuse actionably when the Field declares that it needs authentication:
-//!    credential profiles and protected-channel delivery close at the `0.1.3`
-//!    gate, so starting a run that cannot authenticate would only fail later
-//!    and less clearly.
+//! 4. Deliver a credential when the Field needs one: mint a short-lived access
+//!    token from the stored refresh token, open the protected channel A2
+//!    section 12 defines, and carry a **reference** to it in the collection
+//!    request. See "Credentials fail before anything is spawned" below.
 //! 5. Send one `collect_request` carrying the stored cursor when one is
 //!    replayable, the requested mode and snapshot scope, the effective limits,
 //!    the required media-type retention policy, the per-run staging directory,
@@ -68,10 +68,31 @@
 //! Syncing a changed source object twice therefore leaves exactly one Note, and
 //! no revision or history Note is ever written.
 //!
+//! # Credentials fail before anything is spawned
+//!
+//! A missing, expired, or revoked credential must fail a run **before** a child
+//! process starts and before a staging directory exists, and it must never
+//! advance a cursor. That ordering is why the credential is resolved from the
+//! Field's **configuration** rather than from its manifest: the manifest is the
+//! authority on what a Field needs, but reading it means running `describe`,
+//! which is already a spawned process. Configuration is available with no
+//! process at all, an authenticating Field cannot work without
+//! [`credentials::PROFILE_KEY`] anyway, and
+//! the manifest is still checked afterwards — so a Field that declares
+//! authentication while configuring none is refused after `describe` and still
+//! before any staging directory is created.
+//!
+//! Nothing about a credential failure can move a cursor: every credential check
+//! happens before [`CollectSession`] exists, and a cursor is written in exactly
+//! one place, from a checkpoint that session offered.
+//!
+//! A collection run never authorizes interactively. It refreshes silently or it
+//! refuses with an instruction to run `fieldnotes fields auth`, so a scheduled
+//! run cannot open a browser on an unattended machine.
+//!
 //! # Out of scope here
 //!
-//! No credential storage or protected-channel delivery (`0.1.3`), no
-//! re-collection pass over `skipped_attachments` (the `local` Field declares
+//! No re-collection pass over `skipped_attachments` (the `local` Field declares
 //! `refetch: unsupported`, so this release specifies nothing there), and no
 //! conflict-bundle behavior (`0.1.2`): a portable source key that more than one
 //! active Note claims is **reported** as a reached boundary rather than
@@ -89,15 +110,15 @@ use fieldnotes_field_protocol::artifact::{ArtifactDigestIndex, ArtifactOutcome};
 use fieldnotes_field_protocol::codes::RejectionCode;
 use fieldnotes_field_protocol::declared::DeclaredPropertyIndex;
 use fieldnotes_field_protocol::grammar::{
-    CollectRequestTag, Cursor, DescribeRequestTag, FieldIdToken, MediaTypeMatcher, OffsetDatetime,
-    ProtocolV1, RunId, SnapshotScope,
+    CollectRequestTag, Cursor, DescribeRequestTag, FieldIdToken, GrantId, MediaTypeMatcher,
+    OffsetDatetime, ProfileRef, ProtocolV1, RunId, SnapshotScope,
 };
 use fieldnotes_field_protocol::host::{FieldSpawn, Operation};
 use fieldnotes_field_protocol::limits::{
     Deadline, Limits, MAX_ARTIFACT_MEDIA_TYPES, default_artifact_media_types, media_type_essence,
 };
 use fieldnotes_field_protocol::message::{
-    ArtifactKind, ArtifactRef, AuthKind, CollectRequest, CollectionMode, CoreFrame,
+    ArtifactKind, ArtifactRef, CollectRequest, CollectionMode, CoreFrame, CredentialGrant,
     DescribeRequest, FieldEvent, Manifest, RecordEvent, Validate, VersionList,
 };
 use fieldnotes_field_protocol::redact::Redactor;
@@ -116,14 +137,16 @@ use fieldnotes_store::{
     write_cursor, write_last_sync_outcome, write_note,
 };
 
+use crate::credentials::channel::{GrantSpec, ProtectedChannel};
+use crate::credentials::{self, CredentialFailure, CredentialSettings, CredentialSource};
 use crate::error::AppError;
 use crate::fields::{check_manifest_agreement, record_manifest};
 use crate::kernel::Kernel;
 
 use project::{ArtifactProjection, RetainedArtifact, SkippedArtifact};
 pub use report::{
-    DeletionReport, FieldRunOutcome, FieldSyncReport, SyncCounts, SyncDiagnostic, SyncOutcome,
-    SyncRejection, exit_label,
+    CredentialReport, DeletionReport, FieldRunOutcome, FieldSyncReport, SyncCounts, SyncDiagnostic,
+    SyncOutcome, SyncRejection, exit_label,
 };
 
 /// Which collection mode a run requests.
@@ -221,6 +244,13 @@ pub struct SyncOptions {
     /// [`FieldSpawn::with_env`](fieldnotes_field_protocol::host::FieldSpawn::with_env)
     /// exists for.
     pub field_environment: std::collections::BTreeMap<String, String>,
+    /// Where this run gets an access token for a Field that needs one.
+    ///
+    /// Defaults to [`CredentialSource::None`], which refuses an authenticating
+    /// Field rather than reaching for the keychain and the network from inside
+    /// a library; the composition root injects the real source. A Field that
+    /// needs no credential never consults this at all.
+    pub credentials: CredentialSource,
 }
 
 /// Syncs one named Field, or every enabled Field when `field_id` is `None`.
@@ -305,6 +335,153 @@ impl From<fieldnotes_store::StoreError> for Refusal {
     }
 }
 
+impl From<CredentialFailure> for Refusal {
+    /// A credential failure is already phrased for a user, including what to
+    /// run to fix it, so it becomes the refusal text unchanged.
+    fn from(failure: CredentialFailure) -> Self {
+        Refusal::new(failure.to_string())
+    }
+}
+
+/// A minted access token together with the non-secret settings it came from.
+///
+/// Deliberately has no `Debug` implementation: `AccessToken`'s own `Debug`
+/// redacts, and not deriving one here means there is not even a redacted
+/// formatting call to reach for.
+struct Minted {
+    settings: CredentialSettings,
+    token: fieldnotes_credentials::oauth::AccessToken,
+}
+
+/// Resolves and mints this run's credential from the Field's configuration,
+/// before anything else happens.
+///
+/// `Ok(None)` means the Field's configuration names no credential profile,
+/// which is the ordinary case for a Field that needs none. An error means a
+/// credential was called for and could not be produced: missing, expired,
+/// revoked, or a store that could not be read. In every one of those cases the
+/// run has not spawned a process, has not created a staging directory, and has
+/// not touched the cursor.
+fn mint_credential(config: &FieldConfig, options: &SyncOptions) -> Result<Option<Minted>, Refusal> {
+    if !credentials::config_declares_credential(&config.config) {
+        return Ok(None);
+    }
+    let settings = credentials::settings_from_config(&config.id, &config.config)?;
+    let token = options.credentials.mint(&config.id, &settings)?;
+    Ok(Some(Minted { settings, token }))
+}
+
+/// Opens the protected channel for one run and returns it, already serving.
+///
+/// The grant expires at the earlier of the access token's own expiry and the
+/// run's deadline, so material a Field holds cannot outlive either. Enforcement
+/// inside the channel is monotonic; the instant in the frame is the wall-clock
+/// rendering of the same bound.
+#[allow(clippy::too_many_arguments)]
+fn open_channel(
+    field_id: &str,
+    run_id: &RunId,
+    grant_id: String,
+    minted: Minted,
+    scopes: &[String],
+    started_at: Datetime,
+    deadline: Deadline,
+    limits: Limits,
+    offset_minutes: i16,
+) -> Result<ProtectedChannel, Refusal> {
+    let grant_id = GrantId::parse(&grant_id).map_err(|error| {
+        Refusal::new(format!(
+            "the generated channel grant identifier is invalid: {error}"
+        ))
+    })?;
+    let profile = ProfileRef::parse(minted.settings.profile.as_str()).map_err(|error| {
+        Refusal::new(format!(
+            "the configured credential profile is not a protocol profile reference: {error}"
+        ))
+    })?;
+    let token_remaining_millis = minted
+        .token
+        .expires_at_unix_millis()
+        .saturating_sub(started_at.unix_millis());
+    if token_remaining_millis <= 0 {
+        // The authorization server minted something already past its own
+        // expiry, or the clock moved: either way, refusing here is the same
+        // actionable outcome as an expired refresh token.
+        return Err(Refusal::from(CredentialFailure::Expired {
+            field_id: field_id.to_owned(),
+            profile: minted.settings.profile.as_str().to_owned(),
+        }));
+    }
+    // The run's own wall-clock bound, as `effective_deadline` computed it.
+    let run_remaining_millis = deadline
+        .not_after
+        .datetime()
+        .unix_millis()
+        .saturating_sub(started_at.unix_millis())
+        .max(1);
+    let lifetime_millis = token_remaining_millis.min(run_remaining_millis);
+    let expires_millis = started_at
+        .unix_millis()
+        .saturating_add(lifetime_millis.max(1));
+    let expires_at = Datetime::from_unix_millis(expires_millis, offset_minutes)
+        .map_err(|error| Refusal::new(format!("the grant expiry is not representable: {error}")))?;
+    let expires_at = OffsetDatetime::parse(&expires_at.to_string())
+        .map_err(|error| Refusal::new(format!("the grant expiry failed its own guard: {error}")))?;
+    let spec = GrantSpec {
+        run_id: run_id.clone(),
+        profile,
+        grant_id,
+        scopes: scopes.to_vec(),
+        expires_at,
+        lifetime: Duration::from_millis(u64::try_from(lifetime_millis).unwrap_or(u64::MAX)),
+        token: minted.token,
+        max_frame_bytes: limits.max_frame_bytes,
+    };
+    ProtectedChannel::open(spec).map_err(Refusal::from)
+}
+
+/// Runs `describe` against one configured Field and returns its manifest.
+///
+/// Exposed because `fields auth` needs a Field's declared scopes before any
+/// credential exists, and A2 guarantees a describe run carries no credential
+/// grant, no cursor, and no staging directory. It shares the same bounded
+/// spawn, negotiation, and failure handling one sync run uses.
+pub fn describe_field<C: Clock, R: RandomSource>(
+    kernel: &mut Kernel<C, R>,
+    config: &FieldConfig,
+) -> Result<Manifest, AppError> {
+    let options = SyncOptions::default();
+    let mut describe_run = || -> Result<Manifest, Refusal> {
+        let field_token = FieldIdToken::parse(&config.id).map_err(|error| {
+            Refusal::new(format!("`{}` is not a Field ID token: {error}", config.id))
+        })?;
+        let limits = effective_limits(&options)?;
+        let (run_id_text, started_at) = kernel.new_run().map_err(Refusal::from)?;
+        let run_id = RunId::parse(&run_id_text).map_err(|error| {
+            Refusal::new(format!("the generated run identifier is invalid: {error}"))
+        })?;
+        let deadline = effective_deadline(&options, started_at, kernel.offset_minutes())?;
+        let idle = Duration::from_secs(u64::from(deadline.idle_seconds));
+        let wait = Duration::from_secs(u64::from(deadline.cancel_grace_seconds).saturating_add(
+            remaining_seconds(options.run_seconds.unwrap_or(Deadline::DEFAULT_RUN_SECONDS)),
+        ));
+        describe(
+            config,
+            &run_id,
+            &field_token,
+            limits,
+            deadline,
+            idle,
+            wait,
+            &options,
+        )
+        .map(|described| described.manifest)
+    };
+    describe_run().map_err(|refusal| AppError::FieldDescribe {
+        message: refusal.message,
+    })
+}
+
 fn prepare_and_collect<C: Clock, R: RandomSource>(
     kernel: &mut Kernel<C, R>,
     notebook: &Notebook,
@@ -319,6 +496,17 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
         Refusal::new(format!("`{}` is not a Field ID token: {error}", config.id))
     })?;
     let instance = read_instance(notebook)?;
+
+    // The credential comes first, before recovery, before any process, and
+    // before any staging directory: a run that cannot authenticate must fail
+    // here, where nothing has happened yet and no cursor can move. See this
+    // module's "Credentials fail before anything is spawned".
+    let minted = mint_credential(config, options)?;
+    // Captured before the token is moved into the channel, so the report can
+    // name the provider without the settings outliving the run.
+    let credential_provider = minted
+        .as_ref()
+        .map(|minted| minted.settings.provider.as_str());
 
     // Startup recovery: staged bytes from a crashed earlier run reference no
     // Note, because the record they belonged to was never accepted.
@@ -376,16 +564,20 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
     }
     record_manifest(notebook, &config.id, manifest_json).map_err(Refusal::from)?;
 
-    if manifest.auth.kind != AuthKind::None
-        || manifest.auth.credential_profile_required
-        || manifest.auth.protected_channel_required
-    {
-        return Err(Refusal::new(format!(
-            "Field `{}` declares that it needs authentication ({:?}); credential profiles and \
-             protected-channel delivery arrive with the 0.1.3 authentication gate, so sync refuses \
-             rather than starting a run that cannot authenticate",
-            config.id, manifest.auth.kind
-        )));
+    // The manifest is the authority on what this Field needs. Configuration
+    // already decided whether a credential was minted; this is where the two
+    // are reconciled, still before any staging directory exists.
+    let requirement = credentials::requirement_of_manifest(&config.id, &manifest)?;
+    if requirement.required && minted.is_none() {
+        return Err(Refusal::from(CredentialFailure::NotConfigured {
+            field_id: config.id.clone(),
+            detail: format!(
+                "its manifest requires authentication, so set `--config {}=<name>` and run \
+                 `fieldnotes fields auth {}`",
+                credentials::PROFILE_KEY,
+                config.id
+            ),
+        }));
     }
 
     if !manifest
@@ -431,6 +623,28 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
         None => None,
     };
 
+    // The protected channel is opened before the staging directory and before
+    // the child, so every credential-shaped failure still precedes both. It is
+    // held for exactly the length of the run: dropping it stops serving,
+    // unlinks the socket, and zeroizes the token.
+    let channel = match (requirement.required, minted) {
+        (true, Some(minted)) => Some(open_channel(
+            &config.id,
+            &run_id,
+            kernel.new_grant_id().map_err(Refusal::from)?,
+            minted,
+            &requirement.scopes,
+            started_at,
+            deadline,
+            limits,
+            kernel.offset_minutes(),
+        )?),
+        // A Field that declares no authentication receives no grant, even when
+        // a profile happens to be configured: A2 gives core nothing to deliver
+        // to it.
+        _ => None,
+    };
+
     let staging = create_staging_dir(notebook, &config.id, run_id.as_str())?;
     let request = build_request(
         &run_id,
@@ -443,6 +657,7 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
         limits,
         deadline,
         media_types,
+        channel.as_ref().map(|channel| channel.grant().clone()),
     )?;
 
     let outcome = collect(CollectContext {
@@ -468,7 +683,23 @@ fn prepare_and_collect<C: Clock, R: RandomSource>(
     // the run ends whether the run succeeded or not.
     let _ = clear_staging(notebook, &config.id);
 
-    let report = outcome?;
+    // The channel stops serving, unlinks its socket, and drops (zeroizing) the
+    // token here, on every path out of this function including an error one.
+    let credential = channel.as_ref().map(|channel| {
+        let counts = channel.counts();
+        CredentialReport {
+            profile: channel.grant().profile_ref.as_str().to_owned(),
+            provider: credential_provider.unwrap_or("keychain").to_owned(),
+            scopes: channel.grant().scopes.clone().unwrap_or_default(),
+            requests: counts.requests,
+            granted: counts.granted,
+            refused: counts.refused,
+        }
+    });
+    drop(channel);
+
+    let mut report = outcome?;
+    report.credential = credential;
     write_last_sync_outcome(notebook, &config.id, &status_file(&report, started_at))?;
     Ok(report)
 }
@@ -779,6 +1010,7 @@ fn build_request(
     limits: Limits,
     deadline: Deadline,
     artifact_media_types: Vec<MediaTypeMatcher>,
+    credential: Option<CredentialGrant>,
 ) -> Result<CollectRequest, Refusal> {
     let staging_text = staging
         .to_str()
@@ -807,8 +1039,10 @@ fn build_request(
         window: None,
         snapshot_scope,
         config: connector_config,
-        // A reference, never a value — and this release grants none at all.
-        credential: None,
+        // A reference, never a value: the profile name, this run's single-use
+        // grant, where to reach core, when the grant stops being honored, and
+        // the granted scopes. Material crosses only on the channel it names.
+        credential,
         artifact_staging_dir: staging_text,
         limits,
         deadline,
@@ -1087,6 +1321,9 @@ fn collect<C: Clock, R: RandomSource>(
         exit: exit_label(exit),
         stderr: combined_stderr(&context.described_stderr, &stderr),
         conflicts,
+        // Filled in by `prepare_and_collect`, which owns the channel: the
+        // counts are only final once it has stopped serving.
+        credential: None,
     })
 }
 
@@ -1564,6 +1801,22 @@ fn status_file(report: &FieldSyncReport, finished_at: Datetime) -> LastSyncOutco
     }
     if let Some(failure) = &report.failure {
         extra.insert("failure".to_owned(), serde_json::json!(failure));
+    }
+    if let Some(credential) = &report.credential {
+        // The profile name and the counts, and nothing else: this file is
+        // operational state a user can read, so it holds no material and
+        // nothing that could become material.
+        extra.insert(
+            "credential".to_owned(),
+            serde_json::json!({
+                "profile": credential.profile,
+                "provider": credential.provider,
+                "scopes": credential.scopes,
+                "requests": credential.requests,
+                "granted": credential.granted,
+                "refused": credential.refused,
+            }),
+        );
     }
     LastSyncOutcome {
         outcome: report.outcome.as_str().to_owned(),

@@ -35,9 +35,23 @@
 //! working directory is nowhere near a notebook. A command that silently
 //! operated on the profile's notebook while the caller stood inside a
 //! different one was a real footgun this order removes.
+//!
+//! # Every notebook path is normalized before it is used or reported
+//!
+//! The three tiers reach this module in three different spellings of the same
+//! kind of thing: a path a user typed, a path an earlier session recorded in
+//! the profile, and the working directory as the operating system reports it.
+//! Those spellings differ in ways that have nothing to do with which directory
+//! is meant — a macOS `/var` symlink, a Windows 8.3 short component or letter
+//! case, the `\\?\` verbatim prefix — so each one goes through
+//! [`fieldnotes_app::paths::normalize`] before it is handed to discovery and
+//! before it is recorded in the profile. The notebook root a command reports is
+//! therefore the same string whichever tier resolved it, and two spellings of
+//! one notebook are one notebook.
 
 use std::path::{Path, PathBuf};
 
+use fieldnotes_app::paths;
 use fieldnotes_store::{Notebook, Profile, StoreError, write_profile};
 
 /// Environment variable naming an explicit profile file path.
@@ -146,20 +160,26 @@ pub enum NotebookSource {
 /// On failure, the error is discovery's own `cwd`-rooted failure when no
 /// profile default exists to fall back to, since that is the message that
 /// matches what the caller actually tried.
+///
+/// Each tier's path is normalized ([`paths::normalize`]) before discovery walks
+/// it, so the notebook root this returns carries one spelling regardless of
+/// which tier supplied it and regardless of how that tier happened to spell it.
+/// [`Notebook::discover`] returns an ancestor of the path it was given, so
+/// normalizing the input is what normalizes the root.
 pub fn resolve_notebook(
     explicit: Option<&Path>,
     cwd: &Path,
     profile_notebook: Option<&Path>,
 ) -> Result<(Notebook, NotebookSource), StoreError> {
     if let Some(path) = explicit {
-        return Notebook::discover(path).map(|notebook| (notebook, NotebookSource::Explicit));
+        return Notebook::discover(&paths::normalize(path))
+            .map(|notebook| (notebook, NotebookSource::Explicit));
     }
-    match Notebook::discover(cwd) {
+    match Notebook::discover(&paths::normalize(cwd)) {
         Ok(notebook) => Ok((notebook, NotebookSource::WorkingDirectory)),
         Err(discovery_error) => match profile_notebook {
-            Some(path) => {
-                Notebook::discover(path).map(|notebook| (notebook, NotebookSource::Profile))
-            }
+            Some(path) => Notebook::discover(&paths::normalize(path))
+                .map(|notebook| (notebook, NotebookSource::Profile)),
             None => Err(discovery_error),
         },
     }
@@ -185,9 +205,11 @@ pub fn resolve_timezone_text(
 /// notebook, and returns that notebook's root.
 ///
 /// Discovery (walking up from `path`) is used rather than requiring an exact
-/// root, matching how `--notebook` already behaves elsewhere in the CLI.
+/// root, matching how `--notebook` already behaves elsewhere in the CLI. The
+/// returned root is normalized, so what lands in the profile is the spelling
+/// every later comparison will produce rather than whatever the caller typed.
 pub fn validate_notebook_path(path: &Path) -> Result<PathBuf, StoreError> {
-    Notebook::discover(path).map(|notebook| notebook.root().to_path_buf())
+    Notebook::discover(&paths::normalize(path)).map(|notebook| notebook.root().to_path_buf())
 }
 
 /// Records `notebook_root` as the profile's default notebook after
@@ -269,6 +291,11 @@ pub fn split_media_types(text: &str) -> Vec<String> {
 /// Used by `init`: a brand-new profile is a reasonable place to remember the
 /// first notebook a user creates, but `init` must never silently overwrite a
 /// default the user (or an earlier `init`) already chose.
+///
+/// The recorded path is normalized, so a later run comparing the profile
+/// default against a working directory or an explicit flag compares one
+/// spelling against another spelling of the same shape rather than against
+/// whatever `init` happened to be given.
 pub fn record_default_notebook_if_absent(
     profile_path: &Path,
     profile: &Profile,
@@ -279,7 +306,7 @@ pub fn record_default_notebook_if_absent(
         return Ok(false);
     }
     let mut updated = profile.clone();
-    updated.notebook = Some(notebook_root.to_path_buf());
+    updated.notebook = Some(paths::normalize(notebook_root));
     write_profile(profile_path, &updated)?;
     Ok(true)
 }
@@ -332,6 +359,21 @@ mod tests {
         let cwd_notebook = notebook_at(temp.path(), "cwd")?;
         let profile_notebook = notebook_at(temp.path(), "profile")?;
 
+        // Every notebook identity below is asserted with `paths::same_path`
+        // rather than `==`: resolution reports the normalized spelling, and a
+        // temporary directory is reached through a symlink on macOS and can
+        // carry 8.3 components on Windows. The assertion is about *which
+        // notebook* won, which is exactly what a normalized comparison
+        // answers; a raw `PathBuf` comparison would answer "which spelling".
+        let names = |notebook: &Notebook, expected: &Path| {
+            assert!(
+                paths::same_path(notebook.root(), expected),
+                "expected the notebook at {}, got {}",
+                expected.display(),
+                notebook.root().display()
+            );
+        };
+
         // Tier 1: the explicit flag/environment path wins over everything
         // else, even when standing inside a different notebook.
         let (notebook, source) = resolve_notebook(
@@ -339,7 +381,7 @@ mod tests {
             &cwd_notebook,
             Some(&profile_notebook),
         )?;
-        assert_eq!(notebook.root(), explicit_notebook.as_path());
+        names(&notebook, &explicit_notebook);
         assert_eq!(source, NotebookSource::Explicit);
 
         // Tier 2: no explicit path, so discovery from the working directory
@@ -347,7 +389,7 @@ mod tests {
         // profile default pointing elsewhere must never outrank the
         // notebook the caller is standing in.
         let (notebook, source) = resolve_notebook(None, &cwd_notebook, Some(&profile_notebook))?;
-        assert_eq!(notebook.root(), cwd_notebook.as_path());
+        names(&notebook, &cwd_notebook);
         assert_eq!(source, NotebookSource::WorkingDirectory);
 
         // Tier 3: the working directory is not inside any notebook, so the
@@ -356,7 +398,7 @@ mod tests {
         std::fs::create_dir_all(&unrelated)
             .map_err(|error| StoreError::io("create directory", &unrelated, error))?;
         let (notebook, source) = resolve_notebook(None, &unrelated, Some(&profile_notebook))?;
-        assert_eq!(notebook.root(), profile_notebook.as_path());
+        names(&notebook, &profile_notebook);
         assert_eq!(source, NotebookSource::Profile);
 
         // Nothing resolves: the working directory is not in a notebook and

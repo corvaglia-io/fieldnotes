@@ -45,20 +45,22 @@ fn field_of(json: &str, key: &str) -> Option<String> {
     Some(json[start..end].replace("\\\\", "\\").replace("\\\"", "\""))
 }
 
-/// Resolves symlinks in `path`, matching what the OS reports for the current
-/// directory after `Command::current_dir`.
+/// The spelling the binary reports for `path`.
 ///
-/// On macOS the system temporary directory is reached through a symlink
-/// (`/var` -> `/private/var`), so a subprocess that discovers its notebook by
-/// reading its own working directory reports the resolved `/private/var/...`
-/// form, while a path built directly from [`TempDir::path`] keeps the
-/// symlinked `/var/...` spelling. Only assertions against a
-/// discovered-from-cwd notebook need this; a path handed to the binary
-/// explicitly (`--notebook`, an environment variable, or the profile) is
-/// never round-tripped through the OS's working directory and needs no such
-/// resolution.
-fn canonical(path: &Path) -> PathBuf {
-    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+/// **This calls the product's own normalization**, deliberately, rather than a
+/// second implementation that happens to agree on this developer's machine:
+/// notebook resolution normalizes every path it is given before discovery, so
+/// the notebook root the binary prints is `paths::normalize`'s output, whichever
+/// tier resolved it.
+///
+/// Reimplementing it here as a bare `fs::canonicalize` is what previously broke
+/// on Windows: `canonicalize` returns a `\\?\`-prefixed verbatim path there, so
+/// the expectation carried a prefix the binary's output does not, and the test
+/// failed on a difference in spelling while the product was choosing the right
+/// notebook. On macOS the same mismatch appears as `/var` versus `/private/var`.
+/// One function, used by both sides, cannot disagree with itself.
+fn expected_root(path: &Path) -> PathBuf {
+    fieldnotes_app::paths::normalize(path)
 }
 
 /// Creates an initialized notebook under `parent` at `name` and returns its
@@ -109,7 +111,7 @@ fn notebook_precedence_is_flag_then_env_then_discovery_then_profile() -> std::io
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         field_of(&stdout(&output), "root").as_deref(),
-        Some(flagged.to_string_lossy().as_ref())
+        Some(expected_root(&flagged).to_string_lossy().as_ref())
     );
 
     // Tier 2: no flag, so the environment variable wins over discovery from
@@ -123,7 +125,7 @@ fn notebook_precedence_is_flag_then_env_then_discovery_then_profile() -> std::io
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         field_of(&stdout(&output), "root").as_deref(),
-        Some(enved.to_string_lossy().as_ref())
+        Some(expected_root(&enved).to_string_lossy().as_ref())
     );
 
     // Tier 3 (reordered): no flag, no environment variable, so discovery
@@ -138,7 +140,7 @@ fn notebook_precedence_is_flag_then_env_then_discovery_then_profile() -> std::io
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         field_of(&stdout(&output), "root").as_deref(),
-        Some(canonical(&discovered).to_string_lossy().as_ref())
+        Some(expected_root(&discovered).to_string_lossy().as_ref())
     );
 
     // Tier 4 (reordered): no flag, no environment variable, and the working
@@ -152,7 +154,7 @@ fn notebook_precedence_is_flag_then_env_then_discovery_then_profile() -> std::io
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         field_of(&stdout(&output), "root").as_deref(),
-        Some(profiled.to_string_lossy().as_ref())
+        Some(expected_root(&profiled).to_string_lossy().as_ref())
     );
 
     // Nothing resolves: no flag, no environment variable, no profile
@@ -198,7 +200,7 @@ fn a_command_run_from_inside_a_notebook_uses_that_notebook_over_the_profile_defa
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         field_of(&stdout(&output), "root").as_deref(),
-        Some(canonical(&notebook_b).to_string_lossy().as_ref()),
+        Some(expected_root(&notebook_b).to_string_lossy().as_ref()),
         "standing inside notebook B must not be redirected to the profile's notebook A"
     );
 
@@ -242,7 +244,7 @@ fn a_command_run_outside_any_notebook_falls_back_to_the_profile_default() -> std
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         field_of(&stdout(&output), "root").as_deref(),
-        Some(notebook.to_string_lossy().as_ref())
+        Some(expected_root(&notebook).to_string_lossy().as_ref())
     );
 
     // Human output says so here: this is the one case where a command
@@ -379,7 +381,7 @@ fn config_set_then_show_round_trips_and_leaves_no_staging_litter() -> std::io::R
     let show_json = stdout(&show);
     assert_eq!(
         field_of(&show_json, "notebook").as_deref(),
-        Some(notebook.to_string_lossy().as_ref())
+        Some(expected_root(&notebook).to_string_lossy().as_ref())
     );
     assert_eq!(
         field_of(&show_json, "timezone").as_deref(),
@@ -403,7 +405,7 @@ fn config_set_then_show_round_trips_and_leaves_no_staging_litter() -> std::io::R
         .output()?;
     assert_eq!(
         stdout(&show_again).trim(),
-        notebook.to_string_lossy(),
+        expected_root(&notebook).to_string_lossy(),
         "a rejected `config set` must not overwrite the recorded value"
     );
 

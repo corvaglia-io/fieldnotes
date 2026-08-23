@@ -23,6 +23,7 @@ use fieldnotes_store::{
     write_field_config,
 };
 
+use crate::credentials::{CredentialInspector, CredentialState, NoInspector};
 use crate::error::AppError;
 use crate::kernel::SELF_FIELD;
 
@@ -61,6 +62,10 @@ pub fn add_field(
             id: field_id.as_str().to_owned(),
         });
     }
+    // A credential-shaped mistake in configuration is worth catching here
+    // rather than at the first sync: an invalid profile name, an unknown
+    // provider, or an endpoint override with no profile to apply it to.
+    crate::credentials::validate_config(field_id.as_str(), &config)?;
     let mut record = FieldConfig::new(field_id.as_str(), executable);
     record.enabled = enabled;
     record.config = config;
@@ -143,27 +148,62 @@ pub struct FieldStatusReport {
     /// The last recorded sync outcome, when a `sync` implementation has
     /// written one.
     pub last_sync: Option<LastSyncOutcome>,
+    /// The non-secret credential profile this Field's configuration names, when
+    /// it names one.
+    pub credential_profile: Option<String>,
+    /// Which provider holds that profile's refresh token: `keychain` or
+    /// `environment`.
+    pub credential_provider: Option<String>,
+    /// Whether a credential is stored for that profile.
+    ///
+    /// This is the question "is this Field authenticated?", answered **without
+    /// attempting a sync**: the probe reads the credential store and makes no
+    /// network call, starts no process, and touches no notebook file.
+    pub credential_state: CredentialState,
 }
 
 /// Reports status for one named Field, or every Field when `field_id` is
-/// `None`.
+/// `None`, without probing credential state.
+///
+/// Credential state reads the platform credential store, which a caller may not
+/// want (and a test must not do), so it is opt-in through
+/// [`field_status_with`]. This entry point reports
+/// [`CredentialState::NotConfigured`] for a Field that names a profile and
+/// leaves the answer to a caller that supplied an inspector.
 pub fn field_status(
     notebook: &Notebook,
     field_id: Option<&str>,
 ) -> Result<Vec<FieldStatusReport>, AppError> {
+    field_status_with(notebook, field_id, &NoInspector)
+}
+
+/// Reports status, probing credential state through `inspector`.
+///
+/// The composition root passes the real inspector
+/// ([`crate::credentials::system::SystemCredentials`]); a test passes one that
+/// consults nothing.
+pub fn field_status_with(
+    notebook: &Notebook,
+    field_id: Option<&str>,
+    inspector: &dyn CredentialInspector,
+) -> Result<Vec<FieldStatusReport>, AppError> {
     match field_id {
-        Some(id) => Ok(vec![one_field_status(notebook, id)?]),
+        Some(id) => Ok(vec![one_field_status(notebook, id, inspector)?]),
         None => {
-            let mut reports = vec![one_field_status(notebook, SELF_FIELD)?];
+            let mut reports = vec![one_field_status(notebook, SELF_FIELD, inspector)?];
             for config in list_field_configs(notebook)? {
-                reports.push(status_from_config(notebook, config)?);
+                reports.push(status_from_config(notebook, config, inspector)?);
             }
             Ok(reports)
         }
     }
 }
 
-fn one_field_status(notebook: &Notebook, id: &str) -> Result<FieldStatusReport, AppError> {
+fn one_field_status(
+    notebook: &Notebook,
+    id: &str,
+    inspector: &dyn CredentialInspector,
+) -> Result<FieldStatusReport, AppError> {
     if id == SELF_FIELD {
         return Ok(FieldStatusReport {
             id: id.to_owned(),
@@ -176,16 +216,67 @@ fn one_field_status(notebook: &Notebook, id: &str) -> Result<FieldStatusReport, 
             manifest_present: false,
             manifest_cursor_format_version: None,
             last_sync: None,
+            credential_profile: None,
+            credential_provider: None,
+            credential_state: CredentialState::NotRequired,
         });
     }
     let config = read_field_config(notebook, id)?
         .ok_or_else(|| AppError::FieldNotConfigured { id: id.to_owned() })?;
-    status_from_config(notebook, config)
+    status_from_config(notebook, config, inspector)
+}
+
+/// Resolves one Field's credential facts for `fields status`.
+///
+/// Three cases, deliberately distinguished:
+///
+/// - configuration names a profile: probe the store, so the answer is `stored`
+///   or `absent` (or `unavailable`, when the store itself could not be read);
+/// - configuration names none but the recorded manifest says the Field needs
+///   one: `not_configured`, which is the actionable state;
+/// - neither: `not_required`.
+///
+/// A configuration that names a profile invalidly is reported as
+/// `not_configured` rather than failing the whole status command: `fields
+/// status` is the command a user runs to find out what is wrong.
+fn credential_facts(
+    config: &FieldConfig,
+    manifest: Option<&Manifest>,
+    inspector: &dyn CredentialInspector,
+) -> (Option<String>, Option<String>, CredentialState) {
+    if !crate::credentials::config_declares_credential(&config.config) {
+        let needed = manifest.is_some_and(|manifest| {
+            crate::credentials::requirement_of_manifest(&config.id, manifest)
+                .map(|requirement| requirement.required)
+                // A manifest declaring an unsupported authentication shape
+                // still declares that it needs one.
+                .unwrap_or(true)
+        });
+        let state = if needed {
+            CredentialState::NotConfigured
+        } else {
+            CredentialState::NotRequired
+        };
+        return (None, None, state);
+    }
+    match crate::credentials::settings_from_config(&config.id, &config.config) {
+        Ok(settings) => (
+            Some(settings.profile.as_str().to_owned()),
+            Some(settings.provider.as_str().to_owned()),
+            inspector.state(&settings),
+        ),
+        Err(_) => (
+            config.config.get(crate::credentials::PROFILE_KEY).cloned(),
+            None,
+            CredentialState::NotConfigured,
+        ),
+    }
 }
 
 fn status_from_config(
     notebook: &Notebook,
     config: FieldConfig,
+    inspector: &dyn CredentialInspector,
 ) -> Result<FieldStatusReport, AppError> {
     let last_sync = read_last_sync_outcome(notebook, &config.id)?;
     // The recorded cursor is read, not merely counted: `fields status` is where
@@ -193,12 +284,19 @@ fn status_from_config(
     // that depends on the stored format version matching what the Field's
     // recorded manifest declares.
     let stored = read_cursor(notebook, &config.id)?;
-    let manifest_cursor_format_version = config
+    let decoded = config
         .manifest
         .as_ref()
-        .and_then(|value| decode_manifest(value).ok())
+        .and_then(|value| decode_manifest(value).ok());
+    let manifest_cursor_format_version = decoded
+        .as_ref()
         .map(|manifest| manifest.collection.cursor_format_version);
+    let (credential_profile, credential_provider, credential_state) =
+        credential_facts(&config, decoded.as_ref(), inspector);
     Ok(FieldStatusReport {
+        credential_profile,
+        credential_provider,
+        credential_state,
         cursor_present: stored.is_some() || cursor_exists(notebook, &config.id),
         cursor_format_version: stored.as_ref().map(|stored| stored.cursor_format_version),
         cursor_coverage: stored

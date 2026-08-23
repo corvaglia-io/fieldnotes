@@ -167,6 +167,28 @@ impl DeletionReport {
     }
 }
 
+/// What crossed the protected credential channel during one run.
+///
+/// Deliberately made of counts and non-secret names. It exists because "did the
+/// Field actually get its token, and how many times did it ask" is a question a
+/// user and a release gate both need answered, and the answer must be
+/// answerable without anything that could carry material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CredentialReport {
+    /// The non-secret credential profile the grant referenced.
+    pub profile: String,
+    /// Which provider holds the refresh token: `keychain` or `environment`.
+    pub provider: String,
+    /// The scopes granted for this run, exactly as the manifest declared them.
+    pub scopes: Vec<String>,
+    /// `credential_request` frames core read on the channel.
+    pub requests: u64,
+    /// Requests answered with material.
+    pub granted: u64,
+    /// Requests core refused, for any reason.
+    pub refused: u64,
+}
+
 /// One Field's whole run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FieldSyncReport {
@@ -212,6 +234,9 @@ pub struct FieldSyncReport {
     /// and conflict bundles are `0.1.2` work, so reconciliation reports the
     /// boundary instead of inventing behavior at it.
     pub conflicts: Vec<String>,
+    /// What crossed the protected credential channel, when this run had one.
+    /// `None` for a Field that needs no credential.
+    pub credential: Option<CredentialReport>,
 }
 
 impl FieldSyncReport {
@@ -239,6 +264,7 @@ impl FieldSyncReport {
             exit: "not_started".to_owned(),
             stderr: None,
             conflicts: Vec::new(),
+            credential: None,
         }
     }
 }

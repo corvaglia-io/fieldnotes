@@ -110,6 +110,81 @@ fn a_field_that_cannot_start_is_reported_per_field_and_exits_three() -> std::io:
     Ok(())
 }
 
+/// The release gate's "revoked and expired credentials fail actionably"
+/// requirement, at the command level: a Field configured to authenticate, with
+/// no credential stored, fails **early and cleanly**.
+///
+/// "Early" is observable rather than asserted by inspection: the Field's
+/// executable path holds no executable, so a run that got as far as starting it
+/// would say `cannot start Field`. This run must not, because the credential is
+/// resolved first.
+#[test]
+fn a_field_needing_credentials_with_none_stored_fails_early_and_cleanly() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-sync-credential")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+    let executable = missing_executable(&temp);
+    let add = run(
+        &root,
+        &[
+            "fields",
+            "add",
+            "outlook_mail",
+            "work",
+            "--executable",
+            &executable.display().to_string(),
+            "--config",
+            "credential_profile=fieldnotes_cli_test_absent_profile",
+            // The explicit environment provider, reading a variable that is
+            // deliberately never set: no keychain is touched by this test.
+            "--config",
+            "credential_provider=environment",
+            "--config",
+            "credential_env_var=FIELDNOTES_CLI_TEST_DELIBERATELY_UNSET_7b2e",
+        ],
+    )?;
+    assert!(add.status.success(), "{}", stderr(&add));
+
+    let json = run(&root, &["--format", "json", "sync", "outlook_mail_work"])?;
+    assert_eq!(json.status.code(), Some(3));
+    let text = stdout(&json);
+    assert!(text.contains(r#""outcome":"failed""#), "{text}");
+    assert!(text.contains(r#""cursor_committed":false"#), "{text}");
+    assert!(text.contains(r#""credential":null"#), "{text}");
+    assert!(
+        text.contains("fieldnotes fields auth outlook_mail_work"),
+        "the failure must say what to run: {text}"
+    );
+    assert!(
+        !text.contains("cannot start Field"),
+        "the run must refuse before the spawn: {text}"
+    );
+
+    // No staging directory and no cursor were created for this Field.
+    let sync_state = root.join(".fieldnotes").join("state").join("sync");
+    assert!(
+        !sync_state.join("staging").exists(),
+        "a credential failure must create no staging directory"
+    );
+    assert!(
+        !sync_state.join("outlook_mail_work.cursor").exists(),
+        "a credential failure must commit no cursor"
+    );
+
+    let human = run(&root, &["sync", "outlook_mail_work"])?;
+    assert_eq!(human.status.code(), Some(3));
+    let rendered = stdout(&human);
+    assert!(
+        rendered.contains("outlook_mail_work (incremental) failed"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("cursor             not advanced"),
+        "{rendered}"
+    );
+    Ok(())
+}
+
 #[test]
 fn syncing_an_unconfigured_field_is_a_usage_error() -> std::io::Result<()> {
     let temp = TempDir::new("cli-sync-unknown")?;

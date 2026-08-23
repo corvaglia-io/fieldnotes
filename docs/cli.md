@@ -225,28 +225,108 @@ default or be clearly available.
 
 ### Authenticate a Field
 
+**Implemented.**
+
 ```text
-fieldnotes fields auth <field_id>
+fieldnotes fields auth <field_id> [--no-browser]
 ```
 
-The command starts the source-appropriate browser OAuth or device-code flow and
-stores long-lived credentials in the selected secure provider. Secrets are
-entered through protected prompts or auth channels, never arguments.
+The command runs the OAuth 2.0 authorization-code flow with PKCE in the user's
+browser, on an ephemeral loopback redirect, and stores the resulting refresh
+token in the platform credential store. Nothing is entered as an argument, and
+nothing credential-shaped is printed.
 
-A proposed setup sequence is:
+**Device-code flow is implemented nowhere in Fieldnotes.** It is a phishing
+vector, and it is blocked by Conditional Access in tenants that require a
+compliant device (observed returning `AADSTS53003` even on a compliant one). A
+Field whose manifest declares `oauth_device_code` is refused with that
+explanation rather than accommodated.
+
+Core keeps the refresh token and never gives it to a Field. Before each
+collection run it mints a short-lived access token and delivers only that, on
+the protected channel A2 section 12 defines, separate from the Field's standard
+input, output, and error.
+
+The setup sequence is:
 
 ```text
-fieldnotes fields add outlook-mail work --account sam@example.net
+fieldnotes fields add outlook_mail work \
+  --executable /usr/local/bin/fieldnotes-field-outlook-mail \
+  --config credential_profile=work
 fieldnotes fields auth outlook_mail_work
 fieldnotes sync outlook_mail_work
 ```
 
-The `outlook-mail` type token, resulting `outlook_mail_work` ID, flags, and auth
-flow selection remain proposed pending the Field registry and manifest
-approval.
+#### Credential configuration keys
+
+A Field that authenticates is configured by **reference, never by value**,
+through the same `--config` map as any other non-secret setting. Only the first
+key is required; every other has a default and every one is overridable.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `credential_profile` | *(required)* | The non-secret name the credential is stored under. A name, not a secret. |
+| `credential_provider` | `keychain` | `keychain` (macOS Keychain, Windows Credential Manager, Linux Secret Service) or `environment`. |
+| `credential_env_var` | `FIELDNOTES_CREDENTIAL_<PROFILE>` | The variable the `environment` provider reads. |
+| `oauth_client_id` | the shared first-party client below | The OAuth public client ID. |
+| `oauth_tenant_id` | `organizations` | The authority tenant segment. `organizations` resolves to the signed-in user's home tenant. |
+| `oauth_authority` | `https://login.microsoftonline.com` | The authority base URL. Must be `https`. |
+| `oauth_redirect_path` | `/callback` | The loopback redirect path. The port is always ephemeral. |
+
+The `environment` provider is explicit, opt-in, and **read-only**: it reads a
+refresh token a person or a CI system placed in the named variable, into core's
+memory only, and never into a child process's environment. `fields auth` refuses
+for it rather than appearing to have saved something.
+
+#### The default client ID is shared, and that is visible in your tenant
+
+The out-of-the-box `oauth_client_id` default is
+`14d82eec-204b-4c2f-b7e8-296a70dab67e`, the **Microsoft Graph PowerShell**
+first-party public client. It is the default because it works in a tenant with
+no app registration and no administrator involvement, which is what makes a beta
+usable.
+
+It has a real cost: **reads are attributed to that application in the tenant's
+sign-in logs**, so an administrator auditing access sees "Microsoft Graph
+PowerShell" rather than "Fieldnotes", and a Conditional Access policy scoped to
+that application applies to Fieldnotes' reads. `fields auth` says so on every
+run that uses it. A deployment should register its own application and set
+`--config oauth_client_id=<guid>`.
+
+#### Scopes come from the Field, not from the command
+
+Core requests exactly the least-privilege scopes the Field's own manifest
+declares, plus `offline_access` so a refresh token is issued at all. It never
+requests a broader set, and the protected channel refuses a Field that later
+asks for a scope outside its grant. `fields auth` runs `describe` first to read
+those scopes, which is safe because A2 gives a describe run no credential grant,
+no cursor, and no staging directory.
+
+#### A collection run never opens a browser
+
+`sync` refreshes silently or fails with an instruction. A missing, expired, or
+revoked credential fails the run **before** any child process is spawned and
+before any staging directory is created, and never advances a cursor. Setting
+`FIELDNOTES_NON_INTERACTIVE` makes `fields auth` itself refuse with the same
+instruction rather than opening a window on an unattended machine.
 
 Auth never grants Fieldnotes write behavior. Outlook collection cannot send,
 move, delete, flag, categorize, or otherwise mutate mail.
+
+### See whether a Field is authenticated
+
+`fieldnotes fields status` reports a `credential` line, and
+`fieldnotes.fields_status.v1` gained `credential_profile`,
+`credential_provider`, and `credential_state`. The state is one of
+`not_required`, `not_configured`, `stored`, `absent`, or `unavailable`, read
+from the credential store without attempting a sync, without a network call,
+and without starting a process.
+
+`fieldnotes.sync.v1` gained a `credential` member, `null` for a Field that needs
+none: the profile, the provider, the granted scopes, and how many requests the
+protected channel answered and refused. It carries no material, and neither does
+the `credential` object recorded in
+`.fieldnotes/state/sync/<field_id>.status.json`.
 
 ## 0.1.4 — Outlook Calendar and Contacts
 

@@ -1,5 +1,11 @@
-//! End-to-end tests for `fieldnotes fields add/list/status/remove`, run
+//! End-to-end tests for `fieldnotes fields add/auth/list/status/remove`, run
 //! through the real binary.
+//!
+//! Nothing here authenticates against anything. `fields auth` is exercised up
+//! to, and never past, the point where it would contact a tenant: its command
+//! surface, its refusal in a non-interactive invocation, and its refusals for a
+//! Field that is unconfigured or misconfigured. What happens after that point is
+//! covered in `fieldnotes-app`'s own tests, against injected collaborators.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -9,6 +15,10 @@ use fieldnotes_test_support::TempDir;
 /// The environment variable overriding the profile file location, set on
 /// every invocation so a test run never touches a developer's real profile.
 const CONFIG_ENV: &str = "FIELDNOTES_CONFIG";
+
+/// Set on every `fields auth` invocation in this file, so no test can open a
+/// browser on the machine running it.
+const NON_INTERACTIVE_ENV: &str = "FIELDNOTES_NON_INTERACTIVE";
 
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_fieldnotes")
@@ -189,6 +199,211 @@ fn removing_one_field_leaves_another_fields_configuration_and_notes_untouched()
 
     let status = run(&root, &["status", "--format", "json"])?;
     assert!(stdout(&status).contains(r#""total":1"#));
+    Ok(())
+}
+
+/// Runs a command with the non-interactive marker set, so `fields auth` refuses
+/// instead of opening a browser.
+fn run_non_interactive(notebook: &Path, args: &[&str]) -> std::io::Result<Output> {
+    Command::new(binary())
+        .arg("--notebook")
+        .arg(notebook)
+        .args(args)
+        .env(CONFIG_ENV, hermetic_config_path(notebook))
+        .env(NON_INTERACTIVE_ENV, "1")
+        .output()
+}
+
+#[test]
+fn fields_auth_has_a_documented_surface_and_never_takes_a_secret() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-fields-auth-help")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+
+    let help = run(&root, &["fields", "auth", "--help"])?;
+    assert!(help.status.success(), "{}", stderr(&help));
+    let text = stdout(&help);
+    assert!(text.contains("--no-browser"), "{text}");
+    assert!(text.contains("credential_profile"), "{text}");
+    // The two promises the command's documentation has to make.
+    assert!(text.contains("short-lived access token"), "{text}");
+    assert!(text.contains("protected channel"), "{text}");
+    // No option anywhere takes credential material.
+    for forbidden in ["--token", "--password", "--secret", "--client-secret"] {
+        assert!(
+            !text.contains(forbidden),
+            "`fields auth` must not accept {forbidden}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn fields_auth_refuses_an_unconfigured_or_misconfigured_field() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-fields-auth-refusals")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+
+    // No such Field.
+    let unknown = run_non_interactive(&root, &["fields", "auth", "outlook_mail_ghost"])?;
+    assert_eq!(unknown.status.code(), Some(2));
+    assert!(stderr(&unknown).contains("outlook_mail_ghost"));
+
+    // `self` has nothing to authenticate.
+    let built_in = run_non_interactive(&root, &["fields", "auth", "self"])?;
+    assert_eq!(built_in.status.code(), Some(2));
+
+    // Configured, but naming no credential profile: the message says which
+    // key to set, and nothing was spawned to find that out.
+    let add = run(
+        &root,
+        &[
+            "fields",
+            "add",
+            "outlook_mail",
+            "work",
+            "--executable",
+            "/usr/local/bin/fieldnotes-field-outlook-mail",
+        ],
+    )?;
+    assert!(add.status.success(), "{}", stderr(&add));
+    let unconfigured = run_non_interactive(&root, &["fields", "auth", "outlook_mail_work"])?;
+    assert_eq!(unconfigured.status.code(), Some(2));
+    assert!(
+        stderr(&unconfigured).contains("credential_profile"),
+        "{}",
+        stderr(&unconfigured)
+    );
+    Ok(())
+}
+
+#[test]
+fn a_non_interactive_invocation_is_told_to_run_interactively() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-fields-auth-headless")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+    let add = run(
+        &root,
+        &[
+            "fields",
+            "add",
+            "outlook_mail",
+            "work",
+            "--executable",
+            "/usr/local/bin/fieldnotes-field-outlook-mail",
+            "--config",
+            "credential_profile=work",
+        ],
+    )?;
+    assert!(add.status.success(), "{}", stderr(&add));
+
+    let refused = run_non_interactive(&root, &["fields", "auth", "outlook_mail_work"])?;
+    assert_eq!(refused.status.code(), Some(2));
+    let message = stderr(&refused);
+    assert!(message.contains("non-interactive"), "{message}");
+    assert!(
+        message.contains("fieldnotes fields auth outlook_mail_work"),
+        "{message}"
+    );
+
+    // The JSON form of the same refusal, on standard error, leaving standard
+    // output empty.
+    let json = Command::new(binary())
+        .arg("--notebook")
+        .arg(&root)
+        .args(["--format", "json", "fields", "auth", "outlook_mail_work"])
+        .env(CONFIG_ENV, hermetic_config_path(&root))
+        .env(NON_INTERACTIVE_ENV, "1")
+        .output()?;
+    assert_eq!(json.status.code(), Some(2));
+    assert!(stdout(&json).is_empty());
+    let error = stderr(&json);
+    assert!(
+        error.contains(r#""schema":"fieldnotes.error.v1""#),
+        "{error}"
+    );
+    assert!(
+        error.contains(r#""kind":"credential_not_interactive""#),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[test]
+fn fields_status_reports_credential_state_without_attempting_a_sync() -> std::io::Result<()> {
+    let temp = TempDir::new("cli-fields-auth-status")?;
+    let root = temp.path().join("notebook");
+    assert!(run(&root, &["init"])?.status.success());
+
+    // A Field that needs no credential says so.
+    let add_local = run(
+        &root,
+        &["fields", "add", "local", "work", "--executable", "/bin/x"],
+    )?;
+    assert!(add_local.status.success(), "{}", stderr(&add_local));
+    let local = run(
+        &root,
+        &["fields", "status", "local_work", "--format", "json"],
+    )?;
+    assert!(local.status.success(), "{}", stderr(&local));
+    let local_json = stdout(&local);
+    assert!(
+        local_json.contains(r#""credential_state":"not_required""#),
+        "{local_json}"
+    );
+    assert!(
+        local_json.contains(r#""credential_profile":null"#),
+        "{local_json}"
+    );
+
+    // A Field configured with a profile reports the profile and the provider,
+    // and its state comes from reading the credential store — not from a sync.
+    let add_mail = run(
+        &root,
+        &[
+            "fields",
+            "add",
+            "outlook_mail",
+            "work",
+            "--executable",
+            "/usr/local/bin/fieldnotes-field-outlook-mail",
+            "--config",
+            "credential_profile=fieldnotes_cli_test_absent_profile",
+            "--config",
+            "credential_provider=environment",
+            "--config",
+            "credential_env_var=FIELDNOTES_CLI_TEST_DELIBERATELY_UNSET_4c1a9f",
+        ],
+    )?;
+    assert!(add_mail.status.success(), "{}", stderr(&add_mail));
+    let mail = run(
+        &root,
+        &["fields", "status", "outlook_mail_work", "--format", "json"],
+    )?;
+    assert!(mail.status.success(), "{}", stderr(&mail));
+    let mail_json = stdout(&mail);
+    assert!(
+        mail_json.contains(r#""credential_profile":"fieldnotes_cli_test_absent_profile""#),
+        "{mail_json}"
+    );
+    assert!(
+        mail_json.contains(r#""credential_provider":"environment""#),
+        "{mail_json}"
+    );
+    // The environment provider reads one deliberately unset variable, so the
+    // answer is "absent" rather than "stored", with no keychain involved.
+    assert!(
+        mail_json.contains(r#""credential_state":"absent""#),
+        "{mail_json}"
+    );
+
+    // Human output names the command that fixes it.
+    let human = run(&root, &["fields", "status", "outlook_mail_work"])?;
+    let text = stdout(&human);
+    assert!(
+        text.contains("fieldnotes fields auth outlook_mail_work"),
+        "{text}"
+    );
     Ok(())
 }
 
