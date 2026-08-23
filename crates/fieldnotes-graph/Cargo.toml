@@ -9,5 +9,10 @@ publish = false
 fieldnotes-domain.workspace = true
 fieldnotes-format.workspace = true
 
+[dev-dependencies]
+# Fixed clock, deterministic byte source, and the path to the frozen A1 fixture
+# corpus, so tests replay byte-identical projections over approved bytes.
+fieldnotes-test-support.workspace = true
+
 [lints]
 workspace = true
