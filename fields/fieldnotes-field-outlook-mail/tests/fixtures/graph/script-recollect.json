@@ -1,0 +1,22 @@
+[
+  {
+    "expect_url_contains": "/me/messages('AAMkAGI2TQABAAAF')?",
+    "status": 200,
+    "body_file": "message-standup-with-attachments.json"
+  },
+  {
+    "expect_url_contains": "/attachments?",
+    "status": 200,
+    "body_file": "attachments-standup.json"
+  },
+  {
+    "expect_url_contains": "attachments('AAMkAGI2TQABAAACattach01')",
+    "status": 200,
+    "body_file": "attachment-notes-content.json"
+  },
+  {
+    "expect_url_contains": "attachments('AAMkAGI2TQABAAACattach02')",
+    "status": 200,
+    "body_file": "attachment-clip-content.json"
+  }
+]

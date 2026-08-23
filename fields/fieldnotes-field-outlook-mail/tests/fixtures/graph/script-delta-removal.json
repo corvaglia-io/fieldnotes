@@ -1,0 +1,7 @@
+[
+  {
+    "expect_url_contains": "/messages/delta",
+    "status": 200,
+    "body_file": "delta-removal.json"
+  }
+]

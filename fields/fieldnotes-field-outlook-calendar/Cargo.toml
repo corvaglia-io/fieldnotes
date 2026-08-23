@@ -8,6 +8,21 @@ publish = false
 [dependencies]
 fieldnotes-field-protocol.workspace = true
 fieldnotes-msgraph.workspace = true
+# The reusable Field-authoring SDK: percent-encoding for the cursor's wrapped
+# delta token, UTF-8-safe truncation for the body and diagnostic text, and the
+# describe/collect request-reading and frame-emitting boilerplate every Field
+# needs. Extracted from `fieldnotes-field-local`'s own `0.1.1` implementation.
+fieldnotes-field-sdk.workspace = true
+# `Datetime` for parsing Graph's UTC-only event instants into an explicit
+# `+00:00` offset and for the run-observed "now" a delete record's
+# `observed_at` carries, reused from the existing internal domain crate
+# rather than reimplemented or pulled in from an external crate.
+fieldnotes-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

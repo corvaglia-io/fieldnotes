@@ -7,7 +7,29 @@ publish = false
 
 [dependencies]
 fieldnotes-field-protocol.workspace = true
+# The reusable Field-authoring SDK: percent-coding for the delta token this
+# Field's cursor carries, staging-and-hashing for attachment bytes, UTF-8-safe
+# truncation for the body and diagnostic text, and the describe/collect
+# request-reading and frame-emitting boilerplate. Extracted from the `local`
+# Field's own `0.1.1` implementation; see ADR 0009.
+fieldnotes-field-sdk.workspace = true
+# The shared Microsoft Graph transport: GET-only request building, retry and
+# throttling, `@odata.nextLink` pagination, `@odata.deltaLink` delta tokens,
+# the actionable error taxonomy, and the fake-transport seam this Field's
+# fixture-backed tests drive. It never acquires a token and never writes.
 fieldnotes-msgraph.workspace = true
+# Calendar/instant math for `occurred_at` and for the tombstone's observation
+# instant, plus the injected `Clock` trait, reused from the existing internal
+# domain crate rather than reimplemented or pulled in from an external crate.
+fieldnotes-domain.workspace = true
+# Deserialization of the Graph message and attachment shapes this Field
+# defines for itself (the transport is generic over them) and of the
+# `credential_response` frame that arrives on the protected channel.
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

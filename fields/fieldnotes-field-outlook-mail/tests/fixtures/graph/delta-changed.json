@@ -1,0 +1,6 @@
+{
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=FIXTURE_DELTA_4",
+  "value": [
+    {"id":"AAMkAGI2TQABAAAA","changeKey":"CQAAABYAAADD","subject":"Migration Thursday (moved to Friday)","bodyPreview":"Correction: the migration moved to Friday.","body":{"contentType":"text","content":"Hi Sam,\n\nCorrection: the migration moved to Friday.\n\nAlice\n"},"receivedDateTime":"2026-08-22T08:00:00Z","from":{"emailAddress":{"name":"Alice Example","address":"alice@example.com"}},"toRecipients":[{"emailAddress":{"name":"Sam Example","address":"sam@example.net"}}],"ccRecipients":[{"emailAddress":{"name":"Bob Example","address":"bob@example.net"}}],"conversationId":"AAQkAGI2TQ","internetMessageId":"<migration-thursday@example.com>","importance":"high","hasAttachments":false,"isRead":false,"isDraft":false,"categories":[],"parentFolderId":"AAMkAGI2THEINBOX01"}
+  ]
+}

@@ -466,8 +466,10 @@ fn a_retyped_declared_property_is_a_migration_that_blocks_sync() {
 #[test]
 fn a_field_that_needs_authentication_is_refused_actionably() {
     // The mail-flavor manifest declares an OAuth authorization-code flow and
-    // requires both a credential profile and the protected channel, none of
-    // which exists before the `0.1.3` authentication gate.
+    // requires both a credential profile and the protected channel. Nothing has
+    // authenticated this Field, so the run must be refused before it starts,
+    // and the refusal must name both the missing setting and the command that
+    // fixes it rather than merely reporting that a credential is absent.
     let case = Case::with_field("auth-refused", "outlook_mail", "work");
     let report = case.run("redacted-diagnostic");
     assert_eq!(report.outcome, FieldRunOutcome::Failed);
@@ -475,7 +477,7 @@ fn a_field_that_needs_authentication_is_refused_actionably() {
         .failure
         .unwrap_or_else(|| panic!("the refusal must be reported"));
     assert!(
-        failure.contains("needs authentication") && failure.contains("0.1.3"),
+        failure.contains("credential_profile") && failure.contains("fields auth"),
         "unexpected refusal: {failure}"
     );
     assert!(case.validated_notes().is_empty());

@@ -1,0 +1,6 @@
+{
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=FIXTURE_DELTA_3",
+  "value": [
+    {"id":"AAMkAGI2TQABAAAA","@removed":{"reason":"deleted"}}
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "id": "AAMkAGI2TQABAAAA",
+  "changeKey": "CQAAABYAAAC1",
+  "subject": "Migration Thursday",
+  "bodyPreview": "Hi Sam, Thursday works for the migration.",
+  "body": {
+    "contentType": "html",
+    "content": "<html><body><p>Hi Sam,</p><p>Thursday works for the migration. Bob will provide the DNS credentials through the approved secure channel.</p><p>Liebe Gr&#252;sse<br>Alice M&#252;ller<br>Head of Operations | Example AG</p></body></html>"
+  },
+  "receivedDateTime": "2026-08-22T08:00:00Z",
+  "sentDateTime": "2026-08-22T07:59:12Z",
+  "from": { "emailAddress": { "name": "Alice Example", "address": "alice@example.com" } },
+  "sender": { "emailAddress": { "name": "Alice Example", "address": "alice@example.com" } },
+  "toRecipients": [{ "emailAddress": { "name": "Sam Example", "address": "sam@example.net" } }],
+  "ccRecipients": [{ "emailAddress": { "name": "Bob Example", "address": "bob@example.net" } }],
+  "bccRecipients": [],
+  "replyTo": [],
+  "conversationId": "AAQkAGI2TQ",
+  "internetMessageId": "<migration-thursday@example.com>",
+  "importance": "normal",
+  "hasAttachments": false,
+  "isRead": true,
+  "isDraft": false,
+  "categories": [],
+  "parentFolderId": "AAMkAGI2THEINBOX01"
+}

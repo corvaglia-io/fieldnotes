@@ -22,7 +22,11 @@
 //! `.md` filename, so nothing scanning a notebook can mistake it for a record,
 //! and the destination name does not exist until the rename succeeds.
 
-use std::fs::{File, OpenOptions};
+// `File` is only needed by the Unix directory-sync path below; importing it
+// unconditionally is an unused import on Windows, where CI denies warnings.
+#[cfg(unix)]
+use std::fs::File;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};

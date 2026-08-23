@@ -1,0 +1,7 @@
+[
+  {
+    "expect_url_contains": "/messages/delta",
+    "status": 401,
+    "body_file": "error-expired-token.json"
+  }
+]

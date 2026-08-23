@@ -1,0 +1,4 @@
+{
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=FIXTURE_DELTA_2",
+  "value": []
+}

@@ -621,24 +621,40 @@ dependencies = [
 name = "fieldnotes-field-outlook-calendar"
 version = "0.1.0"
 dependencies = [
+ "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-field-sdk",
  "fieldnotes-msgraph",
+ "fieldnotes-test-support",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "fieldnotes-field-outlook-contacts"
 version = "0.1.0"
 dependencies = [
+ "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-field-sdk",
  "fieldnotes-msgraph",
+ "fieldnotes-test-support",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
 name = "fieldnotes-field-outlook-mail"
 version = "0.1.0"
 dependencies = [
+ "fieldnotes-domain",
  "fieldnotes-field-protocol",
+ "fieldnotes-field-sdk",
  "fieldnotes-msgraph",
+ "fieldnotes-test-support",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -1,0 +1,7 @@
+[
+  {
+    "expect_url_contains": "$deltatoken=FIXTURE_DELTA_1",
+    "status": 200,
+    "body_file": "delta-changed.json"
+  }
+]

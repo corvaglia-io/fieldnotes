@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "ApplicationThrottled",
+    "message": "Too many requests. Please retry after the indicated delay.",
+    "innerError": { "request-id": "00000000-0000-4000-8000-00000000ab02" }
+  }
+}

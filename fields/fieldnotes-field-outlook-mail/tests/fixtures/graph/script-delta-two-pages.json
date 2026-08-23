@@ -1,0 +1,22 @@
+[
+  {
+    "expect_url_contains": "/messages/delta",
+    "status": 200,
+    "body_file": "delta-page-1.json"
+  },
+  {
+    "expect_url_contains": "$skiptoken=FIXTURE_SKIP_1",
+    "status": 200,
+    "body_file": "delta-page-2.json"
+  },
+  {
+    "expect_url_contains": "/attachments?",
+    "status": 200,
+    "body_file": "attachments-standup.json"
+  },
+  {
+    "expect_url_contains": "attachments('AAMkAGI2TQABAAACattach01')",
+    "status": 200,
+    "body_file": "attachment-notes-content.json"
+  }
+]

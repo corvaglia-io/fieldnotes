@@ -1,0 +1,13 @@
+[
+  {
+    "expect_url_contains": "/messages/delta",
+    "status": 429,
+    "retry_after_seconds": 1,
+    "body_file": "error-throttled.json"
+  },
+  {
+    "expect_url_contains": "/messages/delta",
+    "status": 200,
+    "body_file": "delta-page-1-final.json"
+  }
+]

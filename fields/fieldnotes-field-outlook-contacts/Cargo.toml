@@ -8,6 +8,33 @@ publish = false
 [dependencies]
 fieldnotes-field-protocol.workspace = true
 fieldnotes-msgraph.workspace = true
+# The reusable Field-authoring SDK: staging-and-hashing for the photo bytes
+# this Field reads, UTF-8-safe truncation for the body and diagnostic text,
+# and the describe/collect request-reading and frame-emitting boilerplate.
+# Extracted from `fields/fieldnotes-field-local`'s own `0.1.1` implementation;
+# see ADR 0009.
+fieldnotes-field-sdk.workspace = true
+# `Datetime`/`Date` parsing and rendering for `occurred_at`, and the `Clock`
+# trait this Field's `main` supplies an OS-backed implementation of for a
+# tombstone's `observed_at` -- library code here never reads the wall clock
+# directly.
+fieldnotes-domain.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# A contact's photo has no size or presence field on the `contact` resource
+# itself (unlike `user`), so this Field must call the binary `/photo/$value`
+# endpoint to know whether one exists at all. `fieldnotes-msgraph`'s
+# `GraphClient` is JSON-only by construction -- `GraphHttpRequest::new` and
+# `AccessToken::as_str`/`header_value` are `pub(crate)` to that crate, so nothing
+# outside it can build an authenticated raw-byte request today. Depended on
+# directly here, with the same TLS backend and feature set `fieldnotes-msgraph`
+# already uses, purely for that one binary fetch; see this crate's final report
+# for the `fieldnotes-msgraph::GraphClient::get_bytes`-shaped gap this stands in
+# for until it is extracted for every Microsoft Field that needs it.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[dev-dependencies]
+fieldnotes-test-support.workspace = true
 
 [lints]
 workspace = true

@@ -1,0 +1,7 @@
+[
+  {
+    "expect_url_contains": "$filter=receivedDateTime",
+    "status": 200,
+    "body_file": "window-page.json"
+  }
+]

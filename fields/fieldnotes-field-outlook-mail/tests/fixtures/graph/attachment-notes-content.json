@@ -1,0 +1,8 @@
+{
+  "@odata.type": "#microsoft.graph.fileAttachment",
+  "id": "AAMkAGI2TQABAAACattach01",
+  "name": "notes.txt",
+  "contentType": "text/plain",
+  "size": 43,
+  "contentBytes": "TWlncmF0aW9uIG5vdGVzOiBETlMgY3V0b3ZlciBhdCAyMjowMCBVVEMuCg=="
+}

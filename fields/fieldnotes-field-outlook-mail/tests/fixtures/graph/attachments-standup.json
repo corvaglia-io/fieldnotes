@@ -1,0 +1,35 @@
+{
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "AAMkAGI2TQABAAACattach01",
+      "name": "notes.txt",
+      "contentType": "text/plain",
+      "size": 43,
+      "isInline": false
+    },
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "AAMkAGI2TQABAAACattach02",
+      "name": "team-standup-recording.mp4",
+      "contentType": "video/mp4",
+      "size": 1024,
+      "isInline": false
+    },
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "AAMkAGI2TQABAAACattach03",
+      "name": "quarterly-scan.pdf",
+      "contentType": "application/pdf",
+      "size": 41943040,
+      "isInline": false
+    },
+    {
+      "@odata.type": "#microsoft.graph.itemAttachment",
+      "id": "AAMkAGI2TQABAAACattach04",
+      "name": "Forwarded invitation",
+      "size": 8192,
+      "isInline": false
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "@odata.deltaLink": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=FIXTURE_DELTA_1",
+  "value": [
+    {"id":"AAMkAGI2TQABAAAF","changeKey":"CQAAABYAAAC5","subject":"Team standup recording","bodyPreview":"Sharing this week's standup notes and the recording.","body":{"contentType":"text","content":"Hi Sam,\n\nSharing this week's standup notes and the recording.\n\nAlice\n"},"receivedDateTime":"2026-08-22T09:20:00Z","sentDateTime":"2026-08-22T09:19:41Z","from":{"emailAddress":{"name":"Alice Example","address":"alice@example.com"}},"toRecipients":[{"emailAddress":{"name":"Sam Example","address":"sam@example.net"}}],"ccRecipients":[],"bccRecipients":[],"replyTo":[],"conversationId":"AAQkAGI2TS","internetMessageId":"<standup-recording@example.com>","importance":"normal","hasAttachments":true,"isRead":false,"isDraft":false,"categories":["Acme rollout"],"parentFolderId":"AAMkAGI2THEINBOX01"}
+  ]
+}

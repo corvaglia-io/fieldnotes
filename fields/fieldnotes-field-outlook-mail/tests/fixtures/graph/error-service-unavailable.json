@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "ServiceUnavailable",
+    "message": "The mailbox is temporarily unavailable.",
+    "innerError": { "request-id": "00000000-0000-4000-8000-00000000ab03" }
+  }
+}
