@@ -382,6 +382,31 @@ where
     }
 }
 
+/// Graph's own short error code for "the signed-in principal has no
+/// REST-accessible Exchange Online mailbox".
+///
+/// Despite the name, this is not really about which resource was requested:
+/// Microsoft's own documentation and field reports show the identical code
+/// returned even for the fully documented, folder-scoped contacts-delta path
+/// (`/me/contactFolders/{id}/contacts/delta`), so it cannot be evidence that
+/// `/me/contacts/delta` itself is an unsupported shortcut. What it does
+/// reliably mean is that the *account* behind the bearer token has no mailbox
+/// for Graph to read at all -- an admin-only account with no Exchange
+/// license, a soft-deleted mailbox, or a service account, for example. See
+/// [`classify`] and this crate's final report for why a sibling Field's mail
+/// and calendar collection succeeding in the same run does not rule this out:
+/// each Field's credential comes from its own separate `fields auth`
+/// interactive sign-in, and a browser that silently reuses an existing
+/// session can hand two Fields two different principals without the operator
+/// noticing.
+const MAILBOX_NOT_ENABLED_FOR_REST_API: &str = "MailboxNotEnabledForRESTAPI";
+
+/// Whether `detail` carries Graph's
+/// [`MAILBOX_NOT_ENABLED_FOR_REST_API`] code.
+fn is_mailbox_not_enabled(detail: &fieldnotes_msgraph::GraphErrorDetail) -> bool {
+    detail.code() == Some(MAILBOX_NOT_ENABLED_FOR_REST_API)
+}
+
 /// Renders a Graph failure as this Field's own diagnostic message.
 ///
 /// Deliberately does not delegate to [`GraphError`]'s own [`std::fmt::Display`]:
@@ -420,6 +445,29 @@ fn describe_graph_error(error: &GraphError) -> String {
         text.push_str(outcome);
         text
     }
+    /// Names the resource this Field asked for and the account-mismatch
+    /// explanation, rather than describing this as an unsupported resource
+    /// (see [`MAILBOX_NOT_ENABLED_FOR_REST_API`]'s own docs for why that
+    /// framing would be wrong) or leaving the operator to decode
+    /// `config.invalid` on their own, as an earlier release did.
+    fn mailbox_not_enabled_message(detail: &fieldnotes_msgraph::GraphErrorDetail) -> String {
+        let mut text = with_detail(
+            detail,
+            "was refused because the signed-in account has no REST-accessible Exchange Online \
+             mailbox",
+        );
+        text.push_str(
+            ". This is very unlikely to mean this mailbox refuses contacts requests: the \
+             same code appears even for Microsoft's own documented, folder-scoped contacts-delta \
+             path. It most likely means the credential this Field's credential_profile \
+             authenticated with belongs to a different account than the one mail and calendar \
+             collection used -- for example, an administrator account used only to grant \
+             Contacts.Read consent, which typically has no mailbox of its own. Check which \
+             account was signed in during this Field's own `fields auth` run, and re-authenticate \
+             as the mailbox owner if it was not that account.",
+        );
+        text
+    }
     match error {
         GraphError::ReauthenticationRequired(detail) => {
             with_detail(detail, "requires a fresh access token")
@@ -432,6 +480,9 @@ fn describe_graph_error(error: &GraphError) -> String {
             detail,
             "failed with a transient server fault after retrying",
         ),
+        GraphError::InvalidRequest(detail) if is_mailbox_not_enabled(detail) => {
+            mailbox_not_enabled_message(detail)
+        }
         GraphError::InvalidRequest(detail) => {
             with_detail(detail, "was rejected and will not succeed by retrying")
         }
@@ -444,6 +495,14 @@ fn describe_graph_error(error: &GraphError) -> String {
 /// Classifies a Graph failure into a diagnostic code, severity, and exit
 /// code, so an expired token, a consent problem, and throttling are
 /// distinguishable in logs, metrics, and this Field's own exit status.
+///
+/// [`GraphError::InvalidRequest`] carrying
+/// [`MAILBOX_NOT_ENABLED_FOR_REST_API`] is classified as an authentication
+/// problem, not `config.invalid`: the fix is to re-authenticate as the
+/// correct account, which is exactly what `auth.reauth_required` already
+/// tells an operator to do, and exactly what a blanket `config.invalid` for
+/// every other 4xx status would have hidden behind a hunt through
+/// configuration that has nothing wrong with it.
 fn classify(error: &GraphError) -> (DiagnosticCode, Severity, ProtocolExit) {
     match error {
         GraphError::ReauthenticationRequired(_) => (
@@ -465,6 +524,11 @@ fn classify(error: &GraphError) -> (DiagnosticCode, Severity, ProtocolExit) {
             DiagnosticCode::SourceUnavailable,
             Severity::Error,
             ProtocolExit::SourceUnavailable,
+        ),
+        GraphError::InvalidRequest(detail) if is_mailbox_not_enabled(detail) => (
+            DiagnosticCode::AuthReauthRequired,
+            Severity::Error,
+            ProtocolExit::Authentication,
         ),
         GraphError::InvalidRequest(_) => (
             DiagnosticCode::ConfigInvalid,
@@ -1173,6 +1237,84 @@ mod tests {
         let redacted = redactor.redact(diagnostic.message.as_str());
         assert!(
             redacted.contains("Request_ResourceNotFound"),
+            "the graph error code must survive core's downstream redaction pass: {redacted}"
+        );
+        Ok(())
+    }
+
+    /// `MailboxNotEnabledForRESTAPI` is Graph's code for "the signed-in
+    /// account has no REST-accessible Exchange Online mailbox" -- the same
+    /// code Microsoft's own documentation and field reports show even for
+    /// the fully documented, folder-scoped contacts-delta path, so it is not
+    /// evidence that this Field's resource is unsupported. An earlier
+    /// release folded it into the generic `config.invalid` bucket, which
+    /// sent an operator hunting through configuration that had nothing wrong
+    /// with it. This is the regression test for classifying it instead as an
+    /// authentication problem, with a message that names the likely account
+    /// mismatch rather than blaming the resource or the configuration.
+    #[test]
+    fn a_mailbox_not_enabled_response_is_classified_as_authentication_not_config()
+    -> std::io::Result<()> {
+        let staging = TempDir::new("collect-mailbox-not-enabled")?;
+        let transport = ScriptedTransport::new(vec![json_response(
+            404,
+            r#"{"error":{"code":"MailboxNotEnabledForRESTAPI","message":"The mailbox is either inactive, soft-deleted, or is hosted on-premise."}}"#,
+        )]);
+        let request = request("1a4c9f2e-0000-4000-8000-000000000022", staging.path(), None);
+        let mut sink: Vec<u8> = Vec::new();
+        let exit = {
+            let mut emitter = Emitter::new_with_sink(&request, &mut sink);
+            let client =
+                GraphClient::new(transport, FakeRetryClock::new(0), CountingRandom::new(1));
+            let token = AccessToken::new("FIXTURE-NOT-A-REAL-TOKEN-canary".to_owned());
+            let photo_transport = ScriptedPhotoTransport::new(vec![]);
+            let clock = FixedClock(1_755_000_000_000);
+            collect_with(
+                &request,
+                &resolved_config(),
+                &client,
+                &token,
+                "FIXTURE-NOT-A-REAL-TOKEN-canary",
+                &photo_transport,
+                &clock,
+                &mut emitter,
+            )
+        };
+        assert_eq!(
+            exit,
+            ProtocolExit::Authentication,
+            "a mailbox the signed-in account does not have is an authentication problem, not a \
+             configuration one"
+        );
+        let events = events_of(&sink);
+        assert!(
+            checkpoints_of(&events).is_empty(),
+            "a partial result must never commit a checkpoint"
+        );
+        let diagnostics = diagnostics_of(&events);
+        let diagnostic = diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.code == DiagnosticCode::AuthReauthRequired)
+            .unwrap_or_else(|| {
+                panic!("expected an auth.reauth_required diagnostic among {diagnostics:?}")
+            });
+        let message = diagnostic.message.as_str();
+        assert!(
+            message.contains("MailboxNotEnabledForRESTAPI"),
+            "the field's own message must carry the graph code: {message}"
+        );
+        assert!(
+            message.contains("account"),
+            "the message must point at the authenticated account, not the resource: {message}"
+        );
+        assert!(
+            !message.to_lowercase().contains("unsupported"),
+            "this code must not be described as an unsupported resource: {message}"
+        );
+        let redactor = fieldnotes_field_protocol::redact::Redactor::new();
+        let redacted = redactor.redact(message);
+        assert!(
+            redacted.contains("MailboxNotEnabledForRESTAPI"),
             "the graph error code must survive core's downstream redaction pass: {redacted}"
         );
         Ok(())

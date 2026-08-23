@@ -244,6 +244,19 @@ fn limitations() -> Vec<Limitation> {
                  configuration. Only the signed-in user's own contacts are collected.",
             ),
         },
+        Limitation {
+            code: DiagnosticCode::AuthReauthRequired,
+            message: medium(
+                "If Graph refuses this Field's request with graph_code MailboxNotEnabledForRESTAPI, \
+                 that is not a sign that this mailbox refuses contacts requests: the same code \
+                 appears even for Microsoft's own documented, folder-scoped contacts-delta path. \
+                 It most often means the credential this Field authenticated with belongs to an \
+                 account with no Exchange Online mailbox of its own -- for example, an \
+                 administrator account used only to grant Contacts.Read consent. Check which \
+                 account was signed in during this Field's own `fields auth` run and \
+                 re-authenticate as the mailbox owner if it was not that account.",
+            ),
+        },
     ]
 }
 
