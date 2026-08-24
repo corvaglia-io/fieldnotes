@@ -100,6 +100,16 @@ The chosen record envelope must be explicit about whether content is a normalize
 
 **Approval evidence:** schemas, example transcripts, a fake Field, and conformance tests for resumption, duplicate records, malformed output, process failure, log redaction, and crash boundaries around checkpoints.
 
+## Pending proposal A3: signals, notes, and type-specific rendering
+
+**Status:** Ready for review; **not approved**. Nothing in this roadmap changes until it is.
+
+A notebook collected from live Microsoft 365 data (328 records: 248 contacts, 50 mail, 30 calendar events) showed that A1's single Note record cannot simultaneously be the machine record of what a source said, the human-readable artifact a person opens, and the evidence every derived record cites. [A3](approvals/A3-signals-and-notes.md) proposes splitting it: a **signal** for the collected evidence, and a **note** rendered from it by a type-specific template, with human-authored notes remaining first-class.
+
+If approved, A3 would restate the first invariant above (canonical becomes signals and retained artifacts, with derived notes joining the disposable class), replace the Note filename grammar and `notes/` layout, invalidate R0's golden fixtures, and restate R8 over signals rather than Notes. It would leave A2 and all three Microsoft Fields unchanged, and its migration is a re-sync rather than a migrator, because deleting a refetchable notebook is already a supported lifecycle action.
+
+A3 also surfaces one decision that touches the invariant "Fieldnotes represents the current collected state, not an append-only history ledger": whether source change history is retained so a contact can show what changed. A3 recommends keeping the invariant and taking change tracking, if wanted at all, as its own later package. That decision is the owner's and is not made here.
+
 ## Release train
 
 ### 0.1.0 — Local notebook kernel
