@@ -3,18 +3,14 @@
 **Status:** Ready for review. **Not approved.** No box in the approval
 checklist is checked, and nothing in this document may be implemented until
 the owner approves it explicitly. The owner has settled the decisions
-recorded in "Settled by the owner" below; those are written here as decided
-rather than as options, and they are the only part of this package that is
-settled.  
-**Scope:** The information architecture of the notebook's readable layer:
-the split between what a source said and what a person opens, the vocabulary
-for the two, how a signal serializes, how a note links to its signal, the
-required index that makes that link a lookup rather than a search,
-type-specific render templates as contract, property ordering for human
-reading, the directory layout and filename shape that follow from the model,
-and what happens to the entity, relationship, extraction, observation,
-proposal, package, and conflict records that currently cite Notes as
-evidence
+recorded in "Settled by the owner" below. Section 13 is the handoff: if
+this package is approved, a new session should be able to write an
+implementation plan from this document plus A0–A2, without the chat that
+produced it.  
+**Scope:** The information architecture of the notebook's readable layer;
+the collect path; Contacts as vCard working data; in-note extractions and
+observations; the local-LLM policy; and the engine-evaluation work the
+enhancement path must do before pinning tools or models.
 
 ## Decision requested
 
@@ -47,7 +43,8 @@ supported lifecycle action ([product](../product.md), the roadmap's third
 invariant), so migration is a re-sync rather than a migrator, and 328
 records in one notebook is the cheapest this change will ever be.
 
-**A3 does not change A2.** See "What A3 must not do" below.
+**A3 does not change A2 record, checkpoint, or credential frames.** It adds
+an optional `describe.note_sections` member. See "What A3 must not do".
 
 The detailed background lives in:
 
@@ -87,33 +84,136 @@ build on them, and they are not re-offered in the approval checklist.
    Canonical JSON is declined for this gate. There is no A2 amendment in this
    package and no nested vendor structure anywhere in it. Section 2 records
    the reasoning, because it is worth keeping.
-3. **Layout: one `notes/`, one `signals/`.** `notes/` stays flat, which
-   preserves [notebook format](../notebook-format.md)'s approved statement
-   rather than reversing it. Type partitioning is dropped entirely. Authored
-   and derived notes live together in the same flat `notes/`. Signals live
-   under `signals/` so the collected layer has a name and a home. That is the
-   whole of the layout decision.
+3. **Layout: public `notes/` stays flat; signals are private.** Authored and
+   derived notes live together in one flat `notes/`. Type partitioning is
+   dropped. Signals do **not** get a second public directory. They live under
+   `.fieldnotes/signals/<field-id>/` so they travel with the vault, stay out
+   of the reading surface, and can be partitioned by Field without a public
+   format change. Each Field may also keep connector working data under
+   `.fieldnotes/fields/<field-id>/`. Section 7 states the tree.
 4. **The note-to-signal model.** One derived note per signal in v0.1,
    expressed as a `signals` list whose length is exactly one, with the
    invariant that a given signal identifier appears on at most one note.
-   Section 3 states it.
+   Section 3 states it. A later multi-signal note would renegotiate that
+   uniqueness invariant, not the property's type.
 5. **The persistent signal-to-note index is required, not deferred.** A
    one-shot scan of `notes/` per run is not an acceptable steady-state design
-   for a notebook holding a synced mailbox. Section 4 specifies it.
+   for a mailbox-scale working set. Section 4 specifies it. `inspect` grows a
+   fast mode that trusts the index and says so; a full scan remains available
+   and is not the default at mailbox scale.
+6. **Collect does not rewrite a note that already exists for that signal.**
+   Coverage is "did we already emit a note for this signal?", answered by the
+   index and verified against the file. Default: skip. `--force` (or
+   equivalent) rewrites the markdown from the current signal and **keeps the
+   stored slug**. Fieldnotes is not responsible for duplicates in whatever
+   system the user copies notes into. If the user deleted the note, a later
+   collect may emit a new one; that is the user's vault, not a de-dupe
+   contract with a second brain.
+7. **Slug is a core observation, not a Field add-in.** Same observation
+   machinery (JSON, generator stamp, engine cascade), prompt owned by
+   **core**. Fields do not declare a slug section. First emit still
+   writes a deterministic fold into `title_slug` and the filename so the
+   note exists with no model. After extraction, the core slug observation
+   may replace `title_slug` with a valid proposal and rename **only
+   inside that first-emit transaction** (the fold name was never a
+   published stable path). Later collect and `--force` keep the stored
+   slug. Grammar reject or engine off → fold stands. Keep A1's `_`
+   delimiter.
+8. **Reading order: `title` first, then A1's existing rule.**
+   Template-declared order waits for the template package; moving later is a
+   rebuild, not a migration.
+9. **Signal IDs are derived from the portable source key, at 96 bits
+   (24 hex characters), prefixed `sig_`.** `self` signals keep UUIDv7. This
+   reverses A1 section 1's rejection of content-derived IDs on the narrow
+   ground that the input is an immutable identity rather than mutable
+   content.
+10. **Contacts are not notes.** The 248 contact markdown files were product
+    drift. The Contacts Field does not render `notes/contact_*.md`. It
+    stages vCard 4 (point 17). "Is this a new person?" is a graph question
+    over `UID` / `EMAIL` / `TEL` plus identity anchors on mail, calendar,
+    and chat signals — the resolver in
+    [identity-and-graph.md](../identity-and-graph.md). A public note about a
+    person is emitted only when something happens worth writing down (a new
+    unmatched identity, an extracted property that is new in this notebook),
+    not because a directory record exists.
+11. **This gate's review corpus is mail plus authored text**, not contact.
+    Contact-as-note fixtures would freeze the drift.
+12. **Cut from this gate:** `template_id`, `last_extraction_at`, and
+    `last_observation_at`. `origin`, `signals`, and `title_slug` stay.
+    `template_version` waits with the template package.
+13. **Pipeline: deterministic note, then extraction, then observations.**
+    First emit always writes a complete, model-free note (fold slug,
+    extraction *slots*, empty observation headings, `## Signals` last).
+    Then mechanical masked **extraction** fills those slots from the
+    signal. Then **observations** run: core's slug observation first,
+    then Field-declared observation sections (and the one-line image
+    caption). Fields supply prompts only for *their* observation
+    sections via `describe.note_sections`. Core still writes every byte.
+    Collect is valid if extraction or observations never run.
+14. **Engine cascade: Apple on-device if present, else optional llama,
+    else fold.** Collect never fails for want of a model.
+    1. **macOS + Apple Intelligence available** → Apple Foundation Models
+       (`SystemLanguageModel`, on-device only). No download, no GGUF, runs
+       on the Neural Engine. This is the fastest path to slug + observation
+       fill on the machine this project is developed on.
+    2. **Otherwise, if a llama.cpp (or equivalent) engine is installed** →
+       use that. This is the Win/Linux *parity* path and the fallback on a
+       Mac where Apple Intelligence is off, ineligible, or not ready. It is
+       **not** required to ship the first Mac-useful notes.
+    3. **Else** → deterministic fold for the slug, mechanical extractions,
+       empty observation headings. This is the Windows/Linux default until
+       (2) exists, and it is what CI exercises.
 
-Point 4 of the owner's direction also settles the priority around filenames:
-what matters is that Fieldnotes does not rename files out from under
-Obsidian, and that `notes/` stays flat and browsable. Filename grammar is
-cosmetics, it is not the headline of this package, and section 7 treats it
-accordingly — as an open recommendation, deliberately last.
+    Detect availability at runtime; never assume. **Private Cloud Compute
+    is not the default** (network). Guardrail refusal or a missing model
+    is a skip of LLM fill, not a failed collect. Compile and CI stay free
+    of model downloads and GPU. The hard "no BYO" prohibition is
+    withdrawn; BYO is still not built here. A config flag can force fold.
+15. **Extractions are mechanical and masked. Observations are LLM or
+    human, including slug.** Extraction may only copy signal properties
+    or literal spans. Observations use the engine cascade: core owns
+    slug (and picture caption); the Field owns type-specific sections
+    (ask, etc.). Empty headings if the engine is off. Human text (no
+    generator stamp) is not overwritten by `--force`. `--force` may
+    rerun Field observation sections and caption; it does **not** rerun
+    slug.
+16. **Work queue by default, keep-everything without a second layout.**
+    Skip-unless-`--force` is the queue. Keeping everything is "don't
+    delete the notes." No extra directory scheme, no revision ledger, no
+    processed-set beyond the index.
+17. **Contacts working data is a vCard 4 subset** (RFC 6350), one `.vcf`
+    per contact under `.fieldnotes/fields/<field-id>/contacts/`. Chosen as
+    a standard for repeating, typed EMAIL/TEL, not as a PIM. Core is still
+    the only durable writer: the Field stages `text/vcard`, core validates
+    the subset and installs. The graph matches on `UID`, `EMAIL`, and
+    `TEL`.
+18. **Next shipped LLM jobs: core slug observation, and a one-line
+    picture caption.** Both are observations after extraction. Document
+    OCR is a converter (MarkItDown or Firecrawl AnyDoc), not the model.
+    Caption eval: 13.6 E. Field observation-section scoring still waits
+    on `describe` prompts.
+19. **PII is postponed. Presidio is out.** Presidio needs Python and spaCy
+    model assets, which this workspace will not take onto any path that
+    collect can hit. Do not evaluate it further. A later optional
+    capability may look at non-Python span taggers; it is not this gate
+    and it is not required for v0.1 notes.
 
-Everything not in this list is a recommendation the owner has not accepted.
+A3 still does not change A2 *record, checkpoint, or credential* frames. It
+does change the Contacts Field's product role, and it adds an optional
+`note_sections` declaration to `describe`. That is in scope because the
+live notebook that motivated this package was wrong about contacts, and
+because Field-provided section prompts cannot live in core without a
+place to declare them.
 
 ## What A3 must not do
 
-A3 changes the storage and rendering layer only. **The A2 process boundary
-and all three Microsoft Fields are unchanged**, and this is not an
-aspiration — it follows from what A2 already says.
+A3 changes the storage and rendering layer, the Contacts Field's product
+role (settled point 10), and — additively — the `describe` manifest so a
+Field can declare note sections and observation prompts (settled point 13).
+**A2 record, checkpoint, diagnostic, credential, and artifact-handle
+grammar do not otherwise move.** The Contacts Field still speaks A2. Core
+is still the only durable writer. Core stops turning contact records into
+public notes.
 
 [A2 section 6](A2-field-protocol.md#6-the-record-envelope-a-normalized-source-envelope)
 chose the normalized source envelope precisely so that a Field emits values
@@ -125,12 +225,14 @@ core's rendering. Neither is visible to a Field.
 
 Concretely, nothing in A3 requires a change to: any A2 frame type, member,
 grammar, limit, ordering rule, cursor rule, checkpoint rule, exit code,
-rejection code, diagnostic code, or schema file; the `describe` manifest;
-declared-property enforcement; artifact staging or the handle grammar; the
-protected credential channel; or the sixteen frozen transcripts. A Field's
-capability slice still declares a `note_type` and core still enforces it —
-that value now selects a render template as well as a record type, which is
-a core-side consequence of a value the Field already sends.
+rejection code, diagnostic code, or schema file; the `describe` manifest
+shape; declared-property enforcement; artifact staging or the handle grammar;
+the protected credential channel; or the sixteen frozen transcripts. A
+note-producing Field's capability slice still declares a `note_type` and
+core still enforces it — that value now selects a render template as well as
+a record type. A matching-only Field (Contacts, settled point 10) still
+declares its types for the protocol; core does not render them into
+`notes/`.
 
 One consequence runs the other way and is stated in section 10 rather than
 hidden: because A2's `record.properties` admits only scalars and homogeneous
@@ -157,9 +259,9 @@ Where each one lands:
 | P3 machine bookkeeping precedes `title` | Yes; section 6 |
 | P6 property names are machine-oriented | Yes for notes; the names stay on signals |
 | P1 the filename is unreadable | Partly; a slug leads the name, the ID still dominates |
-| P5 contacts sort by a meaningless date | Partly; entity-like names carry no timestamp |
-| P4 the filename separator is ambiguous | Only if the open delimiter recommendation is taken |
-| P2 one flat directory of near-identical names | **No.** `notes/` stays flat by decision; section 7 |
+| P5 contacts sort by a meaningless date | **Moot.** Contacts are not notes; settled point 10 |
+| P4 the filename separator is ambiguous | **No.** `_` is kept; P4 stays documented |
+| P2 one flat directory of near-identical names | **Partly.** Public `notes/` stays flat; signals leave the reading surface. A mailbox of kept mail notes is still a search problem, not a folder problem |
 
 ### Structural defects: the record does the wrong job
 
@@ -272,9 +374,9 @@ everywhere afterwards:
 
 | Tier | Record | What it is | Lifecycle |
 |---|---|---|---|
-| Evidence | **signal** | The collected machine record of what a source actually said | Reconciled, replaced, or removed by collection; not rebuildable |
-| Readable | **note** | A human-readable artifact rendered from a signal, or authored directly by the user | Derived notes are disposable and rebuildable; authored notes are not |
-| Enrichment | Extraction, Observation | Optional, evidence-cited derived records | Disposable |
+| Evidence | **signal** | The collected machine record of what a source actually said | Reconciled, replaced, or removed by collection; private; refetchable |
+| Readable | **note** | A human-readable artifact: deterministic scaffold, then optional fill | Snapshot until `--force`; user may keep, move, or delete |
+| Working data | **vCard** (Contacts), other Field-private files | Matching ammunition, not a reading surface | Current state, private, refetchable |
 
 The vocabulary is the load-bearing part. A1, A2, ADR 0001 through ADR 0013,
 the property registry, and the roadmap use "Note" in the old sense several
@@ -287,21 +389,24 @@ rename is how a vocabulary change becomes permanently ambiguous.
 Two consequences of the tiering are load-bearing and must be stated as rules
 rather than left as implications.
 
-**Deterministic rendering, by default, with no model.** A note is produced
-from a signal by template render: no model, no network, no GPU, no optional
-component. Enrichment is applied on top when it exists. This is not a
-preference; the roadmap's invariant that "no release before the enhancement
-milestone may require a model, model download, GPU, or network access for
-notebook use" means that if rendering needed a model, a freshly synced
-notebook would contain nothing a person could read.
+**Deterministic scaffold first, small local LLM on by default.** A freshly
+emitted note is always readable without a model: slug, title, extraction
+sections copied from the signal, empty observation headings, `## Signals`
+last. When the pinned local engine is present and not disabled, it fills
+observation sections. When it is missing or off, collect still succeeds.
+The roadmap line "no release before the enhancement milestone may require a
+model" is **restated**: no release may *fail* because a model is absent;
+the default product experience after the engine is installed is that a
+small local LLM is on. Compile and CI remain free of model downloads and
+GPU. Bring-your-own inference is not shipped here and is no longer a
+hard product "No."
 
-**A derived note carries no durable state.** Once a note is rebuildable from
-its signal, every property on it must be a function of the signal, the
-template, and whatever derived records currently exist. Anything else is
-durable state in a file the product promises is safe to delete. This rule
-decides several things below — most sharply the enrichment timestamps in
-section 5 — and it is the single most useful test to apply to any later
-addition to the note model.
+**A derived note is a snapshot, not a pure function.** `title_slug` is
+durable. Human-written observation sections (no generator stamp) are
+durable. `--force` regenerates mechanical extraction sections and
+LLM-stamped observation sections, and keeps the slug and any human
+observation text. That is the work-queue rule, not a projection that is
+safe to delete and recreate byte-identical.
 
 #### Alternatives considered
 
@@ -467,23 +572,23 @@ policy, which "new shared properties, primary types, prefixes, or record
 kinds require registry review and fixtures" already covers.
 
 - **Prefix:** `sig_`, joining the table in A1 section 1.
-- **Location:** `signals/`, flat, per the settled layout decision.
+- **Location:** `.fieldnotes/signals/<field-id>/`, private, partitioned by
+  Field. Per-Field subdirectories are available here because this is not a
+  public directory; changing that partition later is not a notebook-format
+  migration. Settled point 3.
 - **Filename:** A1 section 3's grammar, unchanged, with `sig_` in place of
   `note_`:
   `<YYYYMMDDTHHMMSSZ>_<field-id>_<type>_<signal-id>.md`. The machine-oriented
-  filename is correct for a machine record, and it keeps the Field ID and the
-  type in the name, so a flat `signals/` is still greppable per Field. P1 and
-  P5 stop being defects the moment the file is not the one a person opens;
-  they were only ever defects because that file was doing both jobs.
+  filename is correct for a machine record. P1 and P5 stop being defects the
+  moment the file is not the one a person opens.
 
-The signal ID itself is a real choice, because a note has to cite it and the
-citation has to survive a rebuild. **This one is open.**
-
-**Recommendation: derive a signal's ID deterministically from its portable
-source key** — the lowercase hex of SHA-256 over a domain-separated encoding
-of `(source_scope, source_identity)`, truncated to a fixed width, prefixed
-`sig_` — for every signal that has such a key. A `self` signal, which has no
-portable source key, keeps a UUIDv7.
+**Settled: derive a signal's ID deterministically from its portable source
+key, at 96 bits.** The lowercase hex of SHA-256 over a domain-separated
+encoding of `(source_scope, source_identity)`, truncated to 24 hex
+characters, prefixed `sig_`, for every signal that has such a key. A `self`
+signal, which has no portable source key, keeps a UUIDv7. The examples in
+this document that still show 16 hex characters are stale and must be
+regenerated at 24.
 
 This reverses A1 section 1's rejection of "deterministic/content-derived IDs
 for every record," and the reversal is narrow enough to argue for
@@ -504,13 +609,10 @@ present a stale projection ID) is needed for the note-to-signal link. It also
 makes the index in section 4 cheaper to rebuild and impossible to
 mis-associate: the key of the map is a pure function of the source key.
 
-The cost is a third ID family and a truncation width that must be justified
-as collision-resistant and frozen as a vector. **The width is open and needs
-a number.** At mailbox scale the population is real: 10^5 signals in one
-notebook and a birthday bound of roughly 2^(n/2) means 64 bits (16 hex
-characters, as in the examples below) leaves about 2^32 headroom — safe, but
-close enough to want the arithmetic written down rather than assumed. 80 or
-96 bits costs four to eight filename bytes and removes the question.
+The cost is a third ID family. 64 bits at 10^5 signals leaves roughly 2^32
+of birthday headroom, which is safe and looks thin in five years. 96 bits
+costs eight filename bytes and closes the question. That is why 96 was
+taken.
 
 #### Alternatives considered
 
@@ -556,10 +658,13 @@ A note is a readable Markdown record with flat YAML frontmatter in the A1
 subset. It has **two origins**, and the model must say which:
 
 - **`derived`** — rendered from exactly one signal by a type-specific
-  template. Disposable, rebuildable, and safe to delete.
+  template. Fieldnotes output the user may keep, move, or delete. Collect
+  does not rewrite it unless `--force`. Safe to delete from Fieldnotes'
+  point of view; resurrection on a later collect is allowed and is not a
+  de-dupe contract with any destination.
 - **`authored`** — created directly by the user. `fieldnotes note "call Alice
   back"` produces a note, not a signal, and it is the only copy of that
-  material. Not rebuildable, and never removed by a rebuild.
+  material. Never removed by collect, `--force`, or rebuild.
 
 Approve a required `origin` property on every note, with the closed
 vocabulary `authored derived`. **This is a new shared property name and
@@ -611,16 +716,31 @@ of the two might be authored, and section 11's deletion rule governs.
 
 #### The collect path
 
-For each record a Field emits:
+For each record a **note-producing** Field emits:
 
 1. **Upsert the signal** by portable source key, current state, exactly as
-   today's reconciliation works (A1 section 7). Nothing about this step is
-   new.
+   today's reconciliation works (A1 section 7), writing it under
+   `.fieldnotes/signals/<field-id>/`.
 2. **Look up whether a note already lists that signal identifier**, through
-   the index in section 4.
-3. **If one does**, keep that note's identifier and re-render only if the
-   signal changed. The note keeps its ID, its filename, and its slug.
-4. **If none does**, create one derived note.
+   the index in section 4, then re-verify against the file.
+3. **If one does**, default is **skip**. `--force` is 4b.
+4. **If none does**, run the three-stage first emit, then record the
+   mapping in the index:
+   1. **Deterministic note** — fold `title_slug`, empty observation
+      headings, `## Signals` last. File is valid with no model.
+   2. **Extraction** — fill masked sections from the signal (and from
+      the converter for office/PDF/HTML). No LLM.
+   3. **Observations** — core slug observation (may rename once in this
+      transaction); core picture caption if `image/*`; then each
+      Field-declared observation prompt.
+
+4b. **`--force`** reruns extraction and Field observations + caption;
+    keeps `title_slug` and filename. Does not rerun the core slug
+    observation.
+
+A matching-only Field (Contacts) stops at step 1's cousin: write or replace
+working data under `.fieldnotes/fields/<field-id>/`. No note is created. The
+graph consumes those identifiers on its own pass.
 
 **Walking every note per record, asking "is this identifier in your list," is
 not the design.** It is the naive reading of a list-valued property, it is
@@ -630,16 +750,22 @@ does not. The uniqueness invariant plus the index in section 4 are what turn
 step 2 into a single lookup. Any implementation that scans `notes/` per record
 is wrong even if it produces correct files.
 
+Fieldnotes does not de-duplicate notes against any destination the user
+copies them into. Skip-unless-`--force` is a notebook-local courtesy so a
+daily re-collect of the same window does not churn files the user is already
+processing. It is not a promise to a second brain.
+
 #### What a derived note carries, and what it does not
 
 A derived note carries:
 
 - `origin: derived`;
 - `signals`: exactly one signal identifier;
-- `template_id` and `template_version`: which template produced these bytes.
-  **New shared properties; need registry review.**
+- `title_slug`: stored once at first emit, kept across `--force` and
+  re-collect. **New shared property; needs registry review.**
 - Whatever properties its template's declared property set selects
-  (section 5).
+  (section 5). `template_id`, `template_version`, `last_extraction_at`, and
+  `last_observation_at` are **cut from this gate.**
 
 A derived note does not carry `content_hash`, `collected_by`,
 `source_version`, `captured_at`, or `instance_id`. Those describe collection,
@@ -657,27 +783,9 @@ index, which is a cache, and in the notes themselves, which are the truth.
 
 #### Enrichment timestamps
 
-The proposal asks that a note may carry timestamps for its last extraction
-and observation. Approve them as **projections recomputed at render time,
-never stored facts**: `last_extraction_at` is the maximum `generated_at` over
-extractions currently citing this note's signal, and `last_observation_at`
-the same over observations. Both are omitted when no such record exists.
-**Both are new shared property names and need registry review.**
-
-The distinction matters because of section 1's rule that a derived note
-carries no durable state. If these were stamped when enrichment ran and left
-alone, deleting `extractions/` would leave a note asserting an extraction
-time for an extraction that no longer exists — durable state in a file the
-product says is disposable, and unrecoverable on rebuild. As projections they
-simply disappear when their evidence does, which is the correct behavior and
-is also the only behavior a rebuild can reproduce.
-
-This collides with release gate R8, which requires that "deleting
-`extractions/` and `observations/` leaves Notes byte-for-byte unchanged."
-Under this model deleting those directories changes a derived note's bytes,
-because the timestamps and any enrichment sections vanish. **R8 must be
-restated, and restating it makes it stronger** — section 12 carries the
-exact words.
+**Cut from this gate.** `last_extraction_at` and `last_observation_at` wait
+with the enhancement package. They are not required to review the split,
+the index, or the collect path.
 
 #### Alternatives considered
 
@@ -758,12 +866,12 @@ updated. A crash between the two leaves the index missing an entry that
 exists on disk, which is the recoverable direction; the reverse ordering
 would leave the index naming a file that was never written.
 
-**It is fully rebuildable from `signals/` plus notes' frontmatter.** Every
-entry restates something already written in a public file: the signal map
-from each signal's `(source_scope, source_identity)` and `id`, the note map
-from each note's `origin`, `signals`, and `id`. A rebuild reads only
-frontmatter, so it can stop at each file's closing `---` rather than parsing
-bodies.
+**It is fully rebuildable from `.fieldnotes/signals/` plus notes'
+frontmatter.** Every entry restates something already written on disk: the
+signal map from each signal's `(source_scope, source_identity)` and `id`,
+the note map from each note's `origin`, `signals`, and `id`. A rebuild reads
+only frontmatter, so it can stop at each file's closing `---` rather than
+parsing bodies.
 
 #### Why a cache is safe here
 
@@ -847,12 +955,10 @@ why the index is required. Two further honest notes:
 - The rebuild is I/O-bound and parallelizable, and it needs no ordering
   guarantee, so it can be split across threads. That is an implementation
   freedom, not a contract.
-- **`inspect`'s full validation remains a scan by design.** Validation must
-  read the bytes it validates; an index cannot certify a file it has not
-  reopened. So `inspect` over a mailbox-scale notebook is a minutes-long
-  operation and should say so in its output rather than appearing to hang.
-  That is the correct trade: validation is occasional and must be
-  trustworthy, while the collect path is constant and must be fast.
+- **`inspect` has two modes.** Fast mode trusts the index, says so, and is
+  the default at mailbox scale (settled point 5). Full mode remains a scan
+  by design: validation must read the bytes it validates. Full mode is what
+  CI and the cache-rebuild corpus run. Collect never waits on it.
 
 #### Alternatives considered
 
@@ -884,96 +990,83 @@ why the index is required. Two further honest notes:
 
 ### 5. Type-specific rendering, and what a template is
 
-A note is rendered by a template selected by its signal's primary type. A
-template declares:
+A note is a **scaffold**. Core always writes it. The type template, plus
+section declarations from the producing Field's `describe`, decide its
+shape.
 
-1. **A property set** — the ordered list of frontmatter properties this
-   type's notes carry, each drawn from the A1 shared registry or the
-   signal's own Field prefix, with the order being reading order
-   (section 6).
-2. **A body layout** — the Markdown sections that make sense for the type, in
-   order, each with a stated source in the signal.
-3. **A slug source** — the ordered list of properties the filename slug is
-   drawn from (section 7).
-4. **A signals section** — required, last, carrying the traceability: each
-   cited signal's ID, its `(source_scope, source_identity)`, its `source_url`
-   when present, and the relative path to the signal file.
+A template declares:
 
-**The eleven type templates are not part of this gate.** The mechanism above
-is what A3 asks the owner to approve. The template registry — one template per
-primary type, its declared property set, its body layout, its golden
-fixtures, and the shared property names it turns out to need — is follow-on
-work with its own registry review, and **this gate does not close on it.**
-Two worked templates plus the authored case are enough to review the model,
-and that is what the review corpus asks for.
+1. **A property set** — frontmatter this type's notes carry (`title`,
+   `origin`, `signals`, `title_slug`, plus any approved shared names).
+2. **A body layout** — Markdown sections in order. Each section is one of:
+   - **extraction** — filled mechanically from named signal properties or
+     literal spans. A mask lists the allowed sources. Nothing the signal
+     does not contain may appear. No model is required; a model, if used,
+     is still bound by the mask and rejected if it invents.
+   - **observation** — filled by the local LLM using a prompt the Field
+     declared for that section, or left as an empty heading for the human
+     if the LLM is off. A generator stamp marks LLM fill. Absence of a
+     stamp means human text; `--force` does not overwrite it.
+   - **signals** — required, last. Traceability only: signal id, portable
+     source key, `source_url` when present, relative path under
+     `.fieldnotes/signals/`.
+3. **A slug source** — properties the stored `title_slug` is derived from
+   on first emit only.
 
-A worked example, for `contact`, in the reading order section 6 specifies:
+The Field does not write the note. It declares sections and prompts on
+`describe`. Core validates the declaration, writes the scaffold, runs
+masked extraction, and optionally the local LLM. That keeps A2's rule that
+a Field emits values (and now, section declarations) and never notebook
+bytes.
+
+**The eleven type templates are not part of this gate.** Mail plus authored
+text is enough to review the scaffold. A mail-shaped example:
 
 ```markdown
 ---
-title: "Alice Müller"
-organization: Acme AG
-role: Head of Operations
-id: note_01a02b40-0000-7000-8000-000000000001
-type: contact
+title: "Migration Thursday"
+id: note_01a0287d-acc0-7000-8000-000000000005
+type: mail
 origin: derived
 signals:
   - sig_9c1f8ab2d4e60517
-template_id: contact
-template_version: 1
+title_slug: migration-thursday
 ---
 
-# Alice Müller
+# Migration Thursday
 
-Head of Operations at Acme AG.
+## People
 
-## Reaching Alice
+- alice@example.com (from)
+- bob@example.com (to)
 
-- Email: alice@example.com
-- Phone: +1 555 0100
+## Ask
+
+- (empty heading if the LLM is off; otherwise a bounded observation)
 
 ## Signals
 
-- `sig_9c1f8ab2d4e60517` — Outlook Contacts (`outlook_contacts_work`),
-  collected 2026-08-22, source `contact/AAMkAGI2CONTACT01`
-  ([signal](../signals/20260822T101500Z_outlook_contacts_work_contact_sig_9c1f8ab2d4e60517.md))
+- `sig_9c1f8ab2d4e60517` — Outlook Mail (`outlook_mail_work`),
+  collected 2026-08-22, source `message/AAMkAGI2MAIL01`
+  ([signal](../.fieldnotes/signals/outlook_mail_work/20260822T080000Z_outlook_mail_work_mail_sig_9c1f8ab2d4e60517.md))
 ```
 
-The example carries no `title_slug`, because the filename recommendation that
-would require it is open (section 7); if it is taken, `title_slug` sorts into
-the trailing ASCII block.
+The contact-shaped example that used to live here is **withdrawn.** Contacts
+are not notes.
 
-Two properties in that example do not exist. `organization` and `role` are
-illustrative of what a contact template would want and are **not proposed as
-approved names**; both require registry review, and `role` in particular
-needs care because `identity-and-graph.md` treats a role string as weak
-descriptive evidence and the registry must not let a template's convenience
-turn it into something stronger. The related open question from
-[A1 graph implementation findings, finding 8](A1-graph-implementation-findings.md)
-— whether an unprefixed property should record whether a contact record
-describes a person or an organization — becomes more pressing here, because a
-contact template has to choose a layout and currently can only do so by
-reading a vendor-prefixed property, which core is not allowed to do. It
-belongs to the template package, not to this gate.
+Two properties in that withdrawn example (`organization`, `role`) were
+never approved names; they stay unapproved. The mail example's `## People`
+is an extraction section: those addresses must occur on the signal
+(properties, identities, or body spans) or the section is empty.
 
-**What it means for a template to be contract.** The recommendation is that a
-template is **reviewable but not frozen**: its identifier and version are
-approved and recorded on every note it renders, per-type golden fixtures are
-required when that type's template is approved, and a template revision is a
-**rebuild**, not a format version bump and not a migration.
+The rest of this section's "template is reviewable but not frozen" reasoning
+stands: a derived note is unhashed, skip-unless-`--force` keeps the slug,
+and a template revision is a `--force` rebuild of notes the user asks to
+refresh, not a format version.
 
-That is only defensible because of a chain of decisions above, and the chain
-is the point:
-
-- a derived note's bytes are not hashed (section 2), so no hash breaks;
-- a derived note is not compared, merged, or conflict-bearing (section 2), so
-  no reconciliation breaks;
-- a derived note's filename slug is stored rather than recomputed
-  (section 7), so a template revision does not rename 248 files.
-
-Remove any one of those and a template edit becomes a format change to every
-note of that type, and the readable layer becomes as expensive to improve as
-the evidence layer — which is the coupling section 1 exists to break.
+**What it means for a template to be contract.** Reviewable but not frozen:
+a template revision is a `--force` refresh, not a format version. That holds
+because derived notes are unhashed, uncompared, and carry a stored slug.
 
 #### Alternatives considered
 
@@ -1016,13 +1109,14 @@ the evidence layer — which is the coupling section 1 exists to break.
 ### 6. Property ordering for human reading
 
 Approve a reading order for **readable records only** — notes, and only
-notes:
+notes. **Settled: `title` first, then A1's existing rule.**
 
-1. `title` when present, then the type's remaining reading-order properties in
-   the order its template declares.
-2. Then `id`, `type`, `origin`, and, for a derived note, `signals`,
-   `template_id`, `template_version`.
+1. `title` when present.
+2. Then `id`, `type`, `origin`, and, for a derived note, `signals`.
 3. Then every remaining property in ascending ASCII byte order.
+
+Template-declared per-type order waits for the template package. Moving to
+it later is a rebuild, not a migration.
 
 Signals, extractions, observations, entities, relationships, proposals,
 conflict bundles, and package manifests keep A1 section 5's ordering exactly:
@@ -1080,62 +1174,57 @@ consequence of the model, not the reason for it.
 
 ```text
 notebook/
-├── signals/
-├── notes/
+├── notes/                          # public, flat; the artifact
 ├── artifacts/
-├── extractions/
+├── extractions/                    # later gate; not this package's reading surface
 ├── observations/
 ├── entities/
 ├── relationships/
 ├── proposals/
 ├── conflicts/
-└── packages/
+├── packages/
+└── .fieldnotes/
+    ├── instance.yaml
+    ├── fields/<field-id>/          # config + connector working data
+    ├── signals/<field-id>/         # private collected evidence
+    ├── cache/                      # signal-to-note index; disposable
+    └── state/                      # cursors, checkpoints
 ```
 
-One `signals/`, one `notes/`, both flat. Authored and derived notes share
-`notes/`, distinguished by `origin` rather than by location. This
-**preserves** [notebook format](../notebook-format.md)'s approved statement
-that "`notes/` is flat in v0.1" and its global-timeline property, and it adds
-one directory name to the tree.
+Public `notes/` stays flat. Authored and derived notes share it, distinguished
+by `origin` rather than by location. This **preserves** [notebook
+format](../notebook-format.md)'s approved statement that "`notes/` is flat
+in v0.1".
 
-**The honest consequence, stated because it is uncomfortable.** A flat
-`notes/` holding tens of thousands of mail notes is not pleasant to browse in
-a file tree. At 328 records the listing is already unusable as a listing (P2);
-at 40,000 it is unusable in a different way, because no file pane, `ls`, or
-Obsidian explorer presents 40,000 sibling entries usefully, and a slug in the
-name helps a search but not a browse. `signals/` has the same shape and the
-same problem, one directory over. So "flat and browsable" is in tension at
-mailbox scale, and this package does not resolve that tension: it records it.
-The mitigations available without a layout change are real but partial —
-`fieldnotes.base` views, a search-first workflow, Obsidian's quick switcher,
-and the slug that makes those searches land. Filesystem behavior itself is
-fine: APFS, ext4, and NTFS all handle 10^5 entries in a directory without
-degradation. It is the human and the file-explorer that do not.
+Signals are **not** a second public directory. They live under
+`.fieldnotes/signals/<field-id>/` so they travel with the vault, stay out of
+Obsidian’s default browse, and can be partitioned by Field without a public
+format change. Connector working data — the Contacts identifier arrays in
+particular — live under `.fieldnotes/fields/<field-id>/`, next to the Field
+configuration that already lives there.
 
-If the owner later wants partitioning, it is a layout change to a public
-directory, which is a format change with a migration — cheaper than most,
-because a derived note can be re-rendered anywhere, but not free, and
-authored notes would have to be moved rather than regenerated.
+**The honest consequence, restated.** A flat `notes/` holding tens of
+thousands of *kept* mail notes is still not pleasant to browse in a file
+tree. That is now a search-and-views problem, not a reason to invent
+`notes/mail/` vs `notes/contact/`. Contacts no longer occupy 76% of the
+listing. Signals at mailbox scale live in a hidden tree partitioned by Field,
+so P2 for the collected layer is answered by putting that layer out of the
+reading surface rather than by a public subdirectory scheme.
 
-#### Filename grammar — open, and deliberately minor
+If the owner later wants `notes/` partitioned, it is still a public-directory
+format change with a migration. It is cheaper than it was, because derived
+notes can be re-rendered and authored notes are the only files that would
+have to be moved. It is not taken here.
 
-The owner's direction is that filename grammar matters much less than a flat,
-browsable `notes/`, and that the one thing that must hold is that Fieldnotes
-does not rename files out from under Obsidian. Both recommendations below
-serve that; neither is the point of this package.
-
-**Recommendation, open: a delimiter a reader can split on.**
+#### Filename grammar — settled: stored slug, keep `_`
 
 ```text
 <readable-part>--<record-id>.md
 ```
 
-`--` is unambiguous because every segment matches `[a-z0-9_]` or, for the
-slug, `[a-z0-9-]` with runs of `-` collapsed to one, and a UUID contains only
-single hyphens. Nothing in the grammar can produce a double hyphen except the
-delimiter. That fixes P4 rather than documenting it. Keeping A1's `_` instead
-is a legitimate choice that costs only the ambiguity A1 already warns about;
-signals keep `_` and A1's grammar either way.
+`--` would be unambiguous and is **not taken**. Notes keep A1's `_`
+delimiter. P4 stays documented rather than fixed. The substance of the
+filename decision is the stored slug, not the separator.
 
 The readable part is type-specific:
 
@@ -1269,9 +1358,8 @@ rule.
 
 - `notebook format`'s statement that "the filename contains no subject,
   participant, organization, or other mutable human content" is **directly
-  reversed** for notes, if the slug recommendation is taken. A note filename
-  then contains human content, on the readable tier where a person needs it.
-  Signals keep the old rule.
+  reversed** for notes. A note filename contains a stored slug. Signals
+  keep the old rule.
 - One new shared property (`title_slug`) exists purely to make a filename
   stable. That is a real cost and the alternative is mass renames.
 - `notes/` remains one directory listing, which keeps every tool that globs
@@ -1356,47 +1444,60 @@ where non-reproducibility is expected and accept the invariant reversal.
   changed at collection time. It cannot report *what*, and it cannot report it
   after the fact, because both values are overwritten too.
 
-### 9. What the entity graph contributes, and what it cannot
+### 9. Contacts are not notes; the graph answers "is this a new person?"
 
-The graph is relevant here and is not a substitute for history, and the
-difference is worth stating precisely, because it is where most of the
-contact-change requirement actually lives.
+**Settled: the 248 contact markdown files were product drift.** A contact is
+not an event and it is not something a person or an agent needs as a
+standalone reading artifact. The Contacts Field does not produce public
+notes.
 
-**What the graph already does.** Correlating a contact with mail evidence is
-not a new capability — it is what
-[identity-and-graph.md](../identity-and-graph.md) already specifies and what
-`fieldnotes-graph` already implements. A person entity joins identity anchors
-across Fields and cites the records that supplied them; the frozen corpus
-demonstrates exactly this, with one entity citing eight records across five
-channels. Medium and weak evidence produces a **candidate** rather than a
-silent union, and every projection carries its origin class, its rule
-version, and its cited evidence. So "a note can show changes detected from
-other evidence such as mail" is, in its correlation half, already available:
-a contact note can render the entity its signal resolves to, and that entity
-already points at every mail, calendar, and chat record naming the same
-person.
+What it does produce:
 
-**What the graph cannot do.** It only ever sees current state. It can
-therefore report that two *current* sources **disagree** — a contact record
-says one role, a mail signature extraction says another — but it cannot
-report that a value **changed**, because the prior value was overwritten
-before the graph ran. `identity-and-graph.md` is explicit about both halves:
-its conflict classes include "contradictory names, roles, affiliations, or
-source values across current evidence," and its prohibited-claims list
-includes "historical trends from superseded source revisions, because v0.1
-keeps no revision ledger."
+- **vCard 4 working files** under
+  `.fieldnotes/fields/<contacts-field-id>/contacts/<uid>.vcf`. One card per
+  source contact. Core validates a subset of RFC 6350 and installs it. The
+  Field stages `text/vcard`; it does not write the notebook path. This is
+  not a public record kind and is not in `notes/`.
+- **Identity ammunition for the graph.** `UID` is the exact source id inside
+  the Field's scope. `EMAIL` and `TEL` (with `TYPE` parameters, which is the
+  reason to use the standard) become `email:` and `phone:` anchors. "Is this
+  a new person?" is the resolver in
+  [identity-and-graph.md](../identity-and-graph.md): exact and strong anchors
+  join; medium and weak evidence produces a candidate; `FN` / display names
+  never silently merge.
 
-#### Consequences
+**vCard 4 subset (normative for this gate's Contacts working data):**
+`BEGIN/END:VCARD`, `VERSION:4.0`, `UID` (required), `FN`, `N`, `KIND`,
+`EMAIL` (repeatable, `TYPE` permitted), `TEL` (repeatable, `TYPE`
+permitted), `ORG`, `TITLE`, `REV`, `ADR`, `URL`. Line folding per RFC 6350.
+Rejected or dropped: inline `PHOTO`, `NOTE` dumping vendor blobs, arbitrary
+`X-` properties above a size cap. The subset exists so Fieldnotes owns a
+parser for a small language rather than a general vCard library whose
+accepted language is wider than the contract — the same reason A1's YAML
+is a subset.
 
-- Under the settled change-tracking decision, a contact template should
-  render an evidence-disagreement section rather than a change section, with
-  the vocabulary section 8 requires.
-- Populating that section from mail signatures depends on the `0.1.8`
-  signature-extraction capability, which is optional. The deterministic floor
-  is the entity's cited evidence, which needs no model.
-- Entity and relationship evidence citations move from Note IDs to signal IDs
-  (section 11), so the graph derives from the evidence tier and never from the
-  rendered tier.
+A public note that mentions a person is emitted because *something happened*
+— a mail, a meeting, an unmatched identity on an event-like signal, an
+extraction that just introduced a property this notebook has not seen — not
+because a directory record exists. That note cites its event-like signal.
+The graph may link it to a person entity. There is no `type: contact` file
+in `notes/` in v0.1.
+
+**What the graph already does.** A person entity joins identity anchors
+across Fields and cites the records that supplied them. The frozen corpus
+already demonstrates this, with one entity citing eight records across five
+channels. That is the matching mechanism. It does not require a contact
+note.
+
+**What the graph cannot do.** It only ever sees current state. It can report
+that two *current* sources disagree; it cannot report that a value changed,
+because the prior value was overwritten before the graph ran. Directory
+change-history is not recovered by making contact files, and it is not
+recovered by the graph. Section 8 already settled that.
+
+Entity and relationship evidence citations move from Note IDs to signal IDs
+(section 11), or, for matching-only Fields, to the working-data identity the
+Field stored. The graph never derives from rendered notes.
 
 ### 10. What this package does not solve: P7
 
@@ -1421,22 +1522,15 @@ measured on the live notebook:
   phone and a mobile are two indistinguishable strings, and a primary address
   and an alias are two indistinguishable strings.
 
-**What a template can do, at most, is present what the signal already
-carries.** A contact template can lift the body prose into a "Reaching Alice"
-section, and it can render the `identities` anchors, prefix-classified as
-`email:` or `phone:`. It cannot label one phone as mobile and another as
-business, because that distinction was never stored. Presentation cannot
-recover a distinction the record does not contain, and the example in
-section 5 should be read with that in mind: the section is readable, but the
-data behind it is still an unroled list plus prose.
+P7 was measured on contact *notes*, which this package no longer produces.
+The underlying protocol limit remains: a matching-only Contacts Field still
+cannot store role-bearing repeating methods, because A2 still admits only
+scalars and scalar lists. That matters for the graph's identifier arrays
+(business vs mobile is still erased if both land in one `phone:` list) and
+it is still not this gate.
 
-The route to actually fixing P7 is the A2-amending package section 2
-describes: a nested record envelope, per-Field declaration of nested property
-shapes, a nested value model in the registry, and a signal serialization that
-can hold it. That package is coherent, it is probably correct eventually, and
-it is not this one. Approving A3 does not make P7 better and does not make it
-worse; it makes the layer where the fix will eventually be presented cheap to
-change, which is a real but indirect benefit.
+The route to actually fixing the nested-methods gap is the A2-amending
+package section 2 describes. Approving A3 does not make it.
 
 ### 11. Derived, projected, and reconciliation records
 
@@ -1559,11 +1653,17 @@ Current:
 
 Proposed replacement:
 
-> 1. **Public notebook state:** portable signals, authored notes, artifacts,
->    and generated Markdown records including derived notes. Collected signals
->    may be reconciled, removed, pruned, or refetched. Derived notes are
->    regenerated from signals and are not evidence; authored notes are
+> 1. **Public notebook state:** portable authored notes, derived notes, and
+>    artifacts. Derived notes are the reading surface rendered from signals;
+>    they are not themselves the collected evidence. Authored notes are
 >    evidence and are the only copy of their content.
+> 1b. **Private portable evidence:** signals under
+>    `.fieldnotes/signals/<field-id>/`, and Field working data under
+>    `.fieldnotes/fields/<field-id>/`. These travel with the notebook, are
+>    not the reading surface, and may be partitioned by Field without a
+>    public format change. Collected signals may be reconciled, removed,
+>    pruned, or refetched. Deleting them loses reprocess-without-refetch;
+>    they are not a cache.
 
 State classes 2, 3, and 4 need no amendment. In particular, the
 signal-to-note index in section 4 is class 4 as written — "indexes and
@@ -1595,11 +1695,12 @@ model" is amended with it. Current:
 
 Proposed replacement:
 
-> Each configured Field is a stable, read-only producer of **signals**, from
-> which Fieldnotes renders readable **notes**. The reserved `self` Field
-> records notes and artifacts supplied directly by the user; user-authored
-> notes are readable files in their own right and are not rendered from
-> anything.
+> Each configured Field is a stable, read-only producer. Note-producing
+> Fields emit **signals**, from which Fieldnotes may render readable
+> **notes**. Matching-only Fields (Contacts) emit identifier working data
+> for the graph and do not produce notes. The reserved `self` Field records
+> notes and artifacts supplied directly by the user; user-authored notes are
+> readable files in their own right and are not rendered from anything.
 
 #### Release gate R0
 
@@ -1614,10 +1715,11 @@ Proposed replacement:
 
 > **Release gate R0:** golden fixtures are stable; interrupted writes leave no
 > valid-looking partial signal and no valid-looking partial note; repeated
-> imports reuse artifacts; rebuilding `notes/` leaves every authored note
-> byte-for-byte unchanged and reproduces every derived note byte-for-byte from
-> its signal and template; deleting `.fieldnotes/cache/` changes no public
-> file; no secret-like CLI input is persisted accidentally; macOS, Linux, and
+> imports reuse artifacts; a re-collect without `--force` does not rewrite an
+> existing derived note; `--force` rewrites derived-note content and keeps
+> `title_slug`; rebuilding or deleting `.fieldnotes/cache/` changes no public
+> file; authored notes are never removed by collect, `--force`, or rebuild;
+> no secret-like CLI input is persisted accidentally; macOS, Linux, and
 > Windows CI exercise path and rename behavior.
 
 #### Release gate R8
@@ -1632,16 +1734,17 @@ Current:
 
 Proposed replacement:
 
-> **Release gate R8:** default installation performs no inference or model
-> download; deleting `extractions/` and `observations/` leaves every signal
-> and every authored note byte-for-byte unchanged, and re-rendering restores
-> every derived note byte-for-byte; rebuilding uses pinned generator
-> contracts; evaluation fixtures meet approved evidence-precision, language,
-> CPU/memory, packaging, and licensing thresholds.
+> **Release gate R8:** compile and CI perform no inference, model download,
+> or GPU work; collect succeeds with the local engine missing or disabled
+> and still writes a deterministic scaffold; deleting `.fieldnotes/cache/`
+> leaves every signal, vCard, and note unchanged; `--force` does not
+> overwrite human-written observation sections (no generator stamp);
+> extraction sections validate against the cited signal body; rebuilding
+> uses pinned generator contracts when the engine is on.
 
-The R8 restatement is stronger than the original, not weaker. What R8 was
-protecting is that enhancement never mutates evidence; the old wording only
-expressed it because evidence and readable artifact were the same file.
+The R8 restatement protects the same thing the original did: enhancement
+never mutates *evidence*. Notes may gain or lose observation text; signals
+and vCards do not.
 
 #### The rest of the sweep
 
@@ -1751,26 +1854,16 @@ property names opportunistically". The list is long, and its length is itself
 a reason to keep the template package separate — most of the growth will come
 from templates, not from the model:
 
-`origin`, `signals`, `template_id`, `template_version`, `title_slug`,
-`last_extraction_at`, `last_observation_at`, a signal-citing replacement for
-`source_note_id`, and whatever the contact and mail templates turn out to
-need (`organization` and `role` are illustrative only, and the remaining nine
-types will add more). Also requiring registry review: the `sig_` record-kind
-prefix, the ASCII folding table for slug derivation, the signal-ID derivation
-and truncation width, conflict types for signal candidates and authored-note
-candidates, and the still-open `contact_kind`-equivalent from
-[A1 graph implementation findings, finding 8](A1-graph-implementation-findings.md).
+`origin`, `signals`, `title_slug`, and a signal-citing replacement for
+`source_note_id` on derived records that currently cite Notes. Also requiring
+registry review: the `sig_` record-kind prefix, the ASCII folding table for
+slug derivation, and the 96-bit signal-ID derivation.
 
-That is eight names before a single template is written, which is worth
-weighing rather than waving through. Three of them (`origin`, `signals`, and
-one signal-citing citation property) are structural and unavoidable if the
-model is approved. Three
-(`template_id`, `template_version`, `title_slug`) exist to make the readable
-layer cheap to change and could be reduced — `template_id` is derivable from
-`type` while there is exactly one template per type. Two
-(`last_extraction_at`, `last_observation_at`) are conveniences that could wait
-for `0.1.8` without affecting anything else in this package. That is a
-legitimate place for the owner to cut, and it is not cut here.
+**Cut from this gate:** `template_id`, `template_version`,
+`last_extraction_at`, `last_observation_at`, and any contact-note property
+(`organization`, `role`, `contact_kind`). Those wait for the template
+package, the enhancement package, or they never arrive because contacts are
+not notes.
 
 ## Review corpus required at this gate
 
@@ -1779,24 +1872,29 @@ templates, every slug edge case, and every regenerated derived-record
 fixture. That is implementation-gate work. **The model must be reviewable from
 a small corpus, and this is it:**
 
-1. **A contact.** One signal in the A1 byte form at its new path, and the
-   derived note rendered from it: `origin: derived`, `signals` with exactly
-   one identifier, template-declared reading order, a signals section, and no
-   `content_hash`.
-2. **A mail message.** The same, for an event-like type, so the timestamped
-   readable part and a second template are both visible.
-3. **An authored text note.** `origin: authored`, no `signals`, and the A1
+1. **A mail message.** One signal in the A1 byte form at
+   `.fieldnotes/signals/<field-id>/`, and the derived note rendered from it:
+   `origin: derived`, `signals` with exactly one identifier, `title` first,
+   stored `title_slug`, and no `content_hash`.
+2. **An authored text note.** `origin: authored`, no `signals`, and the A1
    required properties.
+3. **Skip unless `--force`.** Re-collect the same mail signal: the existing
+   derived note is byte-for-byte untouched. `--force` rewrites the body and
+   keeps `title_slug` and the filename.
 4. **A rebuild that must not delete an authored note.** One directory holding
-   both derived notes and the authored note from case 3, with a rebuild
+   both derived notes and the authored note from case 2, with a rebuild
    transcript proving the authored file is byte-for-byte untouched — plus a
    negative case where a malformed file whose `origin` cannot be read is left
    alone and reported rather than deleted.
-5. **A cache rebuild.** The index deleted and rebuilt from `signals/` plus
-   note frontmatter, reproducing the same map; a stale entry naming a note
-   that no longer lists its signal, showing the entry dropped and the file
-   preferred; and a false-miss case producing two notes for one signal,
-   showing that `inspect` reports the invariant violation.
+5. **A cache rebuild.** The index deleted and rebuilt from
+   `.fieldnotes/signals/` plus note frontmatter, reproducing the same map; a
+   stale entry naming a note that no longer lists its signal, showing the
+   entry dropped and the file preferred; and a false-miss case producing two
+   notes for one signal, showing that `inspect --full` reports the invariant
+   violation.
+
+There is **no contact-note fixture.** Contacts contribute identifier working
+data under `.fieldnotes/fields/`, not a file in `notes/`.
 
 Plus, because they are nearly free and they are the evidence for section 2's
 central claim: the `fn-content-v1` and `fn-record-v1` vectors from
@@ -1830,23 +1928,25 @@ those plus every box below.
 
 - [ ] Three tiers — signal, note, enrichment — with the vocabulary applied by
   explicit per-document amendment and no standing equivalence rule.
-- [ ] Deterministic rendering with no model, network, or GPU, as a rule rather
-  than a default.
-- [ ] A derived note carries no durable state, as a rule that governs every
-  later addition to the note model.
+- [ ] Deterministic first emit always: slug, scaffold, masked extractions,
+  empty observation headings, `## Signals` last. Collect never fails because
+  a model is absent.
+- [ ] Small local LLM on by default once installed; config flag (and later
+  onboarding) can turn it off. Compile/CI stay model-free. BYO is not a
+  hard "No" and is not shipped here.
+- [ ] A derived note is Fieldnotes output the user may keep, move, or delete.
+  Collect does not rewrite it unless `--force`. `title_slug` and
+  human-written observation sections are durable on the note.
 - [ ] The exact replacement wording in section 12 for roadmap invariant 1,
   ADR 0001 state class 1, `product.md`'s definition of a Note, and gates R0
   and R8.
 
 ### Signals
 
-- [ ] `sig_` as a new record-kind prefix, and flat `signals/` with A1
-  section 3's filename grammar unchanged.
-- [ ] Signal IDs derived deterministically from the portable source key, with
-  `self` signals keeping UUIDv7 — reversing A1 section 1's rejection of
-  content-derived IDs on the narrow ground that the derivation input is an
-  immutable identity rather than mutable content. **Open**; the truncation
-  width needs a number.
+- [ ] `sig_` as a new record-kind prefix, and private
+  `.fieldnotes/signals/<field-id>/` with A1 section 3's filename grammar.
+- [ ] Signal IDs derived from the portable source key at 96 bits (24 hex),
+  with `self` signals keeping UUIDv7.
 - [ ] `fn-content-v1` and `fn-record-v1` unchanged in domain, input, and
   vectors, with `fn-content-v1` narrowed in applicability to signals and
   authored notes.
@@ -1860,10 +1960,10 @@ those plus every box below.
 - [ ] The uniqueness invariant: a signal identifier appears on at most one
   note, so coverage is a map lookup, and a second note citing one signal is a
   reported violation rather than a tolerated state.
-- [ ] The collect path in section 3, including that scanning `notes/` per
-  record is explicitly not the design.
-- [ ] Enrichment timestamps as projections recomputed at render time, never
-  stored facts.
+- [ ] The collect path in section 3: skip unless `--force`; `--force` keeps
+  `title_slug`; scanning `notes/` per record is explicitly not the design.
+- [ ] Contacts are not notes. The Contacts Field writes identifier working
+  data under `.fieldnotes/fields/<field-id>/`. "New person?" is the graph.
 
 ### The index
 
@@ -1875,8 +1975,8 @@ those plus every box below.
 - [ ] The staleness rules: a verified header, verified positive answers, a
   completeness marker plus directory summary for negative answers, and files
   winning every disagreement.
-- [ ] `inspect`'s full validation remains a scan by design, and says so in its
-  output at mailbox scale.
+- [ ] `inspect` defaults to a fast mode that trusts the index and says so;
+  `inspect --full` remains a scan.
 
 ### Rendering
 
@@ -1889,19 +1989,14 @@ those plus every box below.
   fixtures are follow-on work, and **this gate does not close on them**.
 - [ ] Templates are release-owned, with no user-editable template surface in
   v0.1.
-- [ ] Template-declared reading order for notes only, with A1 section 5
-  unchanged for every other record kind. **Open**; the cheaper `title`-first
-  variant is defensible.
+- [ ] `title` first, then A1's existing rule, for notes only. A1 section 5
+  unchanged for every other record kind.
 
 ### Filenames
 
-- [ ] `--` as a delimiter that cannot occur inside a segment, so a reader may
-  split the name. **Open**, and minor.
-- [ ] A type-specific readable part: a UTC timestamp for event-like types, and
-  no timestamp for `contact`. **Open**, and minor.
-- [ ] `title_slug` as a stored property, so the filename stays computable from
-  frontmatter and names do not churn on upstream edits. **Open**; this is the
-  one filename decision that is not cosmetic.
+- [ ] Keep A1's `_` delimiter.
+- [ ] Event-like notes keep a UTC timestamp in the readable part.
+- [ ] `title_slug` as a stored property, kept across `--force`.
 - [ ] Slug omission as always available and never a failure, with the frozen
   folding table, the reserved-device-name exclusion, and the 48-byte bound.
 - [ ] Uniqueness carried entirely by the record ID, with no disambiguator.
@@ -1941,74 +2036,358 @@ every new name the compatibility section lists; regeneration of the notebook
 fixture corpus; and the exact amendments in section 12 to the roadmap
 invariants, ADR 0001, `product.md`, and gates R0 and R8.
 
-It would not approve: any change to A2 or to any Field; nested signal
-structure or JSON serialization; change tracking in any form; the eleven type
-templates or the template registry; a user-editable template surface; the
-`0.1.7` handback schema; the `0.1.8` enhancement capabilities or their
-coordinate unit; any new shared property name, which still requires registry
-review; or the CLI surface for rebuild and rename.
+It would not approve: nested signal structure or JSON serialization; change
+tracking in any form; the eleven type templates; a user-editable template
+surface; BYO inference (lifted as a prohibition, not implemented); the
+pinned local model choice; or any new shared property name without registry
+review. It does change the Contacts Field's product role, and it adds an
+optional `describe.note_sections` member. A2 record/checkpoint frames stay.
 
-## Open recommendations, and what remains the owner's to decide
+## 13. If approved: planner's brief
 
-The settled decisions removed the four questions the earlier draft ended on.
-What remains is smaller, and each item below is a recommendation with a
-rationale rather than a menu.
+A later session (or a later agent) must be able to plan and rework from
+**this file**, the approved A0–A2 packages, and the crate tree. It must not
+need the chat that produced A3. This section is that handoff.
 
-**1. The filename slug.** *Recommendation: store it.* The substance is not
-the delimiter or the 48-byte bound; it is that a stored slug never renames a
-file underneath Obsidian, and a recomputed one renames files whenever an
-upstream directory-sync touches a display name, breaking every wikilink
-pointing at the old name. The cost is one shared property, `title_slug`.
-Everything else in section 7 — `--` versus `_`, whether entity-like names
-carry a timestamp — is cosmetics that this package should not spend the
-owner's attention on, and any of it can be decided differently without
-touching the model. If the owner wants the smallest possible filename change,
-the fallback is: keep A1's grammar exactly, add one slug segment, accept that
-P4's ambiguity persists.
+### 13.1 Product in one page
 
-**2. The note reading order.** *Recommendation: template-declared order, with
-`title`-first as an acceptable reduction.* Template-declared order is the one
-that actually fixes P3 for every type rather than for one property, and it
-costs a per-record-kind ordering policy in `emit.rs`. The reduction —
-`title` first, then A1's existing rule — is one line of specification, fixes
-the reported defect, and leaves a contact's `organization` and `role` sorted
-among `id` and `template_id`. If the template package is going to be
-deferred anyway, `title`-first is a defensible interim: it needs no template
-to exist, and moving to template-declared order later is a rebuild, not a
-migration.
+Fieldnotes collects a **window of source material** into private **signals**,
+then emits public **notes** the user can process (move, delete, keep). It is
+a work queue by default. Keep-everything is the same tree with notes left in
+place.
 
-**3. The signal identifier: derivation and width.** *Recommendation: derive
-from the portable source key, at 96 bits.* Derivation is the recommendation
-because it makes the note-to-signal citation survive deletion and refetch
-without any of A1 section 12's rebinding machinery, and because it makes the
-index in section 4 keyed on a pure function of the source key. The width is
-the part that needs a decision rather than a preference: 64 bits (16 hex
-characters) at 10^5 signals leaves roughly 2^32 of birthday headroom, which
-is safe but is the kind of margin that looks thin in five years; 96 bits (24
-hex characters) costs eight more filename bytes and removes the question
-permanently. The examples in this document use 16 characters and should be
-regenerated at whatever width is chosen. If the owner prefers no new ID
-family at all, UUIDv7 signal IDs work, at the price of a `binding_status`
-state machine on the most common link in the notebook.
+```text
+Field (read-only, A2 child process)
+        |
+        v
+.signal YAML under .fieldnotes/signals/<field-id>/     (evidence, current state)
+.vcf    under .fieldnotes/fields/<contacts-id>/contacts/ (matching only)
+        |
+        v
+index in .fieldnotes/cache/   (signal_id → note; source key → signal)
+        |
+        +-- already has a note?  skip (unless --force; keep title_slug)
+        +-- no note?
+              1. deterministic note (fold slug)
+              2. extraction (masked, converter for docs)
+              3. observations: core slug, core caption, Field sections
+                 (Apple FM → llama → leave headings empty)
+        |
+        v
+notes/<timestamp>_<slug>_note_<uuid>.md     (the artifact a person or agent opens)
+```
 
-### Questions that are the owner's to answer
+- A **signal** is A1 YAML+Markdown, `sig_` id derived from
+  `(source_scope, source_identity)` at 96 bits, UUIDv7 only for `self`.
+- A **derived note** is created in three stages: deterministic scaffold,
+  masked extraction, then observations. Slug is a **core** observation
+  (not a Field add-in). Field add-ins only declare their own observation
+  section prompts. `## Signals` is last.
+- An **authored note** is user writing. Never deleted by collect/`--force`.
+- **Contacts are not notes.** vCard 4 subset, graph matches `UID`/`EMAIL`/`TEL`.
+- Downstream duplicates (second brain, CRM) are not Fieldnotes' problem.
 
-1. **Filename slug:** stored (recommended) or recomputed? And is the `--`
-   delimiter worth taking, or should signals and notes keep A1's `_`?
-2. **Note reading order:** template-declared (recommended) or `title`-first
-   with A1's rule otherwise?
-3. **Signal identifier:** derived from the portable source key (recommended)
-   or UUIDv7? If derived, what truncation width — 64, 80, or 96 bits?
-4. **Shared property names:** the list in the compatibility section is eight
-   names before any template is written. Should `template_id`,
-   `last_extraction_at`, and
-   `last_observation_at` be cut from this gate, given that `template_id` is
-   derivable from `type` while there is one template per type, and the two
-   timestamps could wait for `0.1.8`?
-5. **The first two templates:** `contact` and `mail` are proposed as the
-   review corpus because they are the two live types with the most records.
-   Is that the right pair, or should the authored `text` type be the second
-   one instead?
-6. **`inspect` at mailbox scale:** is a minutes-long full validation
-   acceptable as the design, or should `inspect` grow a fast mode that trusts
-   the index and says so?
+### 13.2 What stays frozen
+
+Do not reopen these unless a new ADR says so:
+
+- A0 crate boundaries, toolchain, no `unsafe`, no model on `cargo test`.
+- A1 YAML subset, hashes (`fn-content-v1`, `fn-record-v1`), datetime, artifacts.
+- A2 record / checkpoint / diagnostic / credential frames and the sixteen
+  transcripts, except an **additive** `describe.note_sections` member.
+- Current-state reconciliation. No revision ledger. Option 2 change
+  observations remain rejected.
+- Core is the only durable writer. Fields emit envelopes (and now section
+  declarations, and staged `text/vcard`). They never write `notes/`.
+- Default compile/CI: no model download, no GPU.
+
+### 13.3 Documents to amend on approval (verbatim from section 12)
+
+Apply section 12's replacement wording to: roadmap invariant 1, ADR 0001
+class 1 (plus private portable evidence), `product.md` Note/Signal bullets,
+gates R0 and R8. Also restated on approval, not by silent equivalence:
+
+- [enhancement.md](../enhancement.md): extractions/observations become
+  **sections in the note**, not `extractions/` / `observations/` files;
+  mechanical+masked vs LLM-or-human; local LLM on-by-default-once-installed.
+- [notebook-format.md](../notebook-format.md): `notes/` stays flat; no
+  public `signals/`; human content allowed in note filenames via stored
+  `title_slug`.
+- [fields.md](../fields.md) / Contacts: matching Field, not a note producer.
+- Roadmap 0.1.8 and ADR 0006's "no BYO" sentence: prohibition lifted; BYO
+  still not implemented.
+- `Agents.md` "default build free of model downloads" **stays**. The product
+  default after install is a different sentence.
+
+### 13.4 Code that must change
+
+| Area | Today | After A3 |
+|---|---|---|
+| `fieldnotes-domain` | `note_` ids, no `origin` | `sig_` kind, 96-bit derived ids, `origin`, `signals` list |
+| `fieldnotes-format` | one emit order, Note filenames, `notes/` assumed | title-first emit for notes; `title_slug`; note vs signal paths |
+| `fieldnotes-store` | `notes/` writer, source index scan | private signal tree; vCard installer; persistent cache index; skip/`--force` |
+| `fieldnotes-app` collect | every record → Note | upsert signal; lookup; skip or scaffold; Contacts → vCard not notes |
+| `fieldnotes-cli` | `sync`, `inspect` | `--force`; `inspect` fast-by-default; LLM on/off config |
+| `fieldnotes-graph` | evidence = Note ids | evidence = signal ids; read vCard `UID`/`EMAIL`/`TEL` |
+| `fieldnotes-field-protocol` | `describe` as frozen | additive `note_sections`; `text/vcard` as a staged working payload |
+| Outlook Mail | maps to Note | still A2 records; `describe` grows mail sections/prompts |
+| Outlook Contacts | maps to `type: contact` Notes | stop public notes; stage vCard 4 subset |
+| Outlook Calendar | event Notes | keep as note-producing Field (events are a timeframe) |
+| Fixtures | A1 Note corpus | signals at new paths + mail/authored note corpus in section "Review corpus" |
+| `RESERVED_DIRECTORIES` | public `notes/` etc. | do **not** add public `signals/`; private dirs under `.fieldnotes/` |
+
+Do not rewrite A2 Fields' Graph mapping except Contacts' destination and
+Mail's `describe` sections. HTML-to-markdown of bodies/attachments is
+**renderer** work (13.6), not a protocol change.
+
+### 13.5 Suggested implementation order
+
+1. Registry + domain: `origin`, `signals`, `title_slug`, `sig_`, 96-bit
+   derivation. Tests first.
+2. Store layout: `.fieldnotes/signals/<field-id>/`, cache index with the
+   "files always win / lose cache = rescan never wrong merge" rules.
+3. Collect path: skip unless `--force`; `--force` keeps slug; authored
+   fail-closed.
+4. Mail scaffold (deterministic only) + authored notes. Review corpus cases
+   1–5.
+5. Contacts: vCard 4 subset writer/validator; graph reads cards; no
+   `notes/contact_*`.
+6. `describe.note_sections` schema patch (additive A2); Mail declares
+   extraction + observation + signals sections.
+7. Masked extraction fill (no model).
+8. Engine cascade: detect Apple Foundation Models; if unavailable, fold
+   (llama.cpp later). First-emit jobs: slug proposal, then observation
+   sections from `describe` prompts. CI stays on the fold path.
+9. Only then: score the decided use cases on a sanitized fixture
+   (invented entities = 0).
+10. Engine **evaluation** (13.6) for converters and signature extraction
+    before pinning. PII is postponed. Picture *captions* ship with slug
+    once 13.6 E cases pass; document OCR stays on the converter.
+11. Apply section 12 wording to the invariant docs. Re-sync the live
+    notebook; copy authored notes out first.
+
+### 13.6 Engine evaluation the implementation gate must run
+
+A3 does **not** pin tools. It requires a measured comparison against the
+constraints below, recorded as a short findings note (same shape as A1/A2
+implementation findings) before any of them enter the default path.
+
+**Hard constraints for anything on the default path**
+
+- Local. No network at collect time.
+- CPU-capable. GPU allowed as acceleration, never required.
+- Compile and `cargo test` still download no model and need no Python.
+- Optional engines are sidecars or explicit installs, like the local LLM.
+- Extraction output is **masked**: every emitted string must occur in the
+  cited signal body or declared property. Spans use the frozen coordinate
+  unit (still open in `enhancement.md`; decide it in that findings note).
+- Conversion used as evidence must be **deterministic** under A1 body
+  normalization, or it cannot be a span source.
+
+**A. HTML/Office/PDF → Markdown (attachment and rich-body rendering)**
+
+ADR 0007 already stores original binaries and does **not** restrict
+retention to markitdown types. Conversion is for *note sections*, not for
+what is kept.
+
+Evaluate at least:
+
+- **Microsoft MarkItDown** — Python, broad formats (Office, PDF, HTML,
+  optional OCR/audio). Process-spawn from Rust. Format-specific quality.
+  License: MIT. Optional Azure paths must stay off.
+- **Firecrawl AnyDoc** (local parser, Rust) — 14-format local convert,
+  bindings for Rust/Node/Python/WASM. Closer to this workspace's language.
+  Hosted Firecrawl Parse is **out** (network, vendor).
+
+Measure, on a fixture set of: one HTML mail body, one docx, one PDF with a
+table, one multilingual (at least DE/FR/IT besides EN) PDF or HTML, one
+hostile/malformed HTML. Record: wall time on CPU, peak RSS, license,
+whether output is byte-stable across two runs, table fidelity, whether
+it fetches the network if unplugged.
+
+Until that note exists, the deterministic mail scaffold uses the Graph
+plain-text/HTML body the Field already maps. Do not block A3 collect on a
+converter. **Do not use the vision model as a PDF/Office/screenshot
+transcriber** — that is this converter's job, whether MarkItDown (Python
+sidecar, as today) or Firecrawl AnyDoc (Rust, preferred if the bake-off
+wins so collect does not grow a Python runtime). Hosted Firecrawl Parse
+stays out.
+
+**B. Multilingual signature extraction**
+
+This is an **extraction**, not an observation. Chat-LLM signature parsing
+will invent titles. Evaluate:
+
+- Mechanical first: signature-boundary heuristics (quoted text, `-- `,
+  `Sent from`), then copy spans. This is the no-model floor.
+- Specialized extractors (Talon-style, GLiNER-multilingual, or a small
+  token-classifier) **inside the mask**: they may only label spans that
+  exist in the signal.
+- Reject any engine that emits a role/org not present as literal text.
+
+Languages that matter for this notebook: at least EN + the owner's live
+mail languages. Record precision/recall on a sanitized signature fixture
+set, not on live PII.
+
+**C. PII — postponed; Presidio is out**
+
+**Do not implement. Do not evaluate Presidio.** It requires Python and
+spaCy model downloads, which is enough to reject it for this project.
+ADR 0006's optional PII-span candidate remains recorded and is **not
+in v0.1**. A later gate may look at a non-Python tagger; that search
+is not this package.
+
+**D. Observations and slugs — cascade, not a pinned GGUF**
+
+The engine is a **runtime detection**, not a model file in the repo.
+
+| Order | When | What it does |
+|---|---|---|
+| 1 | macOS, `SystemLanguageModel` available (Apple Silicon, macOS 26+, Apple Intelligence on) | On-device AFM. Slug + observation sections. Image attach is available on current OS trains — measure in 13.6 E, do not ship captions until measured. |
+| 2 | llama.cpp (or equivalent) present and enabled | Same jobs. Win/Linux parity, and Mac fallback. Optional; not a v0.1 ship gate. |
+| 3 | neither | Fold + empty observation headings. **This is the Windows/Linux default** and the CI path. |
+
+Why this is faster than pinning a 3B GGUF first: the owner's Mac already
+has the model; there is no download UX, no quant bake-off, and no Python.
+A small macOS adapter (Swift helper or the existing `foundation-models` /
+`fm-rs` class of binding) plus availability detection unblocks slug and
+per-section prompts. llama.cpp packaging is a later parity package.
+
+Do **not** shell out to an unpinned third-party CLI (`apfel`, `fm`) as the
+product path. Those prove the OS can do it. Fieldnotes owns the adapter,
+checks availability, and stays on-device (no PCC).
+
+Order on **first emit** is fixed: note → extraction → observations.
+
+Observations (engine cascade; skip the LLM bits if unavailable):
+
+1. **Core: slug** — JSON `{"slug": string}`. Not declared by the Field.
+   May replace the fold `title_slug` and rename only in this transaction.
+   `--force` does not rerun it.
+2. **Core: picture caption** — JSON `{"caption": string}` for `image/*`
+   only. Not a transcription.
+3. **Field: typed sections** — prompts from `describe.note_sections`
+   (ask, etc.), run against *already extracted* text plus a bounded
+   signal slice. Scoring those use cases waits until this exists.
+
+**Do not score the product use cases until both pieces exist:** the
+pinned (or trial) local engine, **and** the per-section prompt
+declaration. Then run the already-decided use cases (ask, deadline if
+literal, FYI vs action, one-line summary, signature-derived people as
+*extraction* not observation) on a sanitized fixture. Invented entities
+must be 0.
+
+Out of scope for that first engine: cross-note synthesis, "what
+changed," and **document OCR** (converter, 13.6 A).
+
+**E. Picture captions — ship; document OCR does not go through the model**
+
+Settled point 19. On-device AFM on this Mac already captions (13.7). The
+next implementation wave ships:
+
+- **Caption:** one sentence on `image/*` artifacts (`{"caption": "..."}`).
+  Omit the section if the engine is off, the attachment is not an image,
+  or the model refuses.
+- **Not caption:** PDF, Office, HTML, and “this screenshot is a
+  document, please transcribe it.” Those go to MarkItDown or Firecrawl
+  AnyDoc and land as **extraction** text, masked.
+
+**Eval / test cases required before captions ship** (synthetic is enough
+to start; live mail screenshots later, sanitized):
+
+| ID | Fixture | Pass if |
+|---|---|---|
+| C1 | Geometric scene (house/sun/grass — `/tmp/fn_spike_scene.png` class) | One sentence naming the obvious objects; no claim of readable text |
+| C2 | Text-heavy slide (CUTOVER WINDOW… — `/tmp/fn_spike_slide.png` class) | Caption is *about* the image (“slide announcing a cutover window”), **not** a line-by-line transcript. Transcript is the converter’s job |
+| C3 | Blank / nearly blank image | Empty caption or omitted section; no invented scene |
+| C4 | Engine unavailable (CI / Windows fold) | Note still valid; no caption section; collect succeeds |
+| C5 | Non-image artifact (pdf/docx) | No caption section from the LLM |
+| C6 | Prompt discipline | JSON only; caption ≤ ~140 characters / one sentence |
+| C7 | Timing | Caption < 3 s on the owner Mac class of hardware |
+
+Do **not** fail C2 if the model *can* OCR; fail it if the shipped prompt
+asks it to. The product prompt is “one-line caption,” not “quote the
+text.”
+
+Win/Linux: no caption until llama parity exists (fold). Do not block
+Mac captions on that.
+
+### 13.7 Spike evidence (owner Mac, 2026-08-24)
+
+Ran on this machine: **Apple M5 Pro, macOS 27.0, Apple Intelligence available.**
+`SystemLanguageModel.default.isAvailable == true`. Direct Swift
+`FoundationModels` (not `fm`; that CLI is blocked on an unsigned
+machine-wide license).
+
+| Job | Result | Wall time |
+|---|---|---|
+| Probe | exact `hello-from-on-device` | — |
+| Slug: "Re: Migration Thursday — please confirm the cutover window" | `migration-confirmation` | 814 ms |
+| Slug: "Besprechung mit Alice Müller nächste Woche" | `meeting-with-alice` (translated; umlaut gone) | 394 ms |
+| Ask, free-text markdown | messy (slug-like lines plus a stray `(none)`) | 842 ms |
+| Ask, JSON `{"hasAsk","bullets"}` | `hasAsk: true`, two bullets copied from the mail, **no invented names** | 1207 ms |
+| No-ask digest, JSON | `hasAsk: false`, `bullets: []` | 452 ms |
+
+Implications for the adapter:
+
+- The cascade's step 1 **works on this Mac today.** Slug + observation fill
+  are in the 0.4–1.2 s range, fine for first-emit.
+- Free-text observation prompts are not reliable. Ask for **JSON** (or,
+  once Xcode/macros are on the build, `@Generable`). Command Line Tools
+  `swiftc` cannot load `FoundationModelsMacros`; guided-generation macros
+  need the Xcode plugin. JSON-in / JSON-out is enough to start.
+- Do not depend on `/usr/bin/fm` until `sudo fm license` is accepted;
+  the framework itself does not need that license.
+- CI stays on the fold path (Linux). This spike is owner-machine
+  evidence, not a golden fixture.
+
+**Pictures (same session, `Attachment(NSImage)` in a `PromptBuilder`).**
+
+Two synthetic fixtures: a text slide (CUTOVER WINDOW / Thursday 18:00-20:00 /
+Confirm by Wed 16:00) and a geometric “house under a sun” scene.
+
+| Job | Result | Wall time |
+|---|---|---|
+| Slide, free-text “quote the text” | Exact three lines copied | 1.8 s |
+| Slide, JSON `{visibleText, ask}` | `visibleText` exact; `ask` mixed the *operator* instruction with the document (“extract the text…”) — prompt bug, not a vision miss | 2.0 s |
+| Scene caption | “white building with a brown door on a green surface, under a blue sky with a yellow sun” | 1.2 s |
+
+So on-device AFM **can see**, on this Mac, with no extra model. C1/C2-class
+fixtures already run. Ship **caption only**; keep slide transcription on
+the converter. The C2 prompt must not ask for a quote.
+
+### 13.8 What a plan must not do
+
+- Partition `notes/` by type, or invent `notes/contact/`.
+- Store signals as a second public vault directory.
+- Recompute slugs; rename out from under Obsidian.
+- Scan `notes/` per record.
+- Treat the cache as authoritative.
+- Emit contact markdown.
+- Require a model for collect to succeed.
+- Download models in CI.
+- Implement BYO providers in the first A3 implementation wave.
+- Build an in-place notebook migrator; re-sync, after copying authored
+  notes out.
+
+## What remains open
+
+Not frozen here, and not a menu. Section 13.6 is how a later session
+**decides** 1–2; it must not invent a pin in chat.
+
+1. **llama.cpp pin, if/when Win/Linux parity is wanted.** The Mac path is
+   Foundation Models when available; no GGUF is required to start.
+   Packaging and first-run download wait for that later package.
+2. **`describe.note_sections` JSON Schema bytes.** Existence and the three
+   section kinds are settled.
+3. **Converter / signature engine pins.** Evaluate per 13.6 A–B. Do not
+   guess MarkItDown vs AnyDoc. **PII is postponed; Presidio is out.**
+4. **Span coordinate unit** (UTF-8 bytes vs Unicode scalars) — still open
+   in `enhancement.md`; freeze it when masked extraction is implemented,
+   not for PII.
+5. **Windowed collect vs keep-everything** is CLI policy (`--since` /
+   `--until`), not format. Same files. Keep-everything is "don't delete
+   notes."
+6. **Caption eval C1–C7** must pass on Mac before captions ship. llama
+   captions on Win/Linux are later. Converter pin (MarkItDown vs AnyDoc)
+   is independent and must not block slug+caption.
